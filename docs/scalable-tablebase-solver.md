@@ -178,6 +178,25 @@ resume by skipping existing valid target layers. It does not checkpoint
 mid-propagation. `--overwrite` is rejected together with `--resume`; stale
 `.s15res.tmp` files require `--clean-temp` or manual cleanup.
 
+Range preflight:
+
+```powershell
+.\build\sanpao15_cli.exe --preflight-layer-range 0 15 --out-dir build\prod-layers --encoding 2bit
+```
+
+Preflight is a dry run. It validates existing `.s15res` files, detects
+invalid/missing layers, checks whether the lower-layer chain can resume, reads
+available `.solve.json` stats, estimates queue memory, core RAM, recommended
+RAM, disk slack, and remaining time, then writes `preflight.json`. It does not
+solve new layers and does not create `.s15res` files. Use it before widening a
+range:
+
+```powershell
+.\build\sanpao15_cli.exe --preflight-layer-range 0 15 --out-dir build\prod-layers --encoding 2bit
+.\build\sanpao15_cli.exe --solve-layer-range 0 7 --out-dir build\prod-layers --encoding 2bit --resume
+.\build\sanpao15_cli.exe --preflight-layer-range 0 15 --out-dir build\prod-layers --encoding 2bit
+```
+
 Inspect same-layer predecessors for one dense state:
 
 ```powershell

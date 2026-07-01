@@ -294,6 +294,67 @@ counts. The recommended validation path is range `0..4`, then range `0..5`
 using resume. A direct full `0..15` run is still not recommended without more
 scale data.
 
+## Range Preflight
+
+Before a long production range, run the dry-run preflight:
+
+```powershell
+.\build\sanpao15_cli.exe --preflight-layer-range 0 15 --out-dir build\prod-layers --encoding 2bit
+.\build\sanpao15_cli.exe --preflight-layer-range 8 10 --out-dir build\some-empty-dir --encoding 2bit
+```
+
+Preflight does not call the solver, does not write `.s15res`, and does not
+change existing result layers. It may create or overwrite `preflight.json`.
+For each layer it reports:
+
+```text
+stateCount
+2-bit and byte output payload sizes
+selected output bytes
+remaining-counter bytes
+lower-layer payload bytes
+estimated queue bytes
+estimated core memory and recommended RAM
+estimated seconds
+result status: missing, valid, or invalid
+stats JSON presence
+manifest entry presence
+skip/solve/error action
+lower-layer availability
+risk/error text
+```
+
+Existing `.s15res` files are validated against the current ruleset hash,
+soldier count, dense state count, encoding, payload size, and payload shape.
+Present `.solve.json` files are scanned for simple numeric fields such as
+`stateCount`, `queuePeak`, `totalSeconds`, and `estimatedMemoryBytes`; these
+stats refine queue and time estimates. If no stats are present, the estimator
+falls back to the measured `k=4..6` production runs.
+
+The default JSON report is:
+
+```text
+outputDir/preflight.json
+```
+
+`--preflight-json PATH` overrides that location. The JSON format is
+`sanpao15-layer-range-preflight`, version 1. It records ruleset metadata,
+encoding, range, output directory, disk space check, totals, and the same
+per-layer fields shown in the CLI table.
+
+Recommended full-run flow:
+
+```powershell
+.\build\sanpao15_cli.exe --preflight-layer-range 0 15 --out-dir build\prod-layers --encoding 2bit
+.\build\sanpao15_cli.exe --solve-layer-range 0 7 --out-dir build\prod-layers --encoding 2bit --resume
+.\build\sanpao15_cli.exe --preflight-layer-range 0 15 --out-dir build\prod-layers --encoding 2bit
+```
+
+If `START >= 4`, preflight requires `outputDir/layer-(START-1).s15res` to be
+valid unless that lower layer is part of the planned range and can be produced
+first. This catches missing-lower scenarios such as range `8..10` in an empty
+directory before any solve begins.
+
 ## Solver Direction
 
 The full tablebase solver should proceed from low soldier counts upward:

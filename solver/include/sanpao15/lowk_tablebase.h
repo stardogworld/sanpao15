@@ -138,6 +138,67 @@ struct DenseLayerRangeSolveResult {
     uint64_t totalOutputBytes = 0;
 };
 
+enum class DenseLayerFileStatus {
+    Missing,
+    Valid,
+    Invalid,
+};
+
+struct DenseLayerPreflightOptions {
+    int startLayer = -1;
+    int endLayer = -1;
+    std::filesystem::path outputDir;
+    DenseResultEncoding encoding = DenseResultEncoding::Packed2Bit;
+    std::optional<std::filesystem::path> outputJsonPath;
+};
+
+struct DenseLayerPreflightEntry {
+    int soldierCount = -1;
+    uint64_t stateCount = 0;
+    uint64_t outputBytes2Bit = 0;
+    uint64_t outputBytesByte = 0;
+    uint64_t selectedOutputBytes = 0;
+    uint64_t remainingBytes = 0;
+    uint64_t lowerLayerPayloadBytes = 0;
+    uint64_t estimatedQueueBytes = 0;
+    uint64_t estimatedCoreMemoryBytes = 0;
+    uint64_t recommendedMemoryBytes = 0;
+    double estimatedSeconds = 0.0;
+    DenseLayerFileStatus resultStatus = DenseLayerFileStatus::Missing;
+    bool statsJsonPresent = false;
+    bool manifestEntryPresent = false;
+    bool wouldSkipWithResume = false;
+    bool wouldSolve = false;
+    bool lowerLayerAvailable = false;
+    std::string risk;
+    std::optional<std::string> error;
+};
+
+struct DenseLayerRangePreflightResult {
+    int startLayer = -1;
+    int endLayer = -1;
+    DenseResultEncoding encoding = DenseResultEncoding::Packed2Bit;
+    std::filesystem::path outputDir;
+    std::filesystem::path jsonPath;
+    std::vector<DenseLayerPreflightEntry> layers;
+    uint64_t totalStateCount = 0;
+    uint64_t totalSelectedOutputBytes = 0;
+    uint64_t existingValidOutputBytes = 0;
+    uint64_t missingOutputBytes = 0;
+    uint64_t requiredAdditionalDiskBytes = 0;
+    uint64_t availableDiskBytes = 0;
+    bool diskSpaceKnown = false;
+    bool diskOk = false;
+    uint64_t peakEstimatedCoreMemoryBytes = 0;
+    uint64_t peakRecommendedMemoryBytes = 0;
+    int peakMemoryLayer = -1;
+    double estimatedTotalSeconds = 0.0;
+    double estimatedRemainingSeconds = 0.0;
+    bool canResumeRange = false;
+    bool hasInvalidLayers = false;
+    bool hasMissingLower = false;
+};
+
 struct DenseLayerVerifyOptions {
     std::filesystem::path resultPath;
     std::optional<std::filesystem::path> lowerResultPath;
@@ -182,6 +243,9 @@ DenseLayerProductionSolveResult solveDenseLayerProduction(
     const DenseLayerProductionSolveOptions& options);
 DenseLayerRangeSolveResult solveDenseLayerRange(
     const DenseLayerRangeSolveOptions& options);
+DenseLayerRangePreflightResult preflightDenseLayerRange(
+    const DenseLayerPreflightOptions& options);
+const char* denseLayerFileStatusToString(DenseLayerFileStatus status);
 
 LowKTablebaseVerifyResult verifyLowKTablebase(
     const std::filesystem::path& dir,

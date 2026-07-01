@@ -76,6 +76,7 @@ struct CliOptions {
     bool verifyLowK = false;
     bool solveLayer = false;
     bool solveLayerRange = false;
+    bool preflightLayerRange = false;
     bool verifyLayer = false;
     bool allowK4 = false;
     bool outDirProvided = false;
@@ -109,6 +110,8 @@ struct CliOptions {
     int solveLayerK = 0;
     int rangeStartLayer = 0;
     int rangeEndLayer = 0;
+    int preflightStartLayer = 0;
+    int preflightEndLayer = 0;
     uint64_t denseIndexValue = 0;
     GraphBackend graphBackend = GraphBackend::Csr;
     PartitionMethod partitionMethod = PartitionMethod::Splitmix64Mod;
@@ -145,6 +148,7 @@ struct CliOptions {
     std::optional<std::filesystem::path> outDir;
     std::optional<std::filesystem::path> outResPath;
     std::optional<std::filesystem::path> lowerResPath;
+    std::optional<std::filesystem::path> preflightJsonPath;
     std::optional<std::filesystem::path> verifyLayerPath;
     std::optional<std::filesystem::path> verifyLowKDir;
     std::optional<std::string> analysisNotation;
@@ -192,6 +196,8 @@ void printUsage() {
         << "  sanpao15_cli --verify-layer FILE [--lower-res FILE] [--sample N]\n"
         << "  sanpao15_cli --solve-layer-range START END --out-dir DIR [--encoding byte|2bit]\n"
         << "                  [--resume] [--overwrite] [--clean-temp]\n"
+        << "  sanpao15_cli --preflight-layer-range START END --out-dir DIR [--encoding byte|2bit]\n"
+        << "                  [--preflight-json FILE]\n"
         << "  sanpao15_cli --analyze \"SSSSS/SSSSS/SSSSS/...../.CCC. c\" [--limit N|--full]\n"
         << "  sanpao15_cli --load-table FILE --analyze \"SSSSS/SSSSS/SSSSS/...../.CCC. c\"\n\n"
         << "Options:\n"
@@ -253,7 +259,7 @@ void printUsage() {
         << "  --sample-states N  Sample count for --probe-layer-edges. Default: 100000.\n"
         << "  --tablebase-sizes  Print full dense tablebase layer sizes.\n"
         << "  --create-empty-res K FILE  Create an empty full-tablebase .s15res layer file.\n"
-        << "  --encoding MODE  Encoding for --create-empty-res: byte or 2bit. Default: byte.\n"
+        << "  --encoding MODE  Encoding for dense result commands: byte or 2bit. Range solve and preflight default to 2bit.\n"
         << "  --inspect-res FILE  Show .s15res header information.\n"
         << "  --validate-res FILE  Validate .s15res header and payload size.\n"
         << "  --dense-successors K INDEX  Print legal successors as dense target indexes.\n"
@@ -270,6 +276,8 @@ void printUsage() {
         << "  --out-res FILE  Output .s15res path for --solve-layer.\n"
         << "  --verify-layer FILE  Verify one production .s15res layer file.\n"
         << "  --solve-layer-range START END  Production range solve for dense layers START..END.\n"
+        << "  --preflight-layer-range START END  Dry-run a production range: inspect files and estimate disk/RAM/time.\n"
+        << "  --preflight-json FILE  Output JSON path for --preflight-layer-range. Default: out-dir/preflight.json.\n"
         << "  --resume       Skip existing valid range layers.\n"
         << "  --clean-temp   Remove stale layer-NN.s15res.tmp files for the selected range before solving.\n"
         << "  --external-seed-dedup  Use external sorted runs for next-layer seed dedup.\n"
@@ -682,6 +690,13 @@ CliOptions parseArgs(int argc, char** argv) {
             options.rangeStartLayer = parseLayerIndex(argv[++i]);
             options.rangeEndLayer = parseLayerIndex(argv[++i]);
             options.solveLayerRange = true;
+        } else if (arg == "--preflight-layer-range") {
+            if (i + 2 >= argc) {
+                throw std::invalid_argument("--preflight-layer-range requires START and END layer indexes");
+            }
+            options.preflightStartLayer = parseLayerIndex(argv[++i]);
+            options.preflightEndLayer = parseLayerIndex(argv[++i]);
+            options.preflightLayerRange = true;
         } else if (arg == "--out-dir") {
             if (i + 1 >= argc) {
                 throw std::invalid_argument("--out-dir requires a directory path");
@@ -700,6 +715,11 @@ CliOptions parseArgs(int argc, char** argv) {
             }
             options.lowerResPath = std::filesystem::path(argv[++i]);
             options.lowerResProvided = true;
+        } else if (arg == "--preflight-json") {
+            if (i + 1 >= argc) {
+                throw std::invalid_argument("--preflight-json requires a file path");
+            }
+            options.preflightJsonPath = std::filesystem::path(argv[++i]);
         } else if (arg == "--verify-lowk") {
             if (i + 1 >= argc) {
                 throw std::invalid_argument("--verify-lowk requires a directory path");
@@ -792,13 +812,14 @@ CliOptions parseArgs(int argc, char** argv) {
         static_cast<int>(options.verifyLowK) +
         static_cast<int>(options.solveLayer) +
         static_cast<int>(options.solveLayerRange) +
+        static_cast<int>(options.preflightLayerRange) +
         static_cast<int>(options.verifyLayer);
     if (validationModeCount + partitionModeCount + migrationModeCount + partitionedResumeModeCount + denseModeCount > 1) {
         throw std::invalid_argument("choose only one validate/inspect/partition/dense tablebase mode");
     }
     if (options.resEncodingProvided && !options.createEmptyRes && !options.solveLowK &&
-        !options.solveLowKStreaming && !options.solveLayer && !options.solveLayerRange) {
-        throw std::invalid_argument("--encoding is only valid with --create-empty-res, --solve-lowk, --solve-lowk-streaming, --solve-layer, or --solve-layer-range");
+        !options.solveLowKStreaming && !options.solveLayer && !options.solveLayerRange && !options.preflightLayerRange) {
+        throw std::invalid_argument("--encoding is only valid with --create-empty-res, --solve-lowk, --solve-lowk-streaming, --solve-layer, --solve-layer-range, or --preflight-layer-range");
     }
     if (denseModeCount != 0) {
         const bool disallowedFull = options.full && !options.denseMoveStats;
@@ -847,11 +868,15 @@ CliOptions parseArgs(int argc, char** argv) {
     if ((options.solveLowK || options.solveLowKStreaming) && !options.outDir.has_value()) {
         throw std::invalid_argument("--solve-lowk and --solve-lowk-streaming require --out-dir DIR");
     }
-    if (options.solveLayerRange && !options.outDir.has_value()) {
-        throw std::invalid_argument("--solve-layer-range requires --out-dir DIR");
+    if ((options.solveLayerRange || options.preflightLayerRange) && !options.outDir.has_value()) {
+        throw std::invalid_argument("--solve-layer-range and --preflight-layer-range require --out-dir DIR");
     }
-    if (options.outDirProvided && !options.solveLowK && !options.solveLowKStreaming && !options.solveLayerRange) {
-        throw std::invalid_argument("--out-dir is only valid with --solve-lowk, --solve-lowk-streaming, or --solve-layer-range");
+    if (options.outDirProvided && !options.solveLowK && !options.solveLowKStreaming &&
+        !options.solveLayerRange && !options.preflightLayerRange) {
+        throw std::invalid_argument("--out-dir is only valid with --solve-lowk, --solve-lowk-streaming, --solve-layer-range, or --preflight-layer-range");
+    }
+    if (options.preflightJsonPath.has_value() && !options.preflightLayerRange) {
+        throw std::invalid_argument("--preflight-json is only valid with --preflight-layer-range");
     }
     if (options.solveLayer && !options.outResPath.has_value()) {
         throw std::invalid_argument("--solve-layer requires --out-res FILE");
@@ -874,6 +899,9 @@ CliOptions parseArgs(int argc, char** argv) {
     }
     if (options.solveLayerRange && options.rangeStartLayer > options.rangeEndLayer) {
         throw std::invalid_argument("--solve-layer-range START must be less than or equal to END");
+    }
+    if (options.preflightLayerRange && options.preflightStartLayer > options.preflightEndLayer) {
+        throw std::invalid_argument("--preflight-layer-range START must be less than or equal to END");
     }
     if (options.solveLayerRange && options.rangeResume && options.overwrite) {
         throw std::invalid_argument("--resume and --overwrite cannot be used together");
@@ -1115,6 +1143,12 @@ std::string formatRate(uint64_t count, double seconds) {
 
 std::string formatLayerRate(uint64_t count, double seconds) {
     return formatRate(count, seconds);
+}
+
+std::string formatHex64(uint64_t value) {
+    std::ostringstream out;
+    out << "0x" << std::uppercase << std::hex << std::setw(16) << std::setfill('0') << value;
+    return out.str();
 }
 
 std::string moveToString(const Move& move) {
@@ -1585,6 +1619,90 @@ void printSolveLayerRange(const CliOptions& options) {
     std::cout << "Total output bytes: " << formatInteger(result.totalOutputBytes)
               << " (" << formatBytes(result.totalOutputBytes) << ")\n";
     std::cout << "Status: solved\n";
+}
+
+void printPreflightLayerRange(const CliOptions& options) {
+    DenseLayerPreflightOptions preflightOptions;
+    preflightOptions.startLayer = options.preflightStartLayer;
+    preflightOptions.endLayer = options.preflightEndLayer;
+    preflightOptions.outputDir = *options.outDir;
+    preflightOptions.encoding =
+        options.resEncodingProvided ? options.resEncoding : DenseResultEncoding::Packed2Bit;
+    preflightOptions.outputJsonPath = options.preflightJsonPath;
+
+    const DenseLayerRangePreflightResult result = preflightDenseLayerRange(preflightOptions);
+
+    std::cout << "Dense layer range preflight\n";
+    std::cout << "Range: " << result.startLayer << ".." << result.endLayer << "\n";
+    std::cout << "Encoding: " << denseResultEncodingToString(result.encoding) << "\n";
+    std::cout << "Output dir: " << result.outputDir.string() << "\n";
+    std::cout << "Ruleset: " << RulesetName << " " << formatHex64(StandardRulesetHash) << "\n\n";
+
+    std::cout << std::left
+              << std::setw(5) << "k"
+              << std::setw(16) << "states"
+              << std::setw(10) << "status"
+              << std::setw(9) << "action"
+              << std::setw(14) << "outBytes"
+              << std::setw(14) << "estMem"
+              << std::setw(14) << "recRAM"
+              << std::setw(12) << "estTime"
+              << "risk"
+              << "\n";
+    for (const DenseLayerPreflightEntry& layer : result.layers) {
+        const std::string action =
+            layer.resultStatus == DenseLayerFileStatus::Valid
+                ? "skip"
+                : (layer.resultStatus == DenseLayerFileStatus::Missing &&
+                   (layer.lowerLayerAvailable || layer.soldierCount < MinSoldiersForSoldierSurvival))
+                    ? "solve"
+                    : layer.resultStatus == DenseLayerFileStatus::Missing ? "blocked" : "error";
+        std::cout << std::left
+                  << std::setw(5) << layer.soldierCount
+                  << std::setw(16) << formatInteger(layer.stateCount)
+                  << std::setw(10) << denseLayerFileStatusToString(layer.resultStatus)
+                  << std::setw(9) << action
+                  << std::setw(14) << formatBytes(layer.selectedOutputBytes)
+                  << std::setw(14) << formatBytes(layer.estimatedCoreMemoryBytes)
+                  << std::setw(14) << formatBytes(layer.recommendedMemoryBytes)
+                  << std::setw(12) << formatDuration(layer.estimatedSeconds)
+                  << layer.risk
+                  << "\n";
+        if (layer.error.has_value()) {
+            std::cout << "      error: " << *layer.error << "\n";
+        }
+    }
+
+    std::cout << "\nTotals:\n";
+    std::cout << "Total states: " << formatInteger(result.totalStateCount) << "\n";
+    std::cout << "Total output bytes: " << formatInteger(result.totalSelectedOutputBytes)
+              << " (" << formatBytes(result.totalSelectedOutputBytes) << ")\n";
+    std::cout << "Existing valid output bytes: " << formatInteger(result.existingValidOutputBytes)
+              << " (" << formatBytes(result.existingValidOutputBytes) << ")\n";
+    std::cout << "Missing output bytes: " << formatInteger(result.missingOutputBytes)
+              << " (" << formatBytes(result.missingOutputBytes) << ")\n";
+    std::cout << "Required additional disk: " << formatInteger(result.requiredAdditionalDiskBytes)
+              << " (" << formatBytes(result.requiredAdditionalDiskBytes) << ")\n";
+    if (result.diskSpaceKnown) {
+        std::cout << "Available disk: " << formatInteger(result.availableDiskBytes)
+                  << " (" << formatBytes(result.availableDiskBytes) << ")\n";
+        std::cout << "Disk OK: " << (result.diskOk ? "yes" : "no") << "\n";
+    } else {
+        std::cout << "Available disk: unknown\n";
+        std::cout << "Disk OK: unknown\n";
+    }
+    std::cout << "Peak memory layer: " << result.peakMemoryLayer << "\n";
+    std::cout << "Peak estimated core memory: " << formatInteger(result.peakEstimatedCoreMemoryBytes)
+              << " (" << formatBytes(result.peakEstimatedCoreMemoryBytes) << ")\n";
+    std::cout << "Peak recommended RAM: " << formatInteger(result.peakRecommendedMemoryBytes)
+              << " (" << formatBytes(result.peakRecommendedMemoryBytes) << ")\n";
+    std::cout << "Estimated total time: " << formatDuration(result.estimatedTotalSeconds) << "\n";
+    std::cout << "Estimated remaining time: " << formatDuration(result.estimatedRemainingSeconds) << "\n";
+    std::cout << "Has invalid layers: " << (result.hasInvalidLayers ? "yes" : "no") << "\n";
+    std::cout << "Has missing lower: " << (result.hasMissingLower ? "yes" : "no") << "\n";
+    std::cout << "Can resume range: " << (result.canResumeRange ? "yes" : "no") << "\n";
+    std::cout << "Preflight JSON: " << result.jsonPath.string() << "\n";
+    std::cout << "Status: preflight\n";
 }
 
 ProgressCallback makeProgressCallback(const CliOptions& options) {
@@ -2713,6 +2831,10 @@ int main(int argc, char** argv) {
         }
         if (options.solveLayerRange) {
             printSolveLayerRange(options);
+            return 0;
+        }
+        if (options.preflightLayerRange) {
+            printPreflightLayerRange(options);
             return 0;
         }
         if (options.verifyLayer) {

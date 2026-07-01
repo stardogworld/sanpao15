@@ -593,6 +593,187 @@ SANPAO15_TEST(productionRangeTempHandling) {
     std::filesystem::remove_all(dir);
 }
 
+SANPAO15_TEST(preflightRejectsInvalidRanges) {
+    sanpao15::test::requireThrows([] {
+        DenseLayerPreflightOptions options;
+        options.startLayer = 3;
+        options.endLayer = 2;
+        options.outputDir = std::filesystem::temp_directory_path() / "sanpao15-preflight-invalid-order";
+        (void)preflightDenseLayerRange(options);
+    }, "preflight START > END should throw");
+
+    sanpao15::test::requireThrows([] {
+        DenseLayerPreflightOptions options;
+        options.startLayer = -1;
+        options.endLayer = 0;
+        options.outputDir = std::filesystem::temp_directory_path() / "sanpao15-preflight-invalid-low";
+        (void)preflightDenseLayerRange(options);
+    }, "preflight START < 0 should throw");
+
+    sanpao15::test::requireThrows([] {
+        DenseLayerPreflightOptions options;
+        options.startLayer = 0;
+        options.endLayer = 16;
+        options.outputDir = std::filesystem::temp_directory_path() / "sanpao15-preflight-invalid-high";
+        (void)preflightDenseLayerRange(options);
+    }, "preflight END > 15 should throw");
+}
+
+SANPAO15_TEST(preflightHandlesMissingOutputParent) {
+    const std::filesystem::path root = tempDir("sanpao15-preflight-missing-parent");
+    const std::filesystem::path dir = root / "nested" / "out";
+    DenseLayerPreflightOptions options;
+    options.startLayer = 0;
+    options.endLayer = 0;
+    options.outputDir = dir;
+
+    const DenseLayerRangePreflightResult result = preflightDenseLayerRange(options);
+    SANPAO15_REQUIRE(result.layers.size() == 1);
+    SANPAO15_REQUIRE(result.layers[0].resultStatus == DenseLayerFileStatus::Missing);
+    SANPAO15_REQUIRE(std::filesystem::exists(dir / "preflight.json"));
+    std::filesystem::remove_all(root);
+}
+
+SANPAO15_TEST(preflightEmptyMaterialRangePlansMissingLayers) {
+    const std::filesystem::path dir = tempDir("sanpao15-preflight-empty-material");
+    DenseLayerPreflightOptions options;
+    options.startLayer = 0;
+    options.endLayer = 3;
+    options.outputDir = dir;
+
+    const DenseLayerRangePreflightResult result = preflightDenseLayerRange(options);
+    SANPAO15_REQUIRE(result.layers.size() == 4);
+    SANPAO15_REQUIRE(!result.hasMissingLower);
+    SANPAO15_REQUIRE(!result.hasInvalidLayers);
+    SANPAO15_REQUIRE(result.canResumeRange);
+    for (const DenseLayerPreflightEntry& layer : result.layers) {
+        SANPAO15_REQUIRE(layer.resultStatus == DenseLayerFileStatus::Missing);
+        SANPAO15_REQUIRE(layer.wouldSolve);
+        SANPAO15_REQUIRE(!layer.wouldSkipWithResume);
+        SANPAO15_REQUIRE(layer.lowerLayerAvailable);
+    }
+    std::filesystem::remove_all(dir);
+}
+
+SANPAO15_TEST(preflightRangeStartingAtFourRequiresLayerThree) {
+    const std::filesystem::path dir = tempDir("sanpao15-preflight-missing-lower");
+    DenseLayerPreflightOptions options;
+    options.startLayer = 4;
+    options.endLayer = 4;
+    options.outputDir = dir;
+
+    const DenseLayerRangePreflightResult result = preflightDenseLayerRange(options);
+    SANPAO15_REQUIRE(result.layers.size() == 1);
+    SANPAO15_REQUIRE(result.hasMissingLower);
+    SANPAO15_REQUIRE(!result.canResumeRange);
+    SANPAO15_REQUIRE(!result.layers[0].lowerLayerAvailable);
+    SANPAO15_REQUIRE(result.layers[0].error.has_value());
+    std::filesystem::remove_all(dir);
+}
+
+SANPAO15_TEST(preflightUsesValidLowerLayerOutsideRange) {
+    const std::filesystem::path dir = tempDir("sanpao15-preflight-valid-lower");
+    createEmptyDenseResultFile(4, lowKLayerResultPath(dir, 4), DenseResultEncoding::Packed2Bit, StandardRulesetHash);
+
+    DenseLayerPreflightOptions options;
+    options.startLayer = 5;
+    options.endLayer = 5;
+    options.outputDir = dir;
+
+    const DenseLayerRangePreflightResult result = preflightDenseLayerRange(options);
+    SANPAO15_REQUIRE(result.layers.size() == 1);
+    SANPAO15_REQUIRE(!result.hasMissingLower);
+    SANPAO15_REQUIRE(result.canResumeRange);
+    SANPAO15_REQUIRE(result.layers[0].lowerLayerAvailable);
+    SANPAO15_REQUIRE(result.layers[0].lowerLayerPayloadBytes == denseResultPayloadBytes(denseStateCount(4), DenseResultEncoding::Packed2Bit));
+    std::filesystem::remove_all(dir);
+}
+
+SANPAO15_TEST(preflightMarksValidExistingLayerAndStatsJson) {
+    const std::filesystem::path dir = tempDir("sanpao15-preflight-valid-existing");
+    createEmptyDenseResultFile(0, lowKLayerResultPath(dir, 0), DenseResultEncoding::Packed2Bit, StandardRulesetHash);
+    {
+        std::ofstream stats(dir / "layer-00.solve.json");
+        stats << "{ \"stateCount\": " << denseStateCount(0)
+              << ", \"queuePeak\": 1, \"totalSeconds\": 0.1 }";
+    }
+
+    DenseLayerPreflightOptions options;
+    options.startLayer = 0;
+    options.endLayer = 0;
+    options.outputDir = dir;
+
+    const DenseLayerRangePreflightResult result = preflightDenseLayerRange(options);
+    SANPAO15_REQUIRE(result.layers.size() == 1);
+    SANPAO15_REQUIRE(result.layers[0].resultStatus == DenseLayerFileStatus::Valid);
+    SANPAO15_REQUIRE(result.layers[0].wouldSkipWithResume);
+    SANPAO15_REQUIRE(!result.layers[0].wouldSolve);
+    SANPAO15_REQUIRE(result.layers[0].statsJsonPresent);
+    SANPAO15_REQUIRE(result.existingValidOutputBytes == result.layers[0].selectedOutputBytes);
+    std::filesystem::remove_all(dir);
+}
+
+SANPAO15_TEST(preflightMarksInvalidExistingLayer) {
+    const std::filesystem::path dir = tempDir("sanpao15-preflight-invalid-existing");
+    {
+        std::ofstream corrupt(lowKLayerResultPath(dir, 0), std::ios::binary);
+        corrupt << "not a dense result";
+    }
+
+    DenseLayerPreflightOptions options;
+    options.startLayer = 0;
+    options.endLayer = 0;
+    options.outputDir = dir;
+
+    const DenseLayerRangePreflightResult result = preflightDenseLayerRange(options);
+    SANPAO15_REQUIRE(result.layers.size() == 1);
+    SANPAO15_REQUIRE(result.layers[0].resultStatus == DenseLayerFileStatus::Invalid);
+    SANPAO15_REQUIRE(result.hasInvalidLayers);
+    SANPAO15_REQUIRE(!result.canResumeRange);
+    SANPAO15_REQUIRE(result.layers[0].error.has_value());
+    std::filesystem::remove_all(dir);
+}
+
+SANPAO15_TEST(preflightWritesJsonReport) {
+    const std::filesystem::path dir = tempDir("sanpao15-preflight-json");
+    DenseLayerPreflightOptions options;
+    options.startLayer = 0;
+    options.endLayer = 1;
+    options.outputDir = dir;
+
+    const DenseLayerRangePreflightResult result = preflightDenseLayerRange(options);
+    SANPAO15_REQUIRE(std::filesystem::exists(result.jsonPath));
+    const std::string json = readTextFile(result.jsonPath);
+    SANPAO15_REQUIRE(json.find("\"format\": \"sanpao15-layer-range-preflight\"") != std::string::npos);
+    SANPAO15_REQUIRE(json.find("\"version\": 1") != std::string::npos);
+    SANPAO15_REQUIRE(json.find("\"startLayer\": 0") != std::string::npos);
+    SANPAO15_REQUIRE(json.find("\"endLayer\": 1") != std::string::npos);
+    SANPAO15_REQUIRE(json.find("\"totals\"") != std::string::npos);
+    SANPAO15_REQUIRE(json.find("\"layers\"") != std::string::npos);
+    std::filesystem::remove_all(dir);
+}
+
+SANPAO15_TEST(preflightEstimatesQueueAndMemoryForLargeLayer) {
+    const std::filesystem::path dir = tempDir("sanpao15-preflight-estimates");
+    createEmptyDenseResultFile(3, lowKLayerResultPath(dir, 3), DenseResultEncoding::Packed2Bit, StandardRulesetHash);
+
+    DenseLayerPreflightOptions options;
+    options.startLayer = 4;
+    options.endLayer = 4;
+    options.outputDir = dir;
+
+    const DenseLayerRangePreflightResult result = preflightDenseLayerRange(options);
+    SANPAO15_REQUIRE(result.layers.size() == 1);
+    const DenseLayerPreflightEntry& layer = result.layers[0];
+    SANPAO15_REQUIRE(layer.stateCount == denseStateCount(4));
+    SANPAO15_REQUIRE(layer.estimatedQueueBytes > 0);
+    SANPAO15_REQUIRE(layer.estimatedCoreMemoryBytes > layer.selectedOutputBytes);
+    SANPAO15_REQUIRE(layer.recommendedMemoryBytes > layer.estimatedCoreMemoryBytes);
+    SANPAO15_REQUIRE(layer.estimatedSeconds > 0.0);
+    SANPAO15_REQUIRE(result.peakMemoryLayer == 4);
+    std::filesystem::remove_all(dir);
+}
+
 SANPAO15_TEST(lowKResultUsesUpdatedRulesetHash) {
     constexpr uint64_t OldRulesetHash = 0x5331355F76315F01ull;
     SANPAO15_REQUIRE(StandardRulesetHash != OldRulesetHash);

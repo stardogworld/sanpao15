@@ -30,6 +30,9 @@ Makefile
 *.s15run
 *.s15bucket
 *.s15res
+*.solve.json
+manifest.json
+preflight.json
 partition.json
 closure-state.json
 partitioned-closure-state.json

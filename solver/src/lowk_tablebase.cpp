@@ -1,8 +1,10 @@
 #include "sanpao15/lowk_tablebase.h"
 
 #include <algorithm>
+#include <array>
 #include <bit>
 #include <chrono>
+#include <cmath>
 #include <cctype>
 #include <deque>
 #include <fstream>
@@ -11,6 +13,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <system_error>
 
 #include "sanpao15/bitboard.h"
 #include "sanpao15/dense_index.h"
@@ -488,6 +491,296 @@ void fillRangeEntryFromStatsJson(DenseLayerRangeEntry& entry) {
     entry.unknown = parseJsonUnsignedField(text, "unknown", entry.unknown);
     entry.totalSeconds = parseJsonDoubleField(text, "totalSeconds", entry.totalSeconds);
     entry.outputBytes = parseJsonUnsignedField(text, "outputBytes", entry.outputBytes);
+}
+
+struct PreflightStatsSnapshot {
+    bool present = false;
+    uint64_t stateCount = 0;
+    uint64_t queuePeak = 0;
+    uint64_t estimatedMemoryBytes = 0;
+    double totalSeconds = 0.0;
+};
+
+PreflightStatsSnapshot readPreflightStatsSnapshot(
+    const std::filesystem::path& path,
+    uint64_t fallbackStateCount) {
+    PreflightStatsSnapshot stats;
+    if (!std::filesystem::exists(path)) {
+        return stats;
+    }
+    stats.present = true;
+    std::ifstream input(path);
+    if (!input) {
+        return stats;
+    }
+    const std::string text((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
+    stats.stateCount = parseJsonUnsignedField(text, "stateCount", 0);
+    if (stats.stateCount == 0) {
+        stats.stateCount = parseJsonUnsignedField(text, "states", fallbackStateCount);
+    }
+    stats.queuePeak = parseJsonUnsignedField(text, "queuePeak", 0);
+    stats.estimatedMemoryBytes = parseJsonUnsignedField(text, "estimatedMemoryBytes", 0);
+    stats.totalSeconds = parseJsonDoubleField(text, "totalSeconds", 0.0);
+    return stats;
+}
+
+struct PreflightEstimator {
+    double safetyQueueRatio = 0.50;
+    double secondsPerState = 0.0;
+};
+
+double knownDenseSecondsPerState() {
+    const double k4 = 68.8957879 / 33649000.0;
+    const double k5 = 268.8983137 / 121136400.0;
+    const double k6 = 568.0760603 / 343219800.0;
+    return std::max({k4, k5, k6});
+}
+
+PreflightEstimator buildPreflightEstimator(const std::filesystem::path& outputDir) {
+    double observedQueueRatio = 0.40;
+    double secondsPerState = knownDenseSecondsPerState();
+
+    for (int k = 0; k <= 15; ++k) {
+        const std::filesystem::path resultPath = rangeLayerResultPath(outputDir, k);
+        const std::filesystem::path statsPath = rangeLayerStatsPath(outputDir, k);
+        try {
+            if (!std::filesystem::exists(resultPath)) {
+                continue;
+            }
+            (void)validateDenseResultFile(resultPath, StandardRulesetHash, k);
+            const PreflightStatsSnapshot stats = readPreflightStatsSnapshot(statsPath, denseStateCount(k));
+            if (stats.present && stats.stateCount != 0) {
+                if (stats.queuePeak != 0) {
+                    observedQueueRatio =
+                        std::max(observedQueueRatio, static_cast<double>(stats.queuePeak) / static_cast<double>(stats.stateCount));
+                }
+                if (stats.totalSeconds > 0.0) {
+                    secondsPerState =
+                        std::max(secondsPerState, stats.totalSeconds / static_cast<double>(stats.stateCount));
+                }
+            }
+        } catch (const std::exception&) {
+            continue;
+        }
+    }
+
+    PreflightEstimator estimator;
+    estimator.safetyQueueRatio = std::max(observedQueueRatio * 1.25, 0.40);
+    estimator.secondsPerState = secondsPerState;
+    return estimator;
+}
+
+void validatePreflightOptions(const DenseLayerPreflightOptions& options) {
+    requireDenseRangeLayer(options.startLayer);
+    requireDenseRangeLayer(options.endLayer);
+    if (options.startLayer > options.endLayer) {
+        throw std::invalid_argument("--preflight-layer-range START must be less than or equal to END");
+    }
+    if (options.outputDir.empty()) {
+        throw std::invalid_argument("--preflight-layer-range requires --out-dir DIR");
+    }
+}
+
+uint64_t ceilMultiply(uint64_t value, double multiplier) {
+    const long double scaled = static_cast<long double>(value) * static_cast<long double>(multiplier);
+    if (scaled > static_cast<long double>(std::numeric_limits<uint64_t>::max())) {
+        throw std::overflow_error("preflight estimate exceeds uint64_t");
+    }
+    return static_cast<uint64_t>(std::ceil(scaled));
+}
+
+uint64_t ceilRatio(uint64_t value, uint64_t numerator, uint64_t denominator) {
+    if (denominator == 0) {
+        throw std::invalid_argument("preflight ratio denominator must be non-zero");
+    }
+    if (value > (std::numeric_limits<uint64_t>::max() - denominator + 1u) / numerator) {
+        return ceilMultiply(value, static_cast<double>(numerator) / static_cast<double>(denominator));
+    }
+    return (value * numerator + denominator - 1u) / denominator;
+}
+
+std::string riskForRecommendedMemory(uint64_t recommendedMemoryBytes) {
+    constexpr uint64_t GiB = 1024ull * 1024ull * 1024ull;
+    if (recommendedMemoryBytes >= 64ull * GiB) {
+        return "high";
+    }
+    if (recommendedMemoryBytes >= 32ull * GiB) {
+        return "medium";
+    }
+    return "low";
+}
+
+struct PreflightFileStatus {
+    DenseLayerFileStatus status = DenseLayerFileStatus::Missing;
+    DenseResultFileInfo info;
+    std::string error;
+};
+
+PreflightFileStatus inspectPreflightResultFile(
+    const std::filesystem::path& outputDir,
+    int soldierCount) {
+    PreflightFileStatus status;
+    const std::filesystem::path path = rangeLayerResultPath(outputDir, soldierCount);
+    if (!std::filesystem::exists(path)) {
+        status.status = DenseLayerFileStatus::Missing;
+        return status;
+    }
+    try {
+        status.info = validateDenseResultFile(path, StandardRulesetHash, soldierCount);
+        status.status = DenseLayerFileStatus::Valid;
+    } catch (const std::exception& error) {
+        status.status = DenseLayerFileStatus::Invalid;
+        status.error = error.what();
+    }
+    return status;
+}
+
+std::string readTextIfExists(const std::filesystem::path& path) {
+    if (!std::filesystem::exists(path)) {
+        return {};
+    }
+    std::ifstream input(path);
+    if (!input) {
+        return {};
+    }
+    return std::string((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
+}
+
+bool manifestMentionsLayer(const std::string& manifest, int soldierCount) {
+    if (manifest.empty()) {
+        return false;
+    }
+    return manifest.find(rangeLayerResultPath({}, soldierCount).filename().generic_string()) != std::string::npos;
+}
+
+std::filesystem::path nearestExistingPathForSpace(const std::filesystem::path& path) {
+    std::error_code ec;
+    std::filesystem::path probe = std::filesystem::absolute(path.empty() ? std::filesystem::path(".") : path, ec);
+    if (ec) {
+        probe = path.empty() ? std::filesystem::path(".") : path;
+    }
+    while (!probe.empty() && !std::filesystem::exists(probe, ec)) {
+        const std::filesystem::path parent = probe.parent_path();
+        if (parent == probe) {
+            break;
+        }
+        probe = parent;
+    }
+    if (probe.empty()) {
+        probe = ".";
+    }
+    return probe;
+}
+
+void fillPreflightDiskSpace(DenseLayerRangePreflightResult& result) {
+    std::error_code ec;
+    const std::filesystem::path probe = nearestExistingPathForSpace(result.outputDir);
+    const std::filesystem::space_info space = std::filesystem::space(probe, ec);
+    if (ec) {
+        result.diskSpaceKnown = false;
+        result.diskOk = false;
+        result.availableDiskBytes = 0;
+        return;
+    }
+    result.diskSpaceKnown = true;
+    result.availableDiskBytes = space.available;
+    result.diskOk = result.availableDiskBytes >= result.requiredAdditionalDiskBytes;
+}
+
+std::string statusAction(const DenseLayerPreflightEntry& entry) {
+    if (entry.resultStatus == DenseLayerFileStatus::Valid) {
+        return "skip";
+    }
+    if (entry.resultStatus == DenseLayerFileStatus::Missing) {
+        return entry.lowerLayerAvailable || entry.soldierCount < MinSoldiersForSoldierSurvival ? "solve" : "blocked";
+    }
+    return "error";
+}
+
+void writePreflightJson(const DenseLayerRangePreflightResult& result) {
+    const std::filesystem::path parent = result.jsonPath.parent_path();
+    if (!parent.empty()) {
+        std::filesystem::create_directories(parent);
+    }
+    const std::filesystem::path tempPath = result.jsonPath.string() + ".tmp";
+    std::ofstream out(tempPath);
+    if (!out) {
+        throw std::runtime_error("failed to open preflight JSON for writing: " + tempPath.string());
+    }
+
+    out << "{\n";
+    out << "  \"format\": \"sanpao15-layer-range-preflight\",\n";
+    out << "  \"version\": 1,\n";
+    out << "  \"rulesetName\": \"" << RulesetName << "\",\n";
+    out << "  \"rulesetHash\": \"" << rulesetHashHex() << "\",\n";
+    out << "  \"encoding\": \"" << denseEncodingName(result.encoding) << "\",\n";
+    out << "  \"startLayer\": " << result.startLayer << ",\n";
+    out << "  \"endLayer\": " << result.endLayer << ",\n";
+    out << "  \"outputDir\": \"" << jsonEscape(result.outputDir.string()) << "\",\n";
+    out << "  \"canResumeRange\": " << (result.canResumeRange ? "true" : "false") << ",\n";
+    out << "  \"hasInvalidLayers\": " << (result.hasInvalidLayers ? "true" : "false") << ",\n";
+    out << "  \"hasMissingLower\": " << (result.hasMissingLower ? "true" : "false") << ",\n";
+    out << "  \"disk\": {\n";
+    out << "    \"spaceKnown\": " << (result.diskSpaceKnown ? "true" : "false") << ",\n";
+    out << "    \"availableBytes\": " << result.availableDiskBytes << ",\n";
+    out << "    \"requiredAdditionalBytes\": " << result.requiredAdditionalDiskBytes << ",\n";
+    out << "    \"ok\": " << (result.diskOk ? "true" : "false") << "\n";
+    out << "  },\n";
+    out << "  \"totals\": {\n";
+    out << "    \"totalStateCount\": " << result.totalStateCount << ",\n";
+    out << "    \"totalSelectedOutputBytes\": " << result.totalSelectedOutputBytes << ",\n";
+    out << "    \"existingValidOutputBytes\": " << result.existingValidOutputBytes << ",\n";
+    out << "    \"missingOutputBytes\": " << result.missingOutputBytes << ",\n";
+    out << "    \"peakEstimatedCoreMemoryBytes\": " << result.peakEstimatedCoreMemoryBytes << ",\n";
+    out << "    \"peakRecommendedMemoryBytes\": " << result.peakRecommendedMemoryBytes << ",\n";
+    out << "    \"peakMemoryLayer\": " << result.peakMemoryLayer << ",\n";
+    out << "    \"estimatedTotalSeconds\": " << std::setprecision(12) << result.estimatedTotalSeconds << ",\n";
+    out << "    \"estimatedRemainingSeconds\": " << std::setprecision(12) << result.estimatedRemainingSeconds << "\n";
+    out << "  },\n";
+    out << "  \"layers\": [\n";
+    for (size_t i = 0; i < result.layers.size(); ++i) {
+        const DenseLayerPreflightEntry& layer = result.layers[i];
+        out << "    {\n";
+        out << "      \"soldierCount\": " << layer.soldierCount << ",\n";
+        out << "      \"stateCount\": " << layer.stateCount << ",\n";
+        out << "      \"outputBytes2Bit\": " << layer.outputBytes2Bit << ",\n";
+        out << "      \"outputBytesByte\": " << layer.outputBytesByte << ",\n";
+        out << "      \"selectedOutputBytes\": " << layer.selectedOutputBytes << ",\n";
+        out << "      \"remainingBytes\": " << layer.remainingBytes << ",\n";
+        out << "      \"lowerLayerPayloadBytes\": " << layer.lowerLayerPayloadBytes << ",\n";
+        out << "      \"estimatedQueueBytes\": " << layer.estimatedQueueBytes << ",\n";
+        out << "      \"estimatedCoreMemoryBytes\": " << layer.estimatedCoreMemoryBytes << ",\n";
+        out << "      \"recommendedMemoryBytes\": " << layer.recommendedMemoryBytes << ",\n";
+        out << "      \"estimatedSeconds\": " << std::setprecision(12) << layer.estimatedSeconds << ",\n";
+        out << "      \"resultStatus\": \"" << denseLayerFileStatusToString(layer.resultStatus) << "\",\n";
+        out << "      \"action\": \"" << statusAction(layer) << "\",\n";
+        out << "      \"statsJsonPresent\": " << (layer.statsJsonPresent ? "true" : "false") << ",\n";
+        out << "      \"manifestEntryPresent\": " << (layer.manifestEntryPresent ? "true" : "false") << ",\n";
+        out << "      \"wouldSkipWithResume\": " << (layer.wouldSkipWithResume ? "true" : "false") << ",\n";
+        out << "      \"wouldSolve\": " << (layer.wouldSolve ? "true" : "false") << ",\n";
+        out << "      \"lowerLayerAvailable\": " << (layer.lowerLayerAvailable ? "true" : "false") << ",\n";
+        out << "      \"risk\": \"" << jsonEscape(layer.risk) << "\"";
+        if (layer.error.has_value()) {
+            out << ",\n";
+            out << "      \"error\": \"" << jsonEscape(*layer.error) << "\"\n";
+        } else {
+            out << "\n";
+        }
+        out << "    }" << (i + 1 == result.layers.size() ? "\n" : ",\n");
+    }
+    out << "  ]\n";
+    out << "}\n";
+    if (!out) {
+        throw std::runtime_error("failed to write preflight JSON: " + tempPath.string());
+    }
+    out.close();
+    if (!out) {
+        throw std::runtime_error("failed to close preflight JSON: " + tempPath.string());
+    }
+    if (std::filesystem::exists(result.jsonPath)) {
+        std::filesystem::remove(result.jsonPath);
+    }
+    std::filesystem::rename(tempPath, result.jsonPath);
 }
 
 std::string manifestRelativePath(const std::filesystem::path& outputDir, const std::filesystem::path& path) {
@@ -1461,6 +1754,145 @@ DenseLayerRangeSolveResult solveDenseLayerRange(
     const auto rangeFinish = std::chrono::steady_clock::now();
     result.totalSeconds = std::chrono::duration<double>(rangeFinish - rangeStart).count();
     writeRangeManifest(result, options.encoding);
+    return result;
+}
+
+const char* denseLayerFileStatusToString(DenseLayerFileStatus status) {
+    switch (status) {
+        case DenseLayerFileStatus::Missing:
+            return "missing";
+        case DenseLayerFileStatus::Valid:
+            return "valid";
+        case DenseLayerFileStatus::Invalid:
+            return "invalid";
+    }
+    return "unknown";
+}
+
+DenseLayerRangePreflightResult preflightDenseLayerRange(
+    const DenseLayerPreflightOptions& options) {
+    validatePreflightOptions(options);
+
+    DenseLayerRangePreflightResult result;
+    result.startLayer = options.startLayer;
+    result.endLayer = options.endLayer;
+    result.encoding = options.encoding;
+    result.outputDir = options.outputDir;
+    result.jsonPath = options.outputJsonPath.value_or(options.outputDir / "preflight.json");
+
+    const PreflightEstimator estimator = buildPreflightEstimator(options.outputDir);
+    const std::string manifestText = readTextIfExists(rangeManifestPath(options.outputDir));
+
+    std::array<PreflightFileStatus, 16> statuses{};
+    std::array<bool, 16> availableAfterPlan{};
+    for (int k = 0; k <= 15; ++k) {
+        statuses[static_cast<size_t>(k)] = inspectPreflightResultFile(options.outputDir, k);
+        availableAfterPlan[static_cast<size_t>(k)] =
+            statuses[static_cast<size_t>(k)].status == DenseLayerFileStatus::Valid;
+    }
+
+    uint64_t largestMissingLayerOutputBytes = 0;
+    for (int k = options.startLayer; k <= options.endLayer; ++k) {
+        const size_t index = static_cast<size_t>(k);
+        const uint64_t stateCount = denseStateCount(k);
+        const uint64_t selectedOutputBytes = denseResultPayloadBytes(stateCount, options.encoding);
+
+        DenseLayerPreflightEntry entry;
+        entry.soldierCount = k;
+        entry.stateCount = stateCount;
+        entry.outputBytes2Bit = denseResultPayloadBytes(stateCount, DenseResultEncoding::Packed2Bit);
+        entry.outputBytesByte = denseResultPayloadBytes(stateCount, DenseResultEncoding::Byte);
+        entry.selectedOutputBytes = selectedOutputBytes;
+        entry.remainingBytes = stateCount;
+        entry.resultStatus = statuses[index].status;
+        entry.statsJsonPresent = readPreflightStatsSnapshot(rangeLayerStatsPath(options.outputDir, k), stateCount).present;
+        entry.manifestEntryPresent = manifestMentionsLayer(manifestText, k);
+
+        if (k >= MinSoldiersForSoldierSurvival) {
+            const size_t lowerIndex = static_cast<size_t>(k - 1);
+            if (statuses[lowerIndex].status == DenseLayerFileStatus::Valid) {
+                entry.lowerLayerPayloadBytes = statuses[lowerIndex].info.payloadBytes;
+            } else {
+                entry.lowerLayerPayloadBytes = denseResultPayloadBytes(denseStateCount(k - 1), options.encoding);
+            }
+            entry.lowerLayerAvailable = availableAfterPlan[lowerIndex];
+        } else {
+            entry.lowerLayerPayloadBytes = 0;
+            entry.lowerLayerAvailable = true;
+        }
+
+        if (entry.resultStatus == DenseLayerFileStatus::Valid) {
+            entry.wouldSkipWithResume = true;
+        } else if (entry.resultStatus == DenseLayerFileStatus::Missing) {
+            entry.wouldSolve = true;
+        } else {
+            result.hasInvalidLayers = true;
+            entry.error = statuses[index].error.empty() ? "invalid existing result file" : statuses[index].error;
+        }
+
+        if (k >= MinSoldiersForSoldierSurvival && !entry.lowerLayerAvailable) {
+            result.hasMissingLower = true;
+            if (statuses[static_cast<size_t>(k - 1)].status == DenseLayerFileStatus::Invalid) {
+                result.hasInvalidLayers = true;
+            }
+            if (!entry.error.has_value()) {
+                std::ostringstream message;
+                message << "missing required lower layer-" << std::setw(2) << std::setfill('0') << (k - 1)
+                        << ".s15res";
+                entry.error = message.str();
+            }
+        }
+
+        const uint64_t estimatedQueueEntries = ceilMultiply(stateCount, estimator.safetyQueueRatio);
+        if (estimatedQueueEntries > std::numeric_limits<uint64_t>::max() / sizeof(uint32_t)) {
+            throw std::overflow_error("preflight queue byte estimate exceeds uint64_t");
+        }
+        entry.estimatedQueueBytes = estimatedQueueEntries * static_cast<uint64_t>(sizeof(uint32_t));
+        entry.estimatedCoreMemoryBytes =
+            entry.selectedOutputBytes +
+            entry.remainingBytes +
+            entry.lowerLayerPayloadBytes +
+            entry.estimatedQueueBytes;
+        entry.recommendedMemoryBytes = ceilRatio(entry.estimatedCoreMemoryBytes, 3, 2);
+        entry.estimatedSeconds =
+            static_cast<double>(stateCount) * estimator.secondsPerState * 1.25;
+        entry.risk = riskForRecommendedMemory(entry.recommendedMemoryBytes);
+
+        result.totalStateCount += entry.stateCount;
+        result.totalSelectedOutputBytes += entry.selectedOutputBytes;
+        result.estimatedTotalSeconds += entry.estimatedSeconds;
+        if (entry.resultStatus == DenseLayerFileStatus::Valid) {
+            result.existingValidOutputBytes += entry.selectedOutputBytes;
+        } else if (entry.resultStatus == DenseLayerFileStatus::Missing) {
+            result.missingOutputBytes += entry.selectedOutputBytes;
+            largestMissingLayerOutputBytes = std::max(largestMissingLayerOutputBytes, entry.selectedOutputBytes);
+            result.estimatedRemainingSeconds += entry.estimatedSeconds;
+        }
+        if (entry.estimatedCoreMemoryBytes > result.peakEstimatedCoreMemoryBytes) {
+            result.peakEstimatedCoreMemoryBytes = entry.estimatedCoreMemoryBytes;
+            result.peakRecommendedMemoryBytes = entry.recommendedMemoryBytes;
+            result.peakMemoryLayer = k;
+        }
+
+        availableAfterPlan[index] =
+            entry.resultStatus == DenseLayerFileStatus::Valid ||
+            (entry.resultStatus == DenseLayerFileStatus::Missing && entry.wouldSolve && entry.lowerLayerAvailable);
+
+        result.layers.push_back(entry);
+    }
+
+    const uint64_t diskWithWriteSlack = ceilMultiply(result.missingOutputBytes, 1.2);
+    if (diskWithWriteSlack > std::numeric_limits<uint64_t>::max() - largestMissingLayerOutputBytes) {
+        throw std::overflow_error("preflight disk estimate exceeds uint64_t");
+    }
+    result.requiredAdditionalDiskBytes = diskWithWriteSlack + largestMissingLayerOutputBytes;
+    fillPreflightDiskSpace(result);
+    result.canResumeRange =
+        !result.hasInvalidLayers &&
+        !result.hasMissingLower &&
+        (!result.diskSpaceKnown || result.diskOk);
+
+    writePreflightJson(result);
     return result;
 }
 

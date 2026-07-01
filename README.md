@@ -124,6 +124,8 @@ Useful CLI modes:
 .\build\sanpao15_cli.exe --verify-layer build\prod-layers\layer-04.s15res --lower-res build\stream-min4\layer-03.s15res --sample 10000
 .\build\sanpao15_cli.exe --solve-layer-range 0 4 --out-dir build\range-k0-k4 --encoding 2bit --overwrite --clean-temp
 .\build\sanpao15_cli.exe --solve-layer-range 0 4 --out-dir build\range-k0-k4 --encoding 2bit --resume
+.\build\sanpao15_cli.exe --preflight-layer-range 0 15 --out-dir build\prod-layers --encoding 2bit
+.\build\sanpao15_cli.exe --preflight-layer-range 8 10 --out-dir build\some-empty-dir --encoding 2bit --preflight-json build\some-empty-dir\preflight.json
 .\build\sanpao15_cli.exe --limit 50000
 .\build\sanpao15_cli.exe --full
 .\build\sanpao15_cli.exe --analyze "SSSSS/SSSSS/SSSSS/...../.CCC. c" --limit 10000
@@ -248,6 +250,23 @@ from the same directory, so partial ranges such as `5..5` require a valid
 with per-layer `completed`, `skipped`, or `failed` status. Recommended smoke
 flow is range `0..4`, then range `0..5` with resume; do not jump straight to
 full `0..15` without more timing and memory checks.
+`--preflight-layer-range START END --out-dir DIR` is the dry-run companion for
+range solving. It does not solve any layer and does not create `.s15res` files;
+it inspects existing result files as valid/invalid/missing, checks whether the
+required lower layer chain can resume, reads present `.solve.json` stats, and
+estimates output bytes, queue memory, core RAM, recommended RAM, disk slack,
+and remaining time. It writes `preflight.json` by default, or a custom
+`--preflight-json PATH`, so the recommended full-run flow is:
+
+```powershell
+.\build\sanpao15_cli.exe --preflight-layer-range 0 15 --out-dir build\prod-layers --encoding 2bit
+.\build\sanpao15_cli.exe --solve-layer-range 0 7 --out-dir build\prod-layers --encoding 2bit --resume
+.\build\sanpao15_cli.exe --preflight-layer-range 0 15 --out-dir build\prod-layers --encoding 2bit
+```
+
+If a partial range starts at `START >= 4`, preflight requires
+`layer-(START-1).s15res` to be valid unless that lower layer is also inside the
+planned range and can be solved first.
 `.s15res --validate-res` scans payload bytes instead of checking only headers.
 
 Layer-local edge probe:

@@ -143,6 +143,19 @@ It writes `manifest.json`, skips existing valid layers with `--resume`, rejects
 `--resume` plus `--overwrite`, and automatically uses `layer-(k-1).s15res` as
 the lower layer for `k>=4`.
 
+Before widening a production range, run the dry-run preflight:
+
+```powershell
+.\build\sanpao15_cli.exe --preflight-layer-range 0 15 --out-dir build\prod-layers --encoding 2bit
+```
+
+Preflight does not solve and does not create `.s15res` files. It checks
+existing layer files as valid/invalid/missing, verifies the lower-layer chain,
+uses available `.solve.json` stats, estimates queue/RAM/disk/time requirements,
+and writes `preflight.json` for review. A range such as `8..10` in an empty
+directory reports a missing required `layer-07.s15res` instead of starting a
+solve that cannot load its lower layer.
+
 Generated names:
 
 ```text
