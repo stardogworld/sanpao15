@@ -133,6 +133,29 @@ Useful CLI commands:
 
 Do not commit generated `.s15res` files.
 
+## Dense Successor Indexing
+
+Dense successor indexing is available for the full tablebase route. Given a
+layer `k` and dense index, the API unranks the position, generates legal moves
+with the shared rules engine, applies each move, and ranks the target position
+in its target layer.
+
+Successors are classified as:
+
+```text
+SameLayer              k -> k
+CaptureToLowerLayer    k -> k - 1
+```
+
+The CLI can inspect one state or sample a layer:
+
+```powershell
+.\build\sanpao15_cli.exe --dense-successors 15 0
+.\build\sanpao15_cli.exe --dense-move-stats 2 --sample 100000
+```
+
+See `docs/dense-successor.md` for the API and command details.
+
 ## Solver Direction
 
 The full tablebase solver should proceed from low soldier counts upward:
@@ -142,8 +165,9 @@ k=0 -> k=1 -> ... -> k=15
 ```
 
 Lower layers are needed because cannon captures move from layer `k` to `k-1`.
-The current foundation only assigns dense ids and stores outcomes. It does not
-yet implement full retrograde, distances, best moves, or successor indexing.
+The current foundation assigns dense ids, stores outcomes, and maps legal moves
+to dense successor ids. It does not yet implement full retrograde, distances, or
+best moves.
 
 ## Relationship To Reachability
 

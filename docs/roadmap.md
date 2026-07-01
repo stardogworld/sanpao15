@@ -38,6 +38,8 @@
 - Store dense outcomes in 1-byte and packed 2-bit arrays.
 - Write, inspect, and validate `.s15res` dense result files.
 - Print full tablebase theoretical sizes with `--tablebase-sizes`.
+- Generate dense successor ids for legal moves with same-layer and capture-to-lower-layer classification.
+- Inspect dense successors and sample dense layer move statistics from the CLI.
 
 ## Solver Lines
 
@@ -47,7 +49,6 @@
 ## Next Steps
 
 - Prototype low-k full tablebase solving for `k=0..2`.
-- Add dense successor indexing so moves can be generated as dense target ids.
 - Add outcome-only retrograde for low layers before scaling.
 - Evaluate D4 symmetry reduction for dense layers.
 - Keep the partitioned reachability line available for standard-initial-position experiments.

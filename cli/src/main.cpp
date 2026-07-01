@@ -1,4 +1,5 @@
 #include <cstdint>
+#include <chrono>
 #include <filesystem>
 #include <iomanip>
 #include <iostream>
@@ -12,6 +13,7 @@
 
 #include "sanpao15/bitboard.h"
 #include "sanpao15/dense_index.h"
+#include "sanpao15/dense_successor.h"
 #include "sanpao15/dense_table.h"
 #include "sanpao15/edge_probe.h"
 #include "sanpao15/external_closure.h"
@@ -65,6 +67,8 @@ struct CliOptions {
     bool lookupKeyProvided = false;
     bool tablebaseSizes = false;
     bool createEmptyRes = false;
+    bool denseSuccessors = false;
+    bool denseMoveStats = false;
     bool resEncodingProvided = false;
     uint64_t maxStates = MvpStateLimit;
     uint64_t maxStatesPerLayer = 0;
@@ -84,6 +88,8 @@ struct CliOptions {
     int buildLayerExternal = 0;
     int repairLayer = 15;
     int createEmptyResLayer = 0;
+    int denseLayer = 0;
+    uint64_t denseIndexValue = 0;
     GraphBackend graphBackend = GraphBackend::Csr;
     PartitionMethod partitionMethod = PartitionMethod::Splitmix64Mod;
     PartitionMethod closurePartitionMethod = PartitionMethod::Splitmix64Mod;
@@ -151,6 +157,8 @@ void printUsage() {
         << "  sanpao15_cli --tablebase-sizes\n"
         << "  sanpao15_cli --create-empty-res K FILE [--encoding byte|2bit]\n"
         << "  sanpao15_cli --inspect-res FILE | --validate-res FILE\n"
+        << "  sanpao15_cli --dense-successors K INDEX\n"
+        << "  sanpao15_cli --dense-move-stats K [--sample N|--full]\n"
         << "  sanpao15_cli --analyze \"SSSSS/SSSSS/SSSSS/...../.CCC. c\" [--limit N|--full]\n"
         << "  sanpao15_cli --load-table FILE --analyze \"SSSSS/SSSSS/SSSSS/...../.CCC. c\"\n\n"
         << "Options:\n"
@@ -206,7 +214,7 @@ void printUsage() {
         << "  --key N         Key for --lookup-partition.\n"
         << "  --benchmark-partition DIR  Benchmark partition contains() lookups.\n"
         << "  --benchmark-mode MODE  existing, missing, or mixed. Default: existing.\n"
-        << "  --sample N      Sample count for --benchmark-partition. Default: 100000.\n"
+        << "  --sample N      Sample count for --benchmark-partition or --dense-move-stats. Default: 100000.\n"
         << "  --probe-layer-edges DIR  Probe generated edge membership from a layer partition.\n"
         << "  --next-seed-partition DIR  Next lower seed partition for capture edge membership.\n"
         << "  --sample-states N  Sample count for --probe-layer-edges. Default: 100000.\n"
@@ -215,6 +223,8 @@ void printUsage() {
         << "  --encoding MODE  Encoding for --create-empty-res: byte or 2bit. Default: byte.\n"
         << "  --inspect-res FILE  Show .s15res header information.\n"
         << "  --validate-res FILE  Validate .s15res header and payload size.\n"
+        << "  --dense-successors K INDEX  Print legal successors as dense target indexes.\n"
+        << "  --dense-move-stats K  Count dense successor categories for a layer.\n"
         << "  --external-seed-dedup  Use external sorted runs for next-layer seed dedup.\n"
         << "  --dedup-chunk-size N  Keys per external dedup chunk. Default: 1000000.\n"
         << "  --temp-dir DIR  Temporary run-file directory for external dedup.\n"
@@ -577,6 +587,19 @@ CliOptions parseArgs(int argc, char** argv) {
                 throw std::invalid_argument("--validate-res requires a file path");
             }
             options.validateResPath = std::filesystem::path(argv[++i]);
+        } else if (arg == "--dense-successors") {
+            if (i + 2 >= argc) {
+                throw std::invalid_argument("--dense-successors requires a layer and a dense index");
+            }
+            options.denseLayer = parseLayerIndex(argv[++i]);
+            options.denseIndexValue = parseLimit(argv[++i]);
+            options.denseSuccessors = true;
+        } else if (arg == "--dense-move-stats") {
+            if (i + 1 >= argc) {
+                throw std::invalid_argument("--dense-move-stats requires a layer index");
+            }
+            options.denseLayer = parseLayerIndex(argv[++i]);
+            options.denseMoveStats = true;
         } else if (arg == "--external-seed-dedup") {
             options.externalSeedDedup = true;
         } else if (arg == "--dedup-chunk-size") {
@@ -638,7 +661,9 @@ CliOptions parseArgs(int argc, char** argv) {
         static_cast<int>(options.tablebaseSizes) +
         static_cast<int>(options.createEmptyRes) +
         static_cast<int>(options.inspectResPath.has_value()) +
-        static_cast<int>(options.validateResPath.has_value());
+        static_cast<int>(options.validateResPath.has_value()) +
+        static_cast<int>(options.denseSuccessors) +
+        static_cast<int>(options.denseMoveStats);
     if (validationModeCount + partitionModeCount + migrationModeCount + partitionedResumeModeCount + denseModeCount > 1) {
         throw std::invalid_argument("choose only one validate/inspect/partition/dense tablebase mode");
     }
@@ -646,8 +671,10 @@ CliOptions parseArgs(int argc, char** argv) {
         throw std::invalid_argument("--encoding is only valid with --create-empty-res");
     }
     if (denseModeCount != 0) {
+        const bool disallowedFull = options.full && !options.denseMoveStats;
+        const bool disallowedSample = options.benchmarkSampleProvided && !options.denseMoveStats;
         if (options.buildLayersDir.has_value() || options.statsOnly || options.probe || options.analysisNotation.has_value() ||
-            options.saveTablePath.has_value() || options.loadTablePath.has_value() || options.full ||
+            options.saveTablePath.has_value() || options.loadTablePath.has_value() || disallowedFull ||
             options.limitProvided || options.noPred || options.maxStatesPerLayerProvided ||
             options.startLayerProvided || options.stopAfterLayerProvided || options.externalLayerClosure || options.externalSeedDedup ||
             options.partitionedClosure || options.closurePartitionBucketsProvided || options.closurePartitionMethodProvided ||
@@ -658,11 +685,20 @@ CliOptions parseArgs(int argc, char** argv) {
             options.maxIterations != 0 || options.maxExpandedStates != 0 ||
             options.repairLayerProvided || options.repairDryRun || options.expandedBudgetProvided ||
             options.partitionOutputDir.has_value() || options.partitionBucketsProvided || options.partitionMethodProvided ||
-            options.partitionCacheBucketsProvided || options.benchmarkModeProvided || options.benchmarkSampleProvided ||
+            options.partitionCacheBucketsProvided || options.benchmarkModeProvided || disallowedSample ||
             options.lookupKeyProvided || options.sampleStatesProvided || options.nextSeedPartitionDir.has_value() ||
             options.partitionOverwrite || options.migrateOutputProvided || options.cleanupStaleRuns) {
             throw std::invalid_argument("dense tablebase modes cannot be combined with build, solve, stats, probe, validate, partition, migration, or repair options");
         }
+    }
+    if (options.denseMoveStats && options.denseLayer >= 2 && !options.benchmarkSampleProvided && !options.full) {
+        throw std::invalid_argument("--dense-move-stats K requires --sample N or --full when K >= 2");
+    }
+    if (options.denseMoveStats && options.benchmarkSampleProvided && options.full) {
+        throw std::invalid_argument("--dense-move-stats accepts either --sample N or --full, not both");
+    }
+    if (options.denseMoveStats && options.benchmarkSampleProvided && options.benchmarkSample == 0) {
+        throw std::invalid_argument("--sample must be greater than zero for --dense-move-stats; use --full for a full scan");
     }
     if (options.partitionBucketsProvided) {
         if (!options.partitionKeysetInput.has_value() && !options.migrateClosureCheckpoint) {
@@ -730,8 +766,8 @@ CliOptions parseArgs(int argc, char** argv) {
     if (options.lookupPartitionDir.has_value() && !options.lookupKeyProvided) {
         throw std::invalid_argument("--lookup-partition requires --key");
     }
-    if (options.benchmarkSampleProvided && !options.benchmarkPartitionDir.has_value()) {
-        throw std::invalid_argument("--sample is only valid with --benchmark-partition");
+    if (options.benchmarkSampleProvided && !options.benchmarkPartitionDir.has_value() && !options.denseMoveStats) {
+        throw std::invalid_argument("--sample is only valid with --benchmark-partition or --dense-move-stats");
     }
     const bool externalLayerOptionProvided =
         options.buildLayerExternalProvided || options.layerWorkDir.has_value() || options.seedFile.has_value() ||
@@ -1027,6 +1063,68 @@ void printInspectRes(const std::filesystem::path& path) {
 void printValidateRes(const std::filesystem::path& path) {
     printDenseResultInfo(validateDenseResultFile(path, StandardRulesetHash));
     std::cout << "Status: valid\n";
+}
+
+void printDenseSuccessors(const CliOptions& options) {
+    const uint64_t stateCount = denseStateCount(options.denseLayer);
+    if (options.denseIndexValue >= stateCount) {
+        throw std::invalid_argument("--dense-successors index is outside the selected layer");
+    }
+
+    const Position from = positionFromDenseIndex(options.denseLayer, options.denseIndexValue);
+    const DenseTerminalInfo terminal = terminalOutcomeForDenseState(options.denseLayer, options.denseIndexValue);
+    const std::vector<DenseSuccessor> successors =
+        generateDenseSuccessors(options.denseLayer, options.denseIndexValue);
+
+    std::cout << "Dense successors\n";
+    std::cout << "From layer: " << options.denseLayer << "\n";
+    std::cout << "From index: " << formatInteger(options.denseIndexValue) << "\n";
+    std::cout << "Layer states: " << formatInteger(stateCount) << "\n";
+    std::cout << "Position: " << positionToNotation(from) << "\n";
+    std::cout << "Terminal: " << (terminal.terminal ? "yes" : "no") << "\n";
+    std::cout << "Terminal outcome: " << (terminal.terminal ? outcomeToString(terminal.outcome) : std::string("none")) << "\n";
+    std::cout << "Successor count: " << formatInteger(static_cast<uint64_t>(successors.size())) << "\n";
+    for (const DenseSuccessor& successor : successors) {
+        const Position target = positionFromDenseIndex(successor.toSoldierCount, successor.toIndex);
+        std::cout << "  kind=" << denseSuccessorKindToString(successor.kind)
+                  << " toLayer=" << successor.toSoldierCount
+                  << " toIndex=" << formatInteger(successor.toIndex)
+                  << " move=" << moveToString(successor.move)
+                  << " notation=" << positionToNotation(target)
+                  << "\n";
+    }
+}
+
+void printDenseMoveStats(const CliOptions& options) {
+    const uint64_t stateCount = denseStateCount(options.denseLayer);
+    const uint64_t sampleLimit = options.benchmarkSampleProvided ? options.benchmarkSample : 0;
+    const bool fullScan = sampleLimit == 0;
+
+    const auto start = std::chrono::steady_clock::now();
+    const DenseLayerMoveStats stats = analyzeDenseLayerMoves(options.denseLayer, sampleLimit);
+    const auto finish = std::chrono::steady_clock::now();
+    const double seconds = std::chrono::duration<double>(finish - start).count();
+    const double averageSuccessors =
+        stats.sampledStates == 0
+            ? 0.0
+            : static_cast<double>(stats.totalSuccessors) / static_cast<double>(stats.sampledStates);
+
+    std::cout << "Dense move stats\n";
+    std::cout << "Layer: " << stats.soldierCount << "\n";
+    std::cout << "Layer states: " << formatInteger(stateCount) << "\n";
+    std::cout << "Mode: " << (fullScan ? "full" : "sample") << "\n";
+    if (!fullScan) {
+        std::cout << "Sample limit: " << formatInteger(sampleLimit) << "\n";
+    }
+    std::cout << "Sampled states: " << formatInteger(stats.sampledStates) << "\n";
+    std::cout << "Terminal states: " << formatInteger(stats.terminalStates) << "\n";
+    std::cout << "Total successors: " << formatInteger(stats.totalSuccessors) << "\n";
+    std::cout << "Same-layer successors: " << formatInteger(stats.sameLayerSuccessors) << "\n";
+    std::cout << "Capture successors: " << formatInteger(stats.captureSuccessors) << "\n";
+    std::cout << "Avg successors: " << std::fixed << std::setprecision(4) << averageSuccessors << "\n";
+    std::cout << "Max successors: " << formatInteger(stats.maxSuccessors) << "\n";
+    std::cout << "Time: " << formatDuration(seconds) << "\n";
+    std::cout << "States/sec: " << formatRate(stats.sampledStates, seconds) << "\n";
 }
 
 ProgressCallback makeProgressCallback(const CliOptions& options) {
@@ -2123,6 +2221,14 @@ int main(int argc, char** argv) {
         }
         if (options.validateResPath.has_value()) {
             printValidateRes(*options.validateResPath);
+            return 0;
+        }
+        if (options.denseSuccessors) {
+            printDenseSuccessors(options);
+            return 0;
+        }
+        if (options.denseMoveStats) {
+            printDenseMoveStats(options);
             return 0;
         }
         if (options.buildLayerExternalProvided) {

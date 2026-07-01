@@ -106,6 +106,8 @@ Useful CLI modes:
 .\build\sanpao15_cli.exe --create-empty-res 0 build\empty-k0.s15res --encoding 2bit
 .\build\sanpao15_cli.exe --inspect-res build\empty-k0.s15res
 .\build\sanpao15_cli.exe --validate-res build\empty-k0.s15res
+.\build\sanpao15_cli.exe --dense-successors 15 0
+.\build\sanpao15_cli.exe --dense-move-stats 2 --sample 100000
 .\build\sanpao15_cli.exe --limit 50000
 .\build\sanpao15_cli.exe --full
 .\build\sanpao15_cli.exe --analyze "SSSSS/SSSSS/SSSSS/...../.CCC. c" --limit 10000
@@ -192,6 +194,9 @@ This covers all positions, not just states reachable from the standard initial
 position. The total full tablebase space is `18,787,540,800` states; outcome-only
 storage is about `4.37 GiB` at 2 bits/state or `17.50 GiB` at 1 byte/state.
 See `docs/full-tablebase.md` for the `.s15res` format and rank/unrank details.
+Dense successor indexing maps legal moves from `(layer, denseIndex)` directly to
+target dense ids, with same-layer and capture-to-lower-layer classification; see
+`docs/dense-successor.md`.
 
 Layer-local edge probe:
 
