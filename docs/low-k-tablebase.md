@@ -5,13 +5,14 @@ tablebase line. It does not start from the standard initial position and does
 not use reachable-state layer files. For each soldier count `k`, it enumerates
 every legal dense state in that full layer.
 
-The prototype is intentionally limited to:
+The original graph-backed prototype is intentionally limited to:
 
 ```text
 k = 0..3
 ```
 
-Larger layers need a scalable architecture before they should be attempted.
+The streaming prototype also supports `k=0..3` by default and allows `k=4`
+only when requested explicitly with `--allow-k4`.
 
 ## Solve Order
 
@@ -68,9 +69,15 @@ that same side. A state is a loss for the side to move if every successor is a
 win for the opponent. After the propagation queue is empty, remaining Unknown
 states are finalized as Draw.
 
-The current prototype stores same-layer predecessors as
+The graph-backed prototype stores same-layer predecessors as
 `std::vector<std::vector<uint32_t>>`. This is fine for `k=0..3`, but it is not
 the intended storage shape for larger full layers.
+
+The streaming solver keeps only the output table, a remaining-successor counter
+array, and the resolved queue. During propagation it regenerates same-layer
+predecessors on demand with `generateDensePredecessors(k, childIndex)`.
+Capture-to-lower-layer successors are handled during initialization by looking
+up the lower layer table.
 
 ## CLI
 
@@ -78,6 +85,24 @@ Solve layers `0..K` and write `.s15res` files:
 
 ```powershell
 .\build\sanpao15_cli.exe --solve-lowk 2 --out-dir build\lowk-smoke --encoding 2bit
+```
+
+Solve the same material-terminal range with the streaming backend:
+
+```powershell
+.\build\sanpao15_cli.exe --solve-lowk-streaming 3 --out-dir build\stream-min4 --encoding 2bit
+```
+
+Inspect same-layer predecessors for one dense child:
+
+```powershell
+.\build\sanpao15_cli.exe --dense-predecessors 4 0
+```
+
+Attempt the first non-material layer only as an explicit benchmark:
+
+```powershell
+.\build\sanpao15_cli.exe --solve-lowk-streaming 4 --allow-k4 --out-dir build\stream-k4 --encoding 2bit
 ```
 
 Generated names:
@@ -113,8 +138,8 @@ k  states       CannonWin  SoldierWin  Draw  Unknown  sameEdges  captureEdges
 The old ruleset once produced `k=3 SoldierWin=32` and `Draw=20,096`; those
 results are obsolete. Under `sanpao15-min-four-soldiers`, all of those states
 are intercepted by the material rule and become `CannonWin`. The first layer
-where SoldierWin or Draw can appear is `k=4`, but this prototype intentionally
-does not solve `k=4`.
+where SoldierWin or Draw can appear is `k=4`; it should be treated as a
+benchmark for the streaming solver rather than a default unit-test workload.
 
 ## Next Direction
 

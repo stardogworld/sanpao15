@@ -186,6 +186,23 @@ ruleset hash.
 
 See `docs/low-k-tablebase.md` for the detailed semantics and observed scale.
 
+The streaming low-k solver adds on-the-fly same-layer predecessor generation so
+retrograde propagation no longer needs a resident
+`std::vector<std::vector<uint32_t>>` predecessor graph:
+
+```powershell
+.\build\sanpao15_cli.exe --solve-lowk-streaming 3 --out-dir build\stream-min4 --encoding 2bit
+.\build\sanpao15_cli.exe --dense-predecessors 4 0
+```
+
+`k=4` is available only as an explicit benchmark:
+
+```powershell
+.\build\sanpao15_cli.exe --solve-lowk-streaming 4 --allow-k4 --out-dir build\stream-k4 --encoding 2bit
+```
+
+See `docs/scalable-tablebase-solver.md` for the streaming solver notes.
+
 ## Solver Direction
 
 The full tablebase solver should proceed from low soldier counts upward:

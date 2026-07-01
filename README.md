@@ -110,8 +110,10 @@ Useful CLI modes:
 .\build\sanpao15_cli.exe --inspect-res build\empty-k0.s15res
 .\build\sanpao15_cli.exe --validate-res build\empty-k0.s15res
 .\build\sanpao15_cli.exe --dense-successors 15 0
+.\build\sanpao15_cli.exe --dense-predecessors 4 0
 .\build\sanpao15_cli.exe --dense-move-stats 2 --sample 100000
 .\build\sanpao15_cli.exe --solve-lowk 2 --out-dir build\lowk-smoke --encoding 2bit
+.\build\sanpao15_cli.exe --solve-lowk-streaming 3 --out-dir build\stream-min4 --encoding 2bit
 .\build\sanpao15_cli.exe --verify-lowk build\lowk-smoke --max-k 2 --sample 10000
 .\build\sanpao15_cli.exe --limit 50000
 .\build\sanpao15_cli.exe --full
@@ -202,11 +204,15 @@ See `docs/full-tablebase.md` for the `.s15res` format and rank/unrank details.
 Dense successor indexing maps legal moves from `(layer, denseIndex)` directly to
 target dense ids, with same-layer and capture-to-lower-layer classification; see
 `docs/dense-successor.md`.
+Dense same-layer predecessor generation supports on-the-fly retrograde
+propagation without storing a `vector<vector<uint32_t>>` predecessor graph.
 The low-k full tablebase prototype solves complete dense layers `k=0..3` into
 outcome-only `.s15res` files and verifies sampled successor consistency; see
 `docs/low-k-tablebase.md`.
 Under the current ruleset all `k=0..3` dense states are immediate
 `CannonWin`; the first layer where SoldierWin or Draw can appear is `k=4`.
+The streaming low-k solver can solve `k=0..3` by default and allows an explicit
+`k=4` benchmark with `--allow-k4`; see `docs/scalable-tablebase-solver.md`.
 
 Layer-local edge probe:
 

@@ -21,6 +21,12 @@ struct DenseSuccessor {
     Move move;
 };
 
+struct DensePredecessor {
+    int soldierCount = 0;
+    uint64_t index = 0;
+    Move move;
+};
+
 struct DenseTerminalInfo {
     bool terminal = false;
     Outcome outcome = Outcome::Unknown;
@@ -37,6 +43,7 @@ struct DenseLayerMoveStats {
 };
 
 std::vector<DenseSuccessor> generateDenseSuccessors(int soldierCount, uint64_t denseIndex);
+std::vector<DensePredecessor> generateDensePredecessors(int soldierCount, uint64_t childIndex);
 DenseTerminalInfo terminalOutcomeForDenseState(int soldierCount, uint64_t denseIndex);
 DenseLayerMoveStats analyzeDenseLayerMoves(int soldierCount, uint64_t sampleLimit = 0);
 

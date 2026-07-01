@@ -24,6 +24,17 @@ struct DenseLayerSolveResult {
     uint64_t retrogradeResolved = 0;
     uint64_t unresolvedAsDraw = 0;
 
+    uint64_t resolvedByTerminal = 0;
+    uint64_t resolvedByLowerLayer = 0;
+    uint64_t resolvedByPropagation = 0;
+    uint64_t drawAfterQueue = 0;
+    uint64_t maxSuccessors = 0;
+    uint64_t maxRemaining = 0;
+    uint64_t queuePeak = 0;
+    uint64_t estimatedMemoryBytes = 0;
+    double initializationSeconds = 0.0;
+    double propagationSeconds = 0.0;
+    double finalizeSeconds = 0.0;
     double seconds = 0.0;
 };
 
@@ -62,10 +73,15 @@ DenseLayerSolveResult solveDenseLayerOutcome(
     int soldierCount,
     const PackedOutcomeTable2Bit* lowerLayer,
     PackedOutcomeTable2Bit& output);
+DenseLayerSolveResult solveDenseLayerOutcomeStreaming(
+    int soldierCount,
+    const PackedOutcomeTable2Bit* lowerLayer,
+    PackedOutcomeTable2Bit& output);
 
 std::filesystem::path lowKLayerResultPath(const std::filesystem::path& dir, int soldierCount);
 
 std::vector<LowKTablebaseLayerResult> solveLowKTablebase(const LowKTablebaseSolveOptions& options);
+std::vector<LowKTablebaseLayerResult> solveLowKTablebaseStreaming(const LowKTablebaseSolveOptions& options);
 
 LowKTablebaseVerifyResult verifyLowKTablebase(
     const std::filesystem::path& dir,

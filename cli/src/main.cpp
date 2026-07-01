@@ -69,9 +69,12 @@ struct CliOptions {
     bool tablebaseSizes = false;
     bool createEmptyRes = false;
     bool denseSuccessors = false;
+    bool densePredecessors = false;
     bool denseMoveStats = false;
     bool solveLowK = false;
+    bool solveLowKStreaming = false;
     bool verifyLowK = false;
+    bool allowK4 = false;
     bool outDirProvided = false;
     bool maxKProvided = false;
     bool resEncodingProvided = false;
@@ -166,8 +169,10 @@ void printUsage() {
         << "  sanpao15_cli --create-empty-res K FILE [--encoding byte|2bit]\n"
         << "  sanpao15_cli --inspect-res FILE | --validate-res FILE\n"
         << "  sanpao15_cli --dense-successors K INDEX\n"
+        << "  sanpao15_cli --dense-predecessors K INDEX\n"
         << "  sanpao15_cli --dense-move-stats K [--sample N|--full]\n"
         << "  sanpao15_cli --solve-lowk K --out-dir DIR [--encoding byte|2bit]\n"
+        << "  sanpao15_cli --solve-lowk-streaming K --out-dir DIR [--encoding byte|2bit] [--allow-k4]\n"
         << "  sanpao15_cli --verify-lowk DIR --max-k K [--sample N]\n"
         << "  sanpao15_cli --analyze \"SSSSS/SSSSS/SSSSS/...../.CCC. c\" [--limit N|--full]\n"
         << "  sanpao15_cli --load-table FILE --analyze \"SSSSS/SSSSS/SSSSS/...../.CCC. c\"\n\n"
@@ -234,11 +239,14 @@ void printUsage() {
         << "  --inspect-res FILE  Show .s15res header information.\n"
         << "  --validate-res FILE  Validate .s15res header and payload size.\n"
         << "  --dense-successors K INDEX  Print legal successors as dense target indexes.\n"
+        << "  --dense-predecessors K INDEX  Print same-layer predecessor dense indexes.\n"
         << "  --dense-move-stats K  Count dense successor categories for a layer.\n"
         << "  --solve-lowk K  Solve full dense tablebase layers 0..K; K must be 0..3.\n"
-        << "  --out-dir DIR   Output directory for --solve-lowk.\n"
+        << "  --solve-lowk-streaming K  Solve layers 0..K with on-the-fly predecessors. K defaults to 0..3.\n"
+        << "  --allow-k4     Allow --solve-lowk-streaming 4 as an explicit benchmark.\n"
+        << "  --out-dir DIR   Output directory for --solve-lowk or --solve-lowk-streaming.\n"
         << "  --verify-lowk DIR  Verify low-k .s15res files in DIR.\n"
-        << "  --max-k K       Highest layer for --verify-lowk; K must be 0..3.\n"
+        << "  --max-k K       Highest layer for --verify-lowk; K must be 0..4.\n"
         << "  --external-seed-dedup  Use external sorted runs for next-layer seed dedup.\n"
         << "  --dedup-chunk-size N  Keys per external dedup chunk. Default: 1000000.\n"
         << "  --temp-dir DIR  Temporary run-file directory for external dedup.\n"
@@ -608,6 +616,13 @@ CliOptions parseArgs(int argc, char** argv) {
             options.denseLayer = parseLayerIndex(argv[++i]);
             options.denseIndexValue = parseLimit(argv[++i]);
             options.denseSuccessors = true;
+        } else if (arg == "--dense-predecessors") {
+            if (i + 2 >= argc) {
+                throw std::invalid_argument("--dense-predecessors requires a layer and a dense index");
+            }
+            options.denseLayer = parseLayerIndex(argv[++i]);
+            options.denseIndexValue = parseLimit(argv[++i]);
+            options.densePredecessors = true;
         } else if (arg == "--dense-move-stats") {
             if (i + 1 >= argc) {
                 throw std::invalid_argument("--dense-move-stats requires a layer index");
@@ -620,6 +635,12 @@ CliOptions parseArgs(int argc, char** argv) {
             }
             options.lowKMax = parseLayerIndex(argv[++i]);
             options.solveLowK = true;
+        } else if (arg == "--solve-lowk-streaming") {
+            if (i + 1 >= argc) {
+                throw std::invalid_argument("--solve-lowk-streaming requires a max layer");
+            }
+            options.lowKMax = parseLayerIndex(argv[++i]);
+            options.solveLowKStreaming = true;
         } else if (arg == "--out-dir") {
             if (i + 1 >= argc) {
                 throw std::invalid_argument("--out-dir requires a directory path");
@@ -638,6 +659,8 @@ CliOptions parseArgs(int argc, char** argv) {
             }
             options.lowKMax = parseLayerIndex(argv[++i]);
             options.maxKProvided = true;
+        } else if (arg == "--allow-k4") {
+            options.allowK4 = true;
         } else if (arg == "--external-seed-dedup") {
             options.externalSeedDedup = true;
         } else if (arg == "--dedup-chunk-size") {
@@ -701,14 +724,16 @@ CliOptions parseArgs(int argc, char** argv) {
         static_cast<int>(options.inspectResPath.has_value()) +
         static_cast<int>(options.validateResPath.has_value()) +
         static_cast<int>(options.denseSuccessors) +
+        static_cast<int>(options.densePredecessors) +
         static_cast<int>(options.denseMoveStats) +
         static_cast<int>(options.solveLowK) +
+        static_cast<int>(options.solveLowKStreaming) +
         static_cast<int>(options.verifyLowK);
     if (validationModeCount + partitionModeCount + migrationModeCount + partitionedResumeModeCount + denseModeCount > 1) {
         throw std::invalid_argument("choose only one validate/inspect/partition/dense tablebase mode");
     }
-    if (options.resEncodingProvided && !options.createEmptyRes && !options.solveLowK) {
-        throw std::invalid_argument("--encoding is only valid with --create-empty-res or --solve-lowk");
+    if (options.resEncodingProvided && !options.createEmptyRes && !options.solveLowK && !options.solveLowKStreaming) {
+        throw std::invalid_argument("--encoding is only valid with --create-empty-res, --solve-lowk, or --solve-lowk-streaming");
     }
     if (denseModeCount != 0) {
         const bool disallowedFull = options.full && !options.denseMoveStats;
@@ -734,14 +759,26 @@ CliOptions parseArgs(int argc, char** argv) {
     if (options.solveLowK && options.lowKMax > 3) {
         throw std::invalid_argument("--solve-lowk supports only K in 0..3 in this prototype");
     }
-    if (options.verifyLowK && options.lowKMax > 3) {
-        throw std::invalid_argument("--verify-lowk supports only K in 0..3 in this prototype");
+    if (options.solveLowKStreaming && options.lowKMax > 4) {
+        throw std::invalid_argument("--solve-lowk-streaming supports only K in 0..4 in this prototype");
     }
-    if (options.solveLowK && !options.outDir.has_value()) {
-        throw std::invalid_argument("--solve-lowk requires --out-dir DIR");
+    if (options.solveLowKStreaming && options.lowKMax == 4 && !options.allowK4) {
+        throw std::invalid_argument("--solve-lowk-streaming 4 requires --allow-k4");
     }
-    if (options.outDirProvided && !options.solveLowK) {
-        throw std::invalid_argument("--out-dir is only valid with --solve-lowk");
+    if (options.solveLowKStreaming && options.allowK4 && options.lowKMax != 4) {
+        throw std::invalid_argument("--allow-k4 is only meaningful with --solve-lowk-streaming 4");
+    }
+    if (options.allowK4 && !options.solveLowKStreaming) {
+        throw std::invalid_argument("--allow-k4 is only valid with --solve-lowk-streaming");
+    }
+    if (options.verifyLowK && options.lowKMax > 4) {
+        throw std::invalid_argument("--verify-lowk supports only K in 0..4 in this prototype");
+    }
+    if ((options.solveLowK || options.solveLowKStreaming) && !options.outDir.has_value()) {
+        throw std::invalid_argument("--solve-lowk and --solve-lowk-streaming require --out-dir DIR");
+    }
+    if (options.outDirProvided && !options.solveLowK && !options.solveLowKStreaming) {
+        throw std::invalid_argument("--out-dir is only valid with --solve-lowk or --solve-lowk-streaming");
     }
     if (options.verifyLowK && !options.maxKProvided) {
         throw std::invalid_argument("--verify-lowk requires --max-k K");
@@ -749,7 +786,7 @@ CliOptions parseArgs(int argc, char** argv) {
     if (options.maxKProvided && !options.verifyLowK) {
         throw std::invalid_argument("--max-k is only valid with --verify-lowk");
     }
-    if (options.solveLowK && options.benchmarkSampleProvided) {
+    if ((options.solveLowK || options.solveLowKStreaming) && options.benchmarkSampleProvided) {
         throw std::invalid_argument("--sample is only valid with --benchmark-partition, --dense-move-stats, or --verify-lowk");
     }
     if (options.verifyLowK && options.resEncodingProvided) {
@@ -1175,6 +1212,32 @@ void printDenseSuccessors(const CliOptions& options) {
     }
 }
 
+void printDensePredecessors(const CliOptions& options) {
+    const uint64_t stateCount = denseStateCount(options.denseLayer);
+    if (options.denseIndexValue >= stateCount) {
+        throw std::invalid_argument("--dense-predecessors index is outside the selected layer");
+    }
+
+    const Position child = positionFromDenseIndex(options.denseLayer, options.denseIndexValue);
+    const std::vector<DensePredecessor> predecessors =
+        generateDensePredecessors(options.denseLayer, options.denseIndexValue);
+
+    std::cout << "Dense predecessors\n";
+    std::cout << "Child layer: " << options.denseLayer << "\n";
+    std::cout << "Child index: " << formatInteger(options.denseIndexValue) << "\n";
+    std::cout << "Layer states: " << formatInteger(stateCount) << "\n";
+    std::cout << "Child position: " << positionToNotation(child) << "\n";
+    std::cout << "Predecessor count: " << formatInteger(static_cast<uint64_t>(predecessors.size())) << "\n";
+    for (const DensePredecessor& predecessor : predecessors) {
+        const Position parent = positionFromDenseIndex(predecessor.soldierCount, predecessor.index);
+        std::cout << "  parentLayer=" << predecessor.soldierCount
+                  << " parentIndex=" << formatInteger(predecessor.index)
+                  << " move=" << moveToString(predecessor.move)
+                  << " notation=" << positionToNotation(parent)
+                  << "\n";
+    }
+}
+
 void printDenseMoveStats(const CliOptions& options) {
     const uint64_t stateCount = denseStateCount(options.denseLayer);
     const uint64_t sampleLimit = options.benchmarkSampleProvided ? options.benchmarkSample : 0;
@@ -1220,6 +1283,18 @@ void printLowKLayerResult(const LowKTablebaseLayerResult& layer) {
     std::cout << "Unknown: " << formatInteger(solve.unknown) << "\n";
     std::cout << "Retrograde resolved: " << formatInteger(solve.retrogradeResolved) << "\n";
     std::cout << "Unresolved as draw: " << formatInteger(solve.unresolvedAsDraw) << "\n";
+    std::cout << "Resolved by terminal: " << formatInteger(solve.resolvedByTerminal) << "\n";
+    std::cout << "Resolved by lower layer: " << formatInteger(solve.resolvedByLowerLayer) << "\n";
+    std::cout << "Resolved by propagation: " << formatInteger(solve.resolvedByPropagation) << "\n";
+    std::cout << "Draw after queue: " << formatInteger(solve.drawAfterQueue) << "\n";
+    std::cout << "Max successors: " << formatInteger(solve.maxSuccessors) << "\n";
+    std::cout << "Max remaining: " << formatInteger(solve.maxRemaining) << "\n";
+    std::cout << "Queue peak: " << formatInteger(solve.queuePeak) << "\n";
+    std::cout << "Estimated memory: " << formatInteger(solve.estimatedMemoryBytes)
+              << " (" << formatBytes(solve.estimatedMemoryBytes) << ")\n";
+    std::cout << "Initialization time: " << formatDuration(solve.initializationSeconds) << "\n";
+    std::cout << "Propagation time: " << formatDuration(solve.propagationSeconds) << "\n";
+    std::cout << "Finalize time: " << formatDuration(solve.finalizeSeconds) << "\n";
     std::cout << "Time: " << formatDuration(solve.seconds) << "\n";
     std::cout << "Encoding: " << denseResultEncodingToString(layer.encoding) << "\n";
     std::cout << "Output file: " << layer.outputFile.string() << "\n";
@@ -1239,6 +1314,26 @@ void printSolveLowK(const CliOptions& options) {
     std::cout << "Output directory: " << options.outDir->string() << "\n";
     std::cout << "Max K: " << options.lowKMax << "\n";
     std::cout << "Encoding: " << denseResultEncodingToString(options.resEncoding) << "\n\n";
+    for (const LowKTablebaseLayerResult& layer : layers) {
+        printLowKLayerResult(layer);
+        std::cout << "\n";
+    }
+    std::cout << "Status: solved\n";
+}
+
+void printSolveLowKStreaming(const CliOptions& options) {
+    LowKTablebaseSolveOptions solveOptions;
+    solveOptions.maxK = options.lowKMax;
+    solveOptions.outputDir = *options.outDir;
+    solveOptions.encoding = options.resEncoding;
+
+    const std::vector<LowKTablebaseLayerResult> layers = solveLowKTablebaseStreaming(solveOptions);
+
+    std::cout << "Streaming low-k full tablebase solve\n";
+    std::cout << "Output directory: " << options.outDir->string() << "\n";
+    std::cout << "Max K: " << options.lowKMax << "\n";
+    std::cout << "Encoding: " << denseResultEncodingToString(options.resEncoding) << "\n";
+    std::cout << "Allow K4: " << (options.allowK4 ? "yes" : "no") << "\n\n";
     for (const LowKTablebaseLayerResult& layer : layers) {
         printLowKLayerResult(layer);
         std::cout << "\n";
@@ -2368,12 +2463,20 @@ int main(int argc, char** argv) {
             printDenseSuccessors(options);
             return 0;
         }
+        if (options.densePredecessors) {
+            printDensePredecessors(options);
+            return 0;
+        }
         if (options.denseMoveStats) {
             printDenseMoveStats(options);
             return 0;
         }
         if (options.solveLowK) {
             printSolveLowK(options);
+            return 0;
+        }
+        if (options.solveLowKStreaming) {
+            printSolveLowKStreaming(options);
             return 0;
         }
         if (options.verifyLowK) {

@@ -27,6 +27,48 @@ DenseSuccessorKind successorKindForCounts(int fromSoldierCount, int toSoldierCou
     throw std::logic_error("dense successor changed soldier count by an invalid amount");
 }
 
+bool hasSameLayerSuccessorTo(
+    int soldierCount,
+    uint64_t parentIndex,
+    uint64_t childIndex,
+    Move* moveOut) {
+    for (const DenseSuccessor& successor : generateDenseSuccessors(soldierCount, parentIndex)) {
+        if (successor.kind == DenseSuccessorKind::SameLayer && successor.toIndex == childIndex) {
+            if (moveOut != nullptr) {
+                *moveOut = successor.move;
+            }
+            return true;
+        }
+    }
+    return false;
+}
+
+void addPredecessorIfValid(
+    std::vector<DensePredecessor>& predecessors,
+    int soldierCount,
+    uint64_t childIndex,
+    const Position& parent) {
+    if (popcount25(parent.cannons) != 3 || popcount25(parent.soldiers) != soldierCount ||
+        (parent.cannons & parent.soldiers) != 0) {
+        return;
+    }
+
+    const uint64_t parentIndex = denseIndex(parent);
+    if (parentIndex >= denseStateCount(soldierCount)) {
+        throw std::logic_error("generated dense predecessor index is outside source layer");
+    }
+
+    Move move;
+    if (!hasSameLayerSuccessorTo(soldierCount, parentIndex, childIndex, &move)) {
+        return;
+    }
+    predecessors.push_back(DensePredecessor{
+        soldierCount,
+        parentIndex,
+        move,
+    });
+}
+
 }  // namespace
 
 std::vector<DenseSuccessor> generateDenseSuccessors(int soldierCount, uint64_t denseIndexValue) {
@@ -57,6 +99,47 @@ std::vector<DenseSuccessor> generateDenseSuccessors(int soldierCount, uint64_t d
         });
     }
     return successors;
+}
+
+std::vector<DensePredecessor> generateDensePredecessors(int soldierCount, uint64_t childIndex) {
+    requireSoldierCount(soldierCount);
+    if (childIndex >= denseStateCount(soldierCount)) {
+        throw std::out_of_range("dense predecessor child index is outside the layer state count");
+    }
+
+    const Position child = unrankDensePosition(soldierCount, childIndex);
+    const uint32_t occupied = child.cannons | child.soldiers;
+    std::vector<DensePredecessor> predecessors;
+
+    if (child.side == Side::Soldier) {
+        for (int to : squaresInMask(child.cannons)) {
+            for (int from : orthogonalNeighbors(to)) {
+                if (hasBit(occupied, from)) {
+                    continue;
+                }
+                Position parent = child;
+                parent.side = Side::Cannon;
+                parent.cannons = clearBit(parent.cannons, to);
+                parent.cannons = setBit(parent.cannons, from);
+                addPredecessorIfValid(predecessors, soldierCount, childIndex, parent);
+            }
+        }
+        return predecessors;
+    }
+
+    for (int to : squaresInMask(child.soldiers)) {
+        for (int from : orthogonalNeighbors(to)) {
+            if (hasBit(occupied, from)) {
+                continue;
+            }
+            Position parent = child;
+            parent.side = Side::Soldier;
+            parent.soldiers = clearBit(parent.soldiers, to);
+            parent.soldiers = setBit(parent.soldiers, from);
+            addPredecessorIfValid(predecessors, soldierCount, childIndex, parent);
+        }
+    }
+    return predecessors;
 }
 
 DenseTerminalInfo terminalOutcomeForDenseState(int soldierCount, uint64_t denseIndexValue) {

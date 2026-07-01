@@ -39,8 +39,10 @@
 - Write, inspect, and validate `.s15res` dense result files.
 - Print full tablebase theoretical sizes with `--tablebase-sizes`.
 - Generate dense successor ids for legal moves with same-layer and capture-to-lower-layer classification.
+- Generate same-layer dense predecessors on demand for streaming retrograde propagation.
 - Inspect dense successors and sample dense layer move statistics from the CLI.
 - Solve low full-tablebase layers `k=0..3` with outcome-only retrograde and write `.s15res` results.
+- Solve low full-tablebase layers with a streaming/on-the-fly predecessor backend via `--solve-lowk-streaming`.
 - Verify low-k `.s15res` headers and sampled successor consistency.
 - Centralize the current ruleset as `sanpao15-min-four-soldiers`, where `soldierCount < 4` is immediate `CannonWin`.
 
@@ -52,9 +54,10 @@
 ## Next Steps
 
 - Design a scalable full `0..15` tablebase architecture.
-- Prototype the first non-material layer, `k=4`, with streaming/on-the-fly predecessor handling before extending the low-k in-memory solver.
-- Replace the low-k vector predecessor prototype with CSR or flat layer-local storage.
+- Benchmark the first non-material layer, `k=4`, with `--solve-lowk-streaming 4 --allow-k4`.
 - Evaluate file-backed or mmap dense outcome tables.
+- Optimize on-the-fly predecessor generation if `k=4` exposes it as the bottleneck.
+- Keep CSR or flat layer-local edge storage as a fallback if streaming regeneration is too slow.
 - Evaluate D4 symmetry reduction for dense layers.
 - Keep the partitioned reachability line available for standard-initial-position experiments.
 - Improve partitioned closure performance with a direct per-bucket candidate collector if needed.

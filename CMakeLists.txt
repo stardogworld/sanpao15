@@ -54,6 +54,7 @@ add_executable(sanpao15_tests
     tests/test_combinadic.cpp
     tests/test_csr.cpp
     tests/test_dense_index.cpp
+    tests/test_dense_predecessor.cpp
     tests/test_dense_successor.cpp
     tests/test_dense_table.cpp
     tests/test_external_closure.cpp
