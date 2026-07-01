@@ -48,6 +48,9 @@
 - Solve low full-tablebase layers `k=0..3` with outcome-only retrograde and write `.s15res` results.
 - Solve low full-tablebase layers with a streaming/on-the-fly predecessor backend via `--solve-lowk-streaming`; optimized Release `k=4` completes in 01:06 with exact baseline counts.
 - Verify low-k `.s15res` headers and sampled successor consistency.
+- Solve one production dense layer with `--solve-layer K --lower-res ... --out-res ...`, strict lower-layer validation, atomic temp/validate/rename output, and `.solve.json` stats.
+- Verify one production dense result with `--verify-layer FILE --lower-res ... --sample N`.
+- Use a `uint32_t` queue and `uint32_t` predecessor-index buffer in the production dense layer path while keeping public dense indexes as `uint64_t`.
 - Centralize the current ruleset as `sanpao15-min-four-soldiers`, where `soldierCount < 4` is immediate `CannonWin`.
 
 ## Solver Lines
@@ -57,8 +60,9 @@
 
 ## Next Steps
 
-- Add a per-layer production CLI for the dense streaming solver.
 - Run a cautious `k=5` benchmark after the per-layer CLI is available.
+- Add a `--solve-layer-range` batch runner after single-layer `k=5` behavior is measured.
+- Add layer-level resume for production dense solves if `k=5+` runtime justifies it.
 - Evaluate file-backed or mmap dense outcome tables for larger layers.
 - Design a scalable full `0..15` tablebase architecture.
 - Keep CSR or flat layer-local edge storage as a fallback if streaming regeneration is too slow.

@@ -1,6 +1,7 @@
 #include "sanpao15/dense_index.h"
 
 #include <bit>
+#include <limits>
 #include <stdexcept>
 
 #include "sanpao15/bitboard.h"
@@ -147,6 +148,13 @@ uint64_t totalDenseOutcomeBytes1Byte() {
         total += size.bytes1ByteOutcome;
     }
     return total;
+}
+
+uint32_t checkedDenseIndex32(uint64_t index) {
+    if (index > static_cast<uint64_t>(std::numeric_limits<uint32_t>::max())) {
+        throw std::overflow_error("dense index exceeds uint32_t range");
+    }
+    return static_cast<uint32_t>(index);
 }
 
 uint64_t rankDensePosition(uint32_t cannonMask, uint32_t soldierMask, Side side) {

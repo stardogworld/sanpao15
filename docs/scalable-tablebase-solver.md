@@ -148,8 +148,23 @@ Default streaming low-k solve:
 ```
 
 Do not run `k=5` as a default smoke test. The `k=4` result is now fast enough
-that the next step can add a per-layer production CLI, then run a cautious
+that the next step after the production per-layer entry point is a cautious
 `k=5` benchmark.
+
+Production single-layer solve:
+
+```powershell
+.\build\sanpao15_cli.exe --solve-layer 4 --lower-res build\stream-min4\layer-03.s15res --out-res build\prod-layers\layer-04.s15res --encoding 2bit
+.\build\sanpao15_cli.exe --verify-layer build\prod-layers\layer-04.s15res --lower-res build\stream-min4\layer-03.s15res --sample 10000
+```
+
+`--solve-layer` supports `k=0..15`, but it solves only one layer per command.
+For `k=0..3`, the lower layer must be omitted because every state is material
+terminal `CannonWin`. For `k>=4`, `--lower-res` is required and strictly
+validated against the current ruleset hash, `k-1`, dense state count, encoding,
+and payload shape. The output `.s15res` is written through a temporary file,
+validated, then renamed into place; a matching `.solve.json` stats file is
+written next to it.
 
 Inspect same-layer predecessors for one dense state:
 
@@ -161,6 +176,10 @@ Inspect same-layer predecessors for one dense state:
 
 The streaming solver still writes outcome-only `.s15res` files. It does not
 store distance, DTW, or best moves.
+
+The production per-layer path keeps the public dense index type as `uint64_t`
+but uses a `uint32_t` resolved queue and `uint32_t` predecessor-index scratch
+buffer after checking that the selected layer has at most `UINT32_MAX` states.
 
 Useful stats printed per layer include:
 
@@ -197,9 +216,9 @@ payloads are checked for valid size and unused-bit cleanliness when applicable.
 
 ## Next Direction
 
-Because optimized Release `k=4` completes in 01:06 with exact baseline counts,
-the recommended next step is a per-layer production CLI for the dense streaming
-solver. File-backed or mmap outcome tables are still likely needed for much
-larger layers, but they should follow a production per-layer solve path and
-another measured `k=5` benchmark. Distance and best move data should remain
-optional side data until outcome solving is stable.
+Because optimized Release `k=4` completes in 01:06 with exact baseline counts
+and the production per-layer CLI now exists, the recommended next step is a
+measured `k=5` benchmark using `--solve-layer`. File-backed or mmap outcome
+tables are still likely needed for much larger layers, but they should follow
+the measured `k=5` result. Distance and best move data should remain optional
+side data until outcome solving is stable.

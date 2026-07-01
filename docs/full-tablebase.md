@@ -234,6 +234,30 @@ captureEdges=15,800,400
 
 See `docs/scalable-tablebase-solver.md` for the streaming solver notes.
 
+## Production Per-Layer Solver
+
+The production entry point solves one dense layer at a time:
+
+```powershell
+.\build\sanpao15_cli.exe --solve-layer 4 --lower-res build\stream-min4\layer-03.s15res --out-res build\prod-layers\layer-04.s15res --encoding 2bit
+.\build\sanpao15_cli.exe --verify-layer build\prod-layers\layer-04.s15res --lower-res build\stream-min4\layer-03.s15res --sample 10000
+```
+
+For `k=0..3`, the current ruleset's material rule resolves the whole layer as
+`CannonWin`, so `--lower-res` must be omitted. For `k>=4`, `--lower-res` is
+required and must be a valid `.s15res` file for exactly `k-1` with the current
+ruleset hash and matching state count.
+
+`--solve-layer` creates the output parent directory, refuses to overwrite an
+existing `.s15res` or `.solve.json` unless `--overwrite` is passed, writes a
+temporary `.s15res.tmp`, validates it, then renames it into place. On success it
+also writes `layer-NN.solve.json` next to the result file with outcome counts,
+edge counts, queue/predecessor stats, timings, output bytes, and estimated
+working memory. The production path keeps dense indexes public as `uint64_t`
+but uses a `uint32_t` queue and `uint32_t` predecessor-index scratch buffer
+internally after checking that the layer is uint32-addressable. It supports
+`k=0..15`; larger-layer feasibility still depends on measured memory and time.
+
 ## Solver Direction
 
 The full tablebase solver should proceed from low soldier counts upward:

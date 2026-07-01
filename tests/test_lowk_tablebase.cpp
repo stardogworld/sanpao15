@@ -2,6 +2,9 @@
 
 #include <algorithm>
 #include <filesystem>
+#include <fstream>
+#include <limits>
+#include <string>
 #include <vector>
 
 #include "sanpao15/bitboard.h"
@@ -42,6 +45,11 @@ Position captureOneSoldierPosition() {
 uint64_t nextRandom(uint64_t& state) {
     state = state * 6364136223846793005ull + 1442695040888963407ull;
     return state;
+}
+
+std::string readTextFile(const std::filesystem::path& path) {
+    std::ifstream input(path);
+    return std::string((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
 }
 
 std::vector<uint64_t> scanSampleIndexes(int soldierCount) {
@@ -303,6 +311,143 @@ SANPAO15_TEST(streamingLowKFileSolveAndVerifyRoundtrip) {
         SANPAO15_REQUIRE(verified.layers[static_cast<size_t>(k)].cannonWin == denseStateCount(k));
         SANPAO15_REQUIRE(verified.layers[static_cast<size_t>(k)].soldierWin == 0);
         SANPAO15_REQUIRE(verified.layers[static_cast<size_t>(k)].draw == 0);
+    }
+}
+
+SANPAO15_TEST(productionSolveMaterialLayersWritesResultsAndStats) {
+    const std::filesystem::path dir = tempDir("sanpao15-production-material");
+    for (int k = 0; k <= 3; ++k) {
+        DenseLayerProductionSolveOptions options;
+        options.soldierCount = k;
+        options.outputResultPath = dir / ("layer-" + std::to_string(k) + ".s15res");
+        options.encoding = DenseResultEncoding::Packed2Bit;
+
+        const DenseLayerProductionSolveResult solved = solveDenseLayerProduction(options);
+        SANPAO15_REQUIRE(solved.solve.stateCount == denseStateCount(k));
+        SANPAO15_REQUIRE(solved.solve.cannonWin == denseStateCount(k));
+        SANPAO15_REQUIRE(solved.solve.soldierWin == 0);
+        SANPAO15_REQUIRE(solved.solve.draw == 0);
+        SANPAO15_REQUIRE(solved.solve.unknown == 0);
+        SANPAO15_REQUIRE(std::filesystem::exists(solved.outputResultPath));
+        SANPAO15_REQUIRE(std::filesystem::exists(solved.statsJsonPath));
+
+        const std::string json = readTextFile(solved.statsJsonPath);
+        SANPAO15_REQUIRE(json.find("\"format\": \"sanpao15-layer-solve-stats\"") != std::string::npos);
+        SANPAO15_REQUIRE(json.find("\"rulesetHash\": \"0x5331355F76325F04\"") != std::string::npos);
+        SANPAO15_REQUIRE(json.find("\"soldierCount\": " + std::to_string(k)) != std::string::npos);
+        SANPAO15_REQUIRE(json.find("\"stateCount\": " + std::to_string(denseStateCount(k))) != std::string::npos);
+
+        DenseLayerVerifyOptions verifyOptions;
+        verifyOptions.resultPath = solved.outputResultPath;
+        verifyOptions.sampleLimit = 100;
+        const DenseLayerVerifyResult verified = verifyDenseLayerResult(verifyOptions);
+        SANPAO15_REQUIRE(verified.soldierCount == k);
+        SANPAO15_REQUIRE(verified.cannonWin == denseStateCount(k));
+        SANPAO15_REQUIRE(verified.unknown == 0);
+    }
+    std::filesystem::remove_all(dir);
+}
+
+SANPAO15_TEST(productionSolveRejectsInvalidLowerAndOverwriteCases) {
+    const std::filesystem::path dir = tempDir("sanpao15-production-errors");
+
+    DenseLayerProductionSolveOptions k2;
+    k2.soldierCount = 2;
+    k2.outputResultPath = dir / "layer-02.s15res";
+    (void)solveDenseLayerProduction(k2);
+
+    sanpao15::test::requireThrows([&] {
+        DenseLayerProductionSolveOptions options;
+        options.soldierCount = 4;
+        options.outputResultPath = dir / "layer-04.s15res";
+        (void)solveDenseLayerProduction(options);
+    }, "k=4 production solve should require lower-res");
+
+    sanpao15::test::requireThrows([&] {
+        DenseLayerProductionSolveOptions options;
+        options.soldierCount = 4;
+        options.lowerResultPath = k2.outputResultPath;
+        options.outputResultPath = dir / "layer-04.s15res";
+        (void)solveDenseLayerProduction(options);
+    }, "k=4 production solve should reject k=2 lower-res");
+
+    sanpao15::test::requireThrows([&] {
+        DenseLayerProductionSolveOptions options;
+        options.soldierCount = 3;
+        options.lowerResultPath = k2.outputResultPath;
+        options.outputResultPath = dir / "layer-03.s15res";
+        (void)solveDenseLayerProduction(options);
+    }, "material production layers should reject lower-res");
+
+    sanpao15::test::requireThrows([&] {
+        DenseLayerProductionSolveOptions options;
+        options.soldierCount = 2;
+        options.outputResultPath = k2.outputResultPath;
+        (void)solveDenseLayerProduction(options);
+    }, "production solve should refuse to overwrite output without overwrite=true");
+
+    DenseLayerProductionSolveOptions overwrite;
+    overwrite.soldierCount = 2;
+    overwrite.outputResultPath = k2.outputResultPath;
+    overwrite.overwrite = true;
+    (void)solveDenseLayerProduction(overwrite);
+
+    std::filesystem::remove_all(dir);
+}
+
+SANPAO15_TEST(singleLayerVerifierRejectsMissingAndWrongLower) {
+    const std::filesystem::path dir = tempDir("sanpao15-production-verify-errors");
+
+    DenseLayerProductionSolveOptions k2;
+    k2.soldierCount = 2;
+    k2.outputResultPath = dir / "layer-02.s15res";
+    (void)solveDenseLayerProduction(k2);
+
+    DenseLayerProductionSolveOptions k3;
+    k3.soldierCount = 3;
+    k3.outputResultPath = dir / "layer-03.s15res";
+    (void)solveDenseLayerProduction(k3);
+
+    PackedOutcomeTable2Bit k4Table(denseStateCount(4), Outcome::CannonWin);
+    const std::filesystem::path k4Path = dir / "layer-04-fake.s15res";
+    saveDenseResultTable2Bit(k4Table, 4, k4Path, StandardRulesetHash);
+
+    sanpao15::test::requireThrows([&] {
+        DenseLayerVerifyOptions options;
+        options.resultPath = k4Path;
+        options.sampleLimit = 1;
+        (void)verifyDenseLayerResult(options);
+    }, "verify-layer k>=4 should require lower-res");
+
+    sanpao15::test::requireThrows([&] {
+        DenseLayerVerifyOptions options;
+        options.resultPath = k4Path;
+        options.lowerResultPath = k2.outputResultPath;
+        options.sampleLimit = 1;
+        (void)verifyDenseLayerResult(options);
+    }, "verify-layer should reject wrong lower soldierCount");
+
+    sanpao15::test::requireThrows([&] {
+        DenseLayerVerifyOptions options;
+        options.resultPath = k3.outputResultPath;
+        options.lowerResultPath = k2.outputResultPath;
+        options.sampleLimit = 1;
+        (void)verifyDenseLayerResult(options);
+    }, "verify-layer material layer should reject lower-res");
+
+    std::filesystem::remove_all(dir);
+}
+
+SANPAO15_TEST(productionDenseIndex32Safety) {
+    SANPAO15_REQUIRE(checkedDenseIndex32(0) == 0);
+    SANPAO15_REQUIRE(checkedDenseIndex32(std::numeric_limits<uint32_t>::max()) ==
+                     std::numeric_limits<uint32_t>::max());
+    sanpao15::test::requireThrows([] {
+        (void)checkedDenseIndex32(static_cast<uint64_t>(std::numeric_limits<uint32_t>::max()) + 1u);
+    }, "checkedDenseIndex32 should reject values above uint32_t max");
+
+    for (int k = 0; k <= 15; ++k) {
+        SANPAO15_REQUIRE(denseStateCount(k) <= static_cast<uint64_t>(std::numeric_limits<uint32_t>::max()));
     }
 }
 

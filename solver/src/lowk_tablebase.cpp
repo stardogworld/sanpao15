@@ -4,10 +4,12 @@
 #include <bit>
 #include <chrono>
 #include <deque>
+#include <fstream>
 #include <iomanip>
 #include <limits>
 #include <sstream>
 #include <stdexcept>
+#include <string>
 
 #include "sanpao15/bitboard.h"
 #include "sanpao15/dense_index.h"
@@ -103,6 +105,15 @@ void requireStreamingLayer(int soldierCount) {
     }
 }
 
+void requireDenseProductionLayer(int soldierCount) {
+    if (soldierCount < 0 || soldierCount > 15) {
+        throw std::invalid_argument("production dense layer solver supports soldier count in 0..15");
+    }
+    if (denseStateCount(soldierCount) > static_cast<uint64_t>(std::numeric_limits<uint32_t>::max())) {
+        throw std::overflow_error("production dense layer solver requires uint32-addressable layers");
+    }
+}
+
 bool isWinForSide(Outcome outcome, Side side) {
     return outcome == winFor(side);
 }
@@ -133,6 +144,22 @@ void validateLayerSolveInputs(
     }
     if (soldierCount == 0 && lowerLayer != nullptr) {
         throw std::invalid_argument("lower-layer table must be null for soldierCount == 0");
+    }
+}
+
+void validateProductionLayerSolveInputs(
+    int soldierCount,
+    const PackedOutcomeTable2Bit* lowerLayer,
+    const PackedOutcomeTable2Bit& output) {
+    const uint64_t stateCount = denseStateCount(soldierCount);
+    if (output.size() != stateCount) {
+        throw std::invalid_argument("output table size does not match dense production layer");
+    }
+    if (soldierCount >= MinSoldiersForSoldierSurvival && lowerLayer == nullptr) {
+        throw std::invalid_argument("lower-layer table is required for production layers with soldierCount >= 4");
+    }
+    if (soldierCount < MinSoldiersForSoldierSurvival && lowerLayer != nullptr) {
+        throw std::invalid_argument("lower-layer table must be omitted for material-rule production layers");
     }
 }
 
@@ -171,6 +198,23 @@ void addOutcomeCount(DenseLayerSolveResult& result, Outcome outcome, uint64_t co
 }
 
 void countVerifyOutcome(LowKTablebaseVerifyLayerResult& result, Outcome outcome) {
+    switch (outcome) {
+        case Outcome::Unknown:
+            ++result.unknown;
+            break;
+        case Outcome::CannonWin:
+            ++result.cannonWin;
+            break;
+        case Outcome::SoldierWin:
+            ++result.soldierWin;
+            break;
+        case Outcome::Draw:
+            ++result.draw;
+            break;
+    }
+}
+
+void countVerifyOutcome(DenseLayerVerifyResult& result, Outcome outcome) {
     switch (outcome) {
         case Outcome::Unknown:
             ++result.unknown;
@@ -256,6 +300,176 @@ PackedOutcomeTable2Bit loadDenseResultAnyEncoding(
         packed.set(index, byteTable.get(index));
     }
     return packed;
+}
+
+std::string denseEncodingName(DenseResultEncoding encoding) {
+    switch (encoding) {
+        case DenseResultEncoding::Byte:
+            return "byte";
+        case DenseResultEncoding::Packed2Bit:
+            return "2bit";
+    }
+    throw std::invalid_argument("invalid dense result encoding");
+}
+
+std::string jsonEscape(const std::string& text) {
+    std::string escaped;
+    escaped.reserve(text.size());
+    for (char ch : text) {
+        switch (ch) {
+            case '\\':
+                escaped += "\\\\";
+                break;
+            case '"':
+                escaped += "\\\"";
+                break;
+            case '\n':
+                escaped += "\\n";
+                break;
+            case '\r':
+                escaped += "\\r";
+                break;
+            case '\t':
+                escaped += "\\t";
+                break;
+            default:
+                escaped.push_back(ch);
+                break;
+        }
+    }
+    return escaped;
+}
+
+std::string rulesetHashHex() {
+    std::ostringstream out;
+    out << "0x" << std::uppercase << std::hex << std::setw(16) << std::setfill('0') << StandardRulesetHash;
+    return out.str();
+}
+
+std::filesystem::path statsJsonPathForResult(const std::filesystem::path& resultPath) {
+    std::filesystem::path stats = resultPath;
+    stats.replace_extension(".solve.json");
+    return stats;
+}
+
+std::filesystem::path tempResultPath(const std::filesystem::path& resultPath) {
+    std::filesystem::path temp = resultPath;
+    temp += ".tmp";
+    return temp;
+}
+
+void validateOutputTarget(
+    const std::filesystem::path& outputPath,
+    const std::filesystem::path& statsPath,
+    bool overwrite,
+    bool writeStatsJson) {
+    if (outputPath.empty()) {
+        throw std::invalid_argument("--out-res is required for production dense layer solve");
+    }
+    if (std::filesystem::exists(outputPath) && !overwrite) {
+        throw std::runtime_error("output .s15res already exists; pass overwrite to replace it: " + outputPath.string());
+    }
+    if (writeStatsJson && std::filesystem::exists(statsPath) && !overwrite) {
+        throw std::runtime_error("stats .solve.json already exists; pass overwrite to replace it: " + statsPath.string());
+    }
+}
+
+void validateLowerResultFile(const std::filesystem::path& path, int expectedSoldierCount) {
+    if (!std::filesystem::exists(path)) {
+        throw std::runtime_error("lower .s15res file does not exist: " + path.string());
+    }
+    const DenseResultFileInfo info = validateDenseResultFile(path, StandardRulesetHash, expectedSoldierCount);
+    if (info.soldierCount != expectedSoldierCount) {
+        throw std::runtime_error("--lower-res must contain soldierCount K-1");
+    }
+    if (info.stateCount != denseStateCount(expectedSoldierCount)) {
+        throw std::runtime_error("--lower-res state count does not match denseStateCount(K-1)");
+    }
+    (void)denseEncodingName(info.encoding);
+}
+
+void saveDenseResultAnyEncoding(
+    const PackedOutcomeTable2Bit& table,
+    int soldierCount,
+    const std::filesystem::path& path,
+    DenseResultEncoding encoding) {
+    if (encoding == DenseResultEncoding::Packed2Bit) {
+        saveDenseResultTable2Bit(table, soldierCount, path, StandardRulesetHash);
+        return;
+    }
+
+    DenseOutcomeTable byteTable(table.size());
+    for (uint64_t index = 0; index < table.size(); ++index) {
+        byteTable.set(index, table.getUnchecked(index));
+    }
+    saveDenseResultTable(byteTable, soldierCount, path, StandardRulesetHash);
+}
+
+void writeLayerSolveStatsJson(
+    const DenseLayerProductionSolveOptions& options,
+    const DenseLayerProductionSolveResult& result) {
+    const std::filesystem::path parent = result.statsJsonPath.parent_path();
+    if (!parent.empty()) {
+        std::filesystem::create_directories(parent);
+    }
+    const std::filesystem::path tempPath = result.statsJsonPath.string() + ".tmp";
+    std::ofstream out(tempPath);
+    if (!out) {
+        throw std::runtime_error("failed to open stats .solve.json for writing: " + tempPath.string());
+    }
+    const DenseLayerSolveResult& solve = result.solve;
+    out << "{\n";
+    out << "  \"format\": \"sanpao15-layer-solve-stats\",\n";
+    out << "  \"version\": 1,\n";
+    out << "  \"rulesetName\": \"" << RulesetName << "\",\n";
+    out << "  \"rulesetHash\": \"" << rulesetHashHex() << "\",\n";
+    out << "  \"soldierCount\": " << solve.soldierCount << ",\n";
+    out << "  \"stateCount\": " << solve.stateCount << ",\n";
+    out << "  \"encoding\": \"" << denseEncodingName(result.encoding) << "\",\n";
+    out << "  \"outputResultPath\": \"" << jsonEscape(result.outputResultPath.string()) << "\",\n";
+    if (options.lowerResultPath.has_value()) {
+        out << "  \"lowerResultPath\": \"" << jsonEscape(options.lowerResultPath->string()) << "\",\n";
+    } else {
+        out << "  \"lowerResultPath\": null,\n";
+    }
+    out << "  \"states\": " << solve.stateCount << ",\n";
+    out << "  \"cannonWin\": " << solve.cannonWin << ",\n";
+    out << "  \"soldierWin\": " << solve.soldierWin << ",\n";
+    out << "  \"draw\": " << solve.draw << ",\n";
+    out << "  \"unknown\": " << solve.unknown << ",\n";
+    out << "  \"terminalStates\": " << solve.terminalStates << ",\n";
+    out << "  \"sameLayerEdges\": " << solve.sameLayerEdges << ",\n";
+    out << "  \"captureEdges\": " << solve.captureEdges << ",\n";
+    out << "  \"retrogradeResolved\": " << solve.retrogradeResolved << ",\n";
+    out << "  \"unresolvedAsDraw\": " << solve.unresolvedAsDraw << ",\n";
+    out << "  \"resolvedByTerminal\": " << solve.resolvedByTerminal << ",\n";
+    out << "  \"resolvedByLowerLayer\": " << solve.resolvedByLowerLayer << ",\n";
+    out << "  \"resolvedByPropagation\": " << solve.resolvedByPropagation << ",\n";
+    out << "  \"drawAfterQueue\": " << solve.drawAfterQueue << ",\n";
+    out << "  \"maxRemaining\": " << solve.maxRemaining << ",\n";
+    out << "  \"maxSuccessors\": " << solve.maxSuccessors << ",\n";
+    out << "  \"queuePeak\": " << solve.queuePeak << ",\n";
+    out << "  \"predecessorCalls\": " << solve.predecessorCalls << ",\n";
+    out << "  \"generatedPredecessors\": " << solve.generatedPredecessors << ",\n";
+    out << "  \"maxPredecessors\": " << solve.maxPredecessors << ",\n";
+    out << "  \"initializationSeconds\": " << std::setprecision(12) << solve.initializationSeconds << ",\n";
+    out << "  \"propagationSeconds\": " << std::setprecision(12) << solve.propagationSeconds << ",\n";
+    out << "  \"finalizeSeconds\": " << std::setprecision(12) << solve.finalizeSeconds << ",\n";
+    out << "  \"totalSeconds\": " << std::setprecision(12) << solve.seconds << ",\n";
+    out << "  \"outputBytes\": " << result.outputBytes << ",\n";
+    out << "  \"estimatedMemoryBytes\": " << solve.estimatedMemoryBytes << "\n";
+    out << "}\n";
+    if (!out) {
+        throw std::runtime_error("failed to write stats .solve.json: " + tempPath.string());
+    }
+    out.close();
+    if (!out) {
+        throw std::runtime_error("failed to close stats .solve.json: " + tempPath.string());
+    }
+    if (std::filesystem::exists(result.statsJsonPath)) {
+        std::filesystem::remove(result.statsJsonPath);
+    }
+    std::filesystem::rename(tempPath, result.statsJsonPath);
 }
 
 Outcome successorOutcome(
@@ -714,6 +928,149 @@ DenseLayerSolveResult solveDenseLayerOutcomeStreaming(
     return result;
 }
 
+DenseLayerSolveResult solveDenseLayerOutcomeStreamingProduction(
+    int soldierCount,
+    const PackedOutcomeTable2Bit* lowerLayer,
+    PackedOutcomeTable2Bit& output) {
+    requireDenseProductionLayer(soldierCount);
+    validateProductionLayerSolveInputs(soldierCount, lowerLayer, output);
+    resetOutcomeTable(output);
+    const uint64_t stateCount = denseStateCount(soldierCount);
+    if (stateCount > static_cast<uint64_t>(std::numeric_limits<size_t>::max())) {
+        throw std::overflow_error("production dense layer solver requires size_t-addressable layers");
+    }
+
+    const auto start = std::chrono::steady_clock::now();
+    DenseLayerSolveResult result;
+    result.soldierCount = soldierCount;
+    result.stateCount = stateCount;
+    if (solveForcedMaterialLayer(
+            soldierCount,
+            output,
+            result,
+            output.bytes() + remainingArrayBytes(stateCount))) {
+        return result;
+    }
+
+    std::vector<uint8_t> remaining(static_cast<size_t>(stateCount), 0);
+    std::vector<uint32_t> queue;
+    size_t queueHead = 0;
+    std::vector<uint32_t> predecessorIndices;
+    predecessorIndices.reserve(32);
+
+    const auto initStart = std::chrono::steady_clock::now();
+    for (uint64_t index = 0; index < stateCount; ++index) {
+        const Position pos = positionFromDenseIndex(soldierCount, index);
+        const DenseStreamingInitScan scan =
+            scanDenseStateForStreamingInitialization(soldierCount, index, pos, lowerLayer);
+        if (scan.terminal.terminal) {
+            output.setUnchecked(index, scan.terminal.outcome);
+            ++result.terminalStates;
+            ++result.resolvedByTerminal;
+            queue.push_back(checkedDenseIndex32(index));
+            noteQueueSize(result, static_cast<uint64_t>(queue.size() - queueHead));
+            continue;
+        }
+
+        result.maxSuccessors = std::max(result.maxSuccessors, scan.successorCount);
+        result.sameLayerEdges += scan.sameLayerEdges;
+        result.captureEdges += scan.captureEdges;
+        if (scan.resolved) {
+            output.setUnchecked(index, scan.resolvedOutcome);
+            ++result.resolvedByLowerLayer;
+            queue.push_back(checkedDenseIndex32(index));
+            noteQueueSize(result, static_cast<uint64_t>(queue.size() - queueHead));
+            continue;
+        }
+
+        remaining[static_cast<size_t>(index)] = checkedStreamingRemainingCount(scan.remainingCount);
+        result.maxRemaining = std::max(result.maxRemaining, scan.remainingCount);
+        if (scan.remainingCount == 0) {
+            output.setUnchecked(index, opponentWinFor(pos.side));
+            ++result.resolvedByLowerLayer;
+            queue.push_back(checkedDenseIndex32(index));
+            noteQueueSize(result, static_cast<uint64_t>(queue.size() - queueHead));
+        }
+    }
+    const auto initFinish = std::chrono::steady_clock::now();
+    result.initializationSeconds = std::chrono::duration<double>(initFinish - initStart).count();
+
+    const auto propagationStart = std::chrono::steady_clock::now();
+    if (result.terminalStates == stateCount) {
+        queue.clear();
+        queueHead = 0;
+    }
+    while (queueHead < queue.size()) {
+        const uint32_t childIndex = queue[queueHead++];
+        const Outcome childOutcome = output.getUnchecked(childIndex);
+        if (childOutcome == Outcome::Unknown || childOutcome == Outcome::Draw) {
+            continue;
+        }
+
+        const Position child = positionFromDenseIndex(soldierCount, childIndex);
+        const Side parentSide = opposite(child.side);
+        generateDensePredecessorIndicesFromPosition(
+            soldierCount,
+            childIndex,
+            child,
+            predecessorIndices);
+        ++result.predecessorCalls;
+        result.generatedPredecessors += static_cast<uint64_t>(predecessorIndices.size());
+        result.maxPredecessors = std::max<uint64_t>(result.maxPredecessors, predecessorIndices.size());
+
+        for (uint32_t parentIndex : predecessorIndices) {
+            if (output.getUnchecked(parentIndex) != Outcome::Unknown) {
+                continue;
+            }
+            if (isWinForSide(childOutcome, parentSide)) {
+                output.setUnchecked(parentIndex, childOutcome);
+                ++result.retrogradeResolved;
+                ++result.resolvedByPropagation;
+                queue.push_back(parentIndex);
+                noteQueueSize(result, static_cast<uint64_t>(queue.size() - queueHead));
+                continue;
+            }
+            if (isOpponentWinForSide(childOutcome, parentSide)) {
+                uint8_t& remainingCount = remaining[static_cast<size_t>(parentIndex)];
+                if (remainingCount == 0) {
+                    throw std::logic_error("streaming remaining counter underflow");
+                }
+                --remainingCount;
+                if (remainingCount == 0) {
+                    output.setUnchecked(parentIndex, opponentWinFor(parentSide));
+                    ++result.retrogradeResolved;
+                    ++result.resolvedByPropagation;
+                    queue.push_back(parentIndex);
+                    noteQueueSize(result, static_cast<uint64_t>(queue.size() - queueHead));
+                }
+            }
+        }
+    }
+    const auto propagationFinish = std::chrono::steady_clock::now();
+    result.propagationSeconds = std::chrono::duration<double>(propagationFinish - propagationStart).count();
+
+    const auto finalizeStart = std::chrono::steady_clock::now();
+    for (uint64_t index = 0; index < stateCount; ++index) {
+        Outcome outcome = output.getUnchecked(index);
+        if (outcome == Outcome::Unknown) {
+            output.setUnchecked(index, Outcome::Draw);
+            outcome = Outcome::Draw;
+            ++result.unresolvedAsDraw;
+            ++result.drawAfterQueue;
+        }
+        countOutcome(result, outcome);
+    }
+    result.unknown = 0;
+    result.estimatedMemoryBytes =
+        output.bytes() + remainingArrayBytes(stateCount) +
+        result.queuePeak * static_cast<uint64_t>(sizeof(uint32_t)) +
+        32u * static_cast<uint64_t>(sizeof(uint32_t));
+    const auto finalizeFinish = std::chrono::steady_clock::now();
+    result.finalizeSeconds = std::chrono::duration<double>(finalizeFinish - finalizeStart).count();
+    result.seconds = std::chrono::duration<double>(finalizeFinish - start).count();
+    return result;
+}
+
 std::filesystem::path lowKLayerResultPath(const std::filesystem::path& dir, int soldierCount) {
     std::ostringstream name;
     name << "layer-" << std::setw(2) << std::setfill('0') << soldierCount << ".s15res";
@@ -762,6 +1119,72 @@ std::vector<LowKTablebaseLayerResult> solveLowKTablebaseStreaming(const LowKTabl
         solvedLayers.push_back(std::move(table));
     }
     return results;
+}
+
+DenseLayerProductionSolveResult solveDenseLayerProduction(
+    const DenseLayerProductionSolveOptions& options) {
+    requireDenseProductionLayer(options.soldierCount);
+    if (options.outputResultPath.empty()) {
+        throw std::invalid_argument("--out-res is required for production dense layer solve");
+    }
+    const std::filesystem::path statsPath = statsJsonPathForResult(options.outputResultPath);
+    validateOutputTarget(
+        options.outputResultPath,
+        statsPath,
+        options.overwrite,
+        options.writeStatsJson);
+
+    std::optional<PackedOutcomeTable2Bit> lowerStorage;
+    if (options.soldierCount < MinSoldiersForSoldierSurvival) {
+        if (options.lowerResultPath.has_value()) {
+            throw std::invalid_argument("--lower-res must be omitted for material-rule layers K=0..3");
+        }
+    } else {
+        if (!options.lowerResultPath.has_value()) {
+            throw std::invalid_argument("--lower-res is required for --solve-layer K when K >= 4");
+        }
+        validateLowerResultFile(*options.lowerResultPath, options.soldierCount - 1);
+        lowerStorage = loadDenseResultAnyEncoding(*options.lowerResultPath, options.soldierCount - 1);
+    }
+
+    const std::filesystem::path parent = options.outputResultPath.parent_path();
+    if (!parent.empty()) {
+        std::filesystem::create_directories(parent);
+    }
+    if (options.writeStatsJson) {
+        const std::filesystem::path statsParent = statsPath.parent_path();
+        if (!statsParent.empty()) {
+            std::filesystem::create_directories(statsParent);
+        }
+    }
+
+    const PackedOutcomeTable2Bit* lower = lowerStorage.has_value() ? &*lowerStorage : nullptr;
+    PackedOutcomeTable2Bit table(denseStateCount(options.soldierCount));
+    const DenseLayerSolveResult solve =
+        solveDenseLayerOutcomeStreamingProduction(options.soldierCount, lower, table);
+
+    const std::filesystem::path tmpPath = tempResultPath(options.outputResultPath);
+    if (std::filesystem::exists(tmpPath)) {
+        std::filesystem::remove(tmpPath);
+    }
+    saveDenseResultAnyEncoding(table, options.soldierCount, tmpPath, options.encoding);
+    (void)validateDenseResultFile(tmpPath, StandardRulesetHash, options.soldierCount);
+
+    if (std::filesystem::exists(options.outputResultPath)) {
+        std::filesystem::remove(options.outputResultPath);
+    }
+    std::filesystem::rename(tmpPath, options.outputResultPath);
+
+    DenseLayerProductionSolveResult result;
+    result.solve = solve;
+    result.outputResultPath = options.outputResultPath;
+    result.statsJsonPath = statsPath;
+    result.outputBytes = std::filesystem::file_size(options.outputResultPath);
+    result.encoding = options.encoding;
+    if (options.writeStatsJson) {
+        writeLayerSolveStatsJson(options, result);
+    }
+    return result;
 }
 
 LowKTablebaseVerifyResult verifyLowKTablebase(
@@ -814,6 +1237,59 @@ LowKTablebaseVerifyResult verifyLowKTablebase(
 
         result.layers.push_back(layer);
         tables.push_back(std::move(table));
+    }
+
+    return result;
+}
+
+DenseLayerVerifyResult verifyDenseLayerResult(const DenseLayerVerifyOptions& options) {
+    if (options.resultPath.empty()) {
+        throw std::invalid_argument("--verify-layer requires a .s15res file path");
+    }
+    const DenseResultFileInfo info = validateDenseResultFile(options.resultPath, StandardRulesetHash);
+    requireDenseProductionLayer(info.soldierCount);
+    PackedOutcomeTable2Bit table = loadDenseResultAnyEncoding(options.resultPath, info.soldierCount);
+
+    std::optional<PackedOutcomeTable2Bit> lowerStorage;
+    if (info.soldierCount < MinSoldiersForSoldierSurvival) {
+        if (options.lowerResultPath.has_value()) {
+            throw std::invalid_argument("--lower-res must be omitted when verifying material-rule layers K=0..3");
+        }
+    } else {
+        if (!options.lowerResultPath.has_value()) {
+            throw std::invalid_argument("--lower-res is required for --verify-layer when K >= 4");
+        }
+        validateLowerResultFile(*options.lowerResultPath, info.soldierCount - 1);
+        lowerStorage = loadDenseResultAnyEncoding(*options.lowerResultPath, info.soldierCount - 1);
+    }
+
+    DenseLayerVerifyResult result;
+    result.soldierCount = info.soldierCount;
+    result.stateCount = info.stateCount;
+    result.encoding = info.encoding;
+    for (uint64_t index = 0; index < table.size(); ++index) {
+        countVerifyOutcome(result, table.getUnchecked(index));
+    }
+    if (soldiersAreBelowSurvivalLimit(info.soldierCount) && result.cannonWin != result.stateCount) {
+        throw std::runtime_error("single-layer verifier expected every material-rule state to be CannonWin");
+    }
+    if (result.unknown != 0) {
+        throw std::runtime_error("single-layer verifier found Unknown outcomes");
+    }
+
+    const PackedOutcomeTable2Bit* lower = lowerStorage.has_value() ? &*lowerStorage : nullptr;
+    if (options.sampleLimit == 0 || options.sampleLimit >= table.size()) {
+        result.sampledStates = table.size();
+        for (uint64_t index = 0; index < table.size(); ++index) {
+            verifySolvedState(info.soldierCount, index, table, lower);
+        }
+    } else {
+        result.sampledStates = options.sampleLimit;
+        uint64_t rng = 0x4C41594552564552ull ^ table.size();
+        for (uint64_t i = 0; i < options.sampleLimit; ++i) {
+            rng = rng * 6364136223846793005ull + 1442695040888963407ull;
+            verifySolvedState(info.soldierCount, rng % table.size(), table, lower);
+        }
     }
 
     return result;

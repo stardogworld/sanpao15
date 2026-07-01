@@ -429,6 +429,48 @@ void generateDensePredecessorIndicesFromPosition(
     });
 }
 
+void generateDensePredecessorIndicesFromPosition(
+    int soldierCount,
+    uint64_t childIndex,
+    const Position& child,
+    std::vector<uint32_t>& out) {
+    requireSoldierCount(soldierCount);
+    if (childIndex >= denseStateCount(soldierCount)) {
+        throw std::out_of_range("dense predecessor child index is outside the layer state count");
+    }
+    requireDensePositionForLayer(child, soldierCount, "position does not match dense predecessor child index");
+
+    const uint32_t occupied = child.cannons | child.soldiers;
+    out.clear();
+
+    if (child.side == Side::Soldier) {
+        forEachSetSquare(child.cannons, [&](int to) {
+            forEachOrthogonalNeighbor(to, [&](int from) {
+                if (bitIsSet(occupied, from)) {
+                    return;
+                }
+                Position parent = child;
+                parent.side = Side::Cannon;
+                parent.cannons = (parent.cannons & ~bitForSquare(to)) | bitForSquare(from);
+                out.push_back(checkedDenseIndex32(denseIndex(parent)));
+            });
+        });
+        return;
+    }
+
+    forEachSetSquare(child.soldiers, [&](int to) {
+        forEachOrthogonalNeighbor(to, [&](int from) {
+            if (bitIsSet(occupied, from)) {
+                return;
+            }
+            Position parent = child;
+            parent.side = Side::Soldier;
+            parent.soldiers = (parent.soldiers & ~bitForSquare(to)) | bitForSquare(from);
+            out.push_back(checkedDenseIndex32(denseIndex(parent)));
+        });
+    });
+}
+
 std::vector<DensePredecessor> generateDensePredecessors(int soldierCount, uint64_t childIndex) {
     return generateDensePredecessors(soldierCount, childIndex, DensePredecessorValidation::Checked);
 }

@@ -23,6 +23,7 @@ std::vector<DenseLayerSize> denseLayerSizes();
 uint64_t totalDenseStateCount();
 uint64_t totalDenseOutcomeBytes2Bit();
 uint64_t totalDenseOutcomeBytes1Byte();
+uint32_t checkedDenseIndex32(uint64_t index);
 
 uint64_t rankDensePosition(uint32_t cannonMask, uint32_t soldierMask, Side side);
 uint64_t denseIndex(const Position& pos);

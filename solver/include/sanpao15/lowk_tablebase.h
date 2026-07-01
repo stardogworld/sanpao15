@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <optional>
 #include <vector>
 
 #include "sanpao15/dense_successor.h"
@@ -83,11 +84,49 @@ struct DenseStreamingInitScan {
     Outcome resolvedOutcome = Outcome::Unknown;
 };
 
+struct DenseLayerProductionSolveOptions {
+    int soldierCount = -1;
+    std::optional<std::filesystem::path> lowerResultPath;
+    std::filesystem::path outputResultPath;
+    DenseResultEncoding encoding = DenseResultEncoding::Packed2Bit;
+    bool overwrite = false;
+    bool writeStatsJson = true;
+};
+
+struct DenseLayerProductionSolveResult {
+    DenseLayerSolveResult solve;
+    std::filesystem::path outputResultPath;
+    std::filesystem::path statsJsonPath;
+    uint64_t outputBytes = 0;
+    DenseResultEncoding encoding = DenseResultEncoding::Packed2Bit;
+};
+
+struct DenseLayerVerifyOptions {
+    std::filesystem::path resultPath;
+    std::optional<std::filesystem::path> lowerResultPath;
+    uint64_t sampleLimit = 10000;
+};
+
+struct DenseLayerVerifyResult {
+    int soldierCount = -1;
+    uint64_t stateCount = 0;
+    uint64_t sampledStates = 0;
+    uint64_t cannonWin = 0;
+    uint64_t soldierWin = 0;
+    uint64_t draw = 0;
+    uint64_t unknown = 0;
+    DenseResultEncoding encoding = DenseResultEncoding::Packed2Bit;
+};
+
 DenseLayerSolveResult solveDenseLayerOutcome(
     int soldierCount,
     const PackedOutcomeTable2Bit* lowerLayer,
     PackedOutcomeTable2Bit& output);
 DenseLayerSolveResult solveDenseLayerOutcomeStreaming(
+    int soldierCount,
+    const PackedOutcomeTable2Bit* lowerLayer,
+    PackedOutcomeTable2Bit& output);
+DenseLayerSolveResult solveDenseLayerOutcomeStreamingProduction(
     int soldierCount,
     const PackedOutcomeTable2Bit* lowerLayer,
     PackedOutcomeTable2Bit& output);
@@ -102,10 +141,13 @@ std::filesystem::path lowKLayerResultPath(const std::filesystem::path& dir, int 
 
 std::vector<LowKTablebaseLayerResult> solveLowKTablebase(const LowKTablebaseSolveOptions& options);
 std::vector<LowKTablebaseLayerResult> solveLowKTablebaseStreaming(const LowKTablebaseSolveOptions& options);
+DenseLayerProductionSolveResult solveDenseLayerProduction(
+    const DenseLayerProductionSolveOptions& options);
 
 LowKTablebaseVerifyResult verifyLowKTablebase(
     const std::filesystem::path& dir,
     int maxK,
     uint64_t sampleLimit);
+DenseLayerVerifyResult verifyDenseLayerResult(const DenseLayerVerifyOptions& options);
 
 }  // namespace sanpao15

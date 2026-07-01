@@ -120,6 +120,8 @@ Useful CLI modes:
 .\build\sanpao15_cli.exe --solve-lowk-streaming 3 --out-dir build\stream-min4 --encoding 2bit
 .\build\sanpao15_cli.exe --solve-lowk-streaming 4 --allow-k4 --out-dir build\stream-k4 --encoding 2bit
 .\build\sanpao15_cli.exe --verify-lowk build\lowk-smoke --max-k 2 --sample 10000
+.\build\sanpao15_cli.exe --solve-layer 4 --lower-res build\stream-min4\layer-03.s15res --out-res build\prod-layers\layer-04.s15res --encoding 2bit
+.\build\sanpao15_cli.exe --verify-layer build\prod-layers\layer-04.s15res --lower-res build\stream-min4\layer-03.s15res --sample 10000
 .\build\sanpao15_cli.exe --limit 50000
 .\build\sanpao15_cli.exe --full
 .\build\sanpao15_cli.exe --analyze "SSSSS/SSSSS/SSSSS/...../.CCC. c" --limit 10000
@@ -226,6 +228,14 @@ The streaming low-k solver can solve `k=0..3` by default and allows an explicit
 completed in 01:06 with exact baseline counts: `CannonWin=33,398,108`,
 `SoldierWin=736`, `Draw=250,156`, `Unknown=0`; see
 `docs/scalable-tablebase-solver.md`.
+The production per-layer dense solver is `--solve-layer K`. It solves exactly
+one layer, loads `--lower-res` for `K>=4`, writes a single `.s15res`, writes a
+matching `.solve.json` stats file, and uses a `uint32_t` work queue and
+predecessor index buffer internally. For `K=0..3`, `--lower-res` must be
+omitted because the material rule resolves the whole layer. `--verify-layer`
+validates one layer file plus its required lower layer without requiring a
+directory of `0..K` results. The production API accepts `K=0..15`; this does
+not mean a full `0..15` batch should be run without more scale checks.
 `.s15res --validate-res` scans payload bytes instead of checking only headers.
 
 Layer-local edge probe:

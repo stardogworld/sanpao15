@@ -117,6 +117,21 @@ Attempt the first non-material layer only as an explicit benchmark:
 .\build\sanpao15_cli.exe --solve-lowk-streaming 4 --allow-k4 --out-dir build\stream-k4 --encoding 2bit
 ```
 
+Production per-layer solving uses `--solve-layer` instead of keeping `0..K`
+layers resident in memory:
+
+```powershell
+.\build\sanpao15_cli.exe --solve-layer 4 --lower-res build\stream-min4\layer-03.s15res --out-res build\prod-layers\layer-04.s15res --encoding 2bit
+.\build\sanpao15_cli.exe --verify-layer build\prod-layers\layer-04.s15res --lower-res build\stream-min4\layer-03.s15res --sample 10000
+```
+
+`--solve-lowk-streaming` remains a prototype and smoke-test command, limited to
+`k<=4` with `--allow-k4` for the benchmark layer. `--solve-layer` is the
+production command and accepts `k=0..15`. For `k=0..3`, `--lower-res` is
+rejected because the material rule resolves the whole layer. For `k>=4`, the
+lower result is required and must be a valid current-ruleset `.s15res` for
+exactly `k-1`.
+
 Generated names:
 
 ```text
@@ -173,9 +188,9 @@ total: 01:06
 
 ## Next Direction
 
-The next full tablebase work should add a production per-layer streaming CLI,
-then cautiously benchmark `k=5`. Larger layers will still need the scalable
-`0..15` architecture:
+The next full tablebase work should cautiously benchmark `k=5` through
+`--solve-layer`. Larger layers will still need the scalable `0..15`
+architecture:
 
 ```text
 CSR or flat predecessor storage

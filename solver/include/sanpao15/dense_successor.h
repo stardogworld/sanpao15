@@ -83,6 +83,11 @@ void generateDensePredecessorIndicesFromPosition(
     uint64_t childIndex,
     const Position& child,
     std::vector<uint64_t>& out);
+void generateDensePredecessorIndicesFromPosition(
+    int soldierCount,
+    uint64_t childIndex,
+    const Position& child,
+    std::vector<uint32_t>& out);
 DenseTerminalInfo terminalOutcomeForDenseState(int soldierCount, uint64_t denseIndex);
 DenseTerminalInfo terminalOutcomeForPosition(const Position& pos);
 DenseTerminalInfo terminalOutcomeForPositionWithSuccessors(
