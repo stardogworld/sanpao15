@@ -13,6 +13,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "sanpao15/bitboard.h"
@@ -74,6 +75,14 @@ struct ClosureMigrationSnapshotPlan {
     bool activeCheckpointInput = false;
     int soldierCount = 0;
     uint64_t expectedKeyCount = 0;
+};
+
+struct PartitionedClosureSnapshotRef {
+    std::string name;
+    std::filesystem::path path;
+    uint64_t keyCount = 0;
+    int soldierCount = 0;
+    bool active = false;
 };
 
 void requireSoldierCountRange(int soldierCount) {
@@ -858,6 +867,240 @@ std::vector<PartitionedClosureSnapshotInfo> readPartitionedClosureSnapshots(
     return snapshots;
 }
 
+void requirePartitionCompatible(
+    const PartitionInspection& inspection,
+    int soldierCount,
+    uint32_t bucketCount,
+    const std::string& method,
+    const std::string& name) {
+    if (inspection.soldierCount != soldierCount ||
+        inspection.bucketCount != bucketCount ||
+        inspection.partitionMethod != method) {
+        throw std::runtime_error("partitioned closure snapshot is incompatible: " + name);
+    }
+}
+
+std::unordered_map<std::string, PartitionedClosureSnapshotRef> snapshotMap(
+    const PartitionedClosureCheckpointInfo& checkpoint) {
+    std::unordered_map<std::string, PartitionedClosureSnapshotRef> snapshots;
+    for (const PartitionedClosureSnapshotInfo& item : checkpoint.snapshots) {
+        PartitionedClosureSnapshotRef ref;
+        ref.name = item.name;
+        ref.path = item.path;
+        ref.keyCount = item.keyCount;
+        ref.soldierCount = item.soldierCount;
+        ref.active = item.activeCheckpointInput;
+        snapshots.emplace(ref.name, std::move(ref));
+    }
+    return snapshots;
+}
+
+PartitionedClosureSnapshotRef requireSnapshot(
+    const std::unordered_map<std::string, PartitionedClosureSnapshotRef>& snapshots,
+    const std::string& name) {
+    const auto found = snapshots.find(name);
+    if (found == snapshots.end()) {
+        throw std::runtime_error("partitioned closure checkpoint missing snapshot: " + name);
+    }
+    return found->second;
+}
+
+std::filesystem::path partitionedRunPath(
+    const std::filesystem::path& checkpointDir,
+    uint64_t expandedBase,
+    uint64_t budget) {
+    return checkpointDir / "runs" /
+        ("partitioned-resume-" + std::to_string(expandedBase) + "-" + std::to_string(budget));
+}
+
+void removeAllNoThrow(const std::filesystem::path& path) {
+    std::error_code error;
+    std::filesystem::remove_all(path, error);
+}
+
+void copyPartitionedSnapshot(
+    const std::filesystem::path& from,
+    const std::filesystem::path& to) {
+    std::error_code error;
+    std::filesystem::remove_all(to, error);
+    error.clear();
+    std::filesystem::create_directories(to.parent_path(), error);
+    if (error) {
+        throw std::runtime_error("failed to create partition snapshot parent: " + to.parent_path().string());
+    }
+    std::filesystem::copy(
+        from,
+        to,
+        std::filesystem::copy_options::recursive | std::filesystem::copy_options::overwrite_existing,
+        error);
+    if (error) {
+        throw std::runtime_error("failed to copy partition snapshot: " + from.string());
+    }
+}
+
+void writeKeysFromVector(
+    const std::filesystem::path& path,
+    int soldierCount,
+    std::vector<uint64_t>& keys) {
+    std::sort(keys.begin(), keys.end());
+    keys.erase(std::unique(keys.begin(), keys.end()), keys.end());
+    KeysWriter writer(path, soldierCount);
+    for (uint64_t key : keys) {
+        writer.write(key);
+    }
+    writer.finish();
+}
+
+void writeRemainingFrontierFromBuckets(
+    const std::filesystem::path& output,
+    const std::filesystem::path& frontierPartition,
+    int soldierCount,
+    uint32_t startBucket,
+    uint32_t bucketCount,
+    const std::filesystem::path& tempDir,
+    uint64_t chunkKeyLimit,
+    bool keepTempFiles) {
+    ExternalKeySetOptions options;
+    options.tempDir = tempDir;
+    options.chunkKeyLimit = chunkKeyLimit;
+    options.keepTempFiles = keepTempFiles;
+    ExternalKeySetBuilder builder(options);
+    for (uint32_t bucket = startBucket; bucket < bucketCount; ++bucket) {
+        std::vector<uint64_t> keys = readPartitionBucketKeys(frontierPartition, bucket);
+        for (uint64_t key : keys) {
+            requireKeySoldierCount(key, soldierCount, "remaining frontier");
+            builder.add(key);
+        }
+    }
+    KeysWriter writer(output, soldierCount);
+    builder.finishToStream([&](uint64_t key) {
+        writer.write(key);
+    });
+    writer.finish();
+}
+
+PartitionedClosureSnapshotInfo buildSnapshotFromKeys(
+    const std::filesystem::path& keysFile,
+    const std::filesystem::path& outputDir,
+    const std::string& name,
+    bool active,
+    uint32_t bucketCount,
+    PartitionMethod method,
+    uint64_t progressInterval,
+    const std::function<void(uint64_t)>& progress = {}) {
+    PartitionedKeySetOptions options;
+    options.inputFile = keysFile;
+    options.outputDir = outputDir;
+    options.bucketCount = bucketCount;
+    options.method = method;
+    options.overwrite = true;
+    options.progressInterval = progressInterval;
+    options.progress = progress;
+    const PartitionedKeySetStats stats = buildPartitionedKeySet(options);
+    const PartitionInspection inspection = inspectPartitionedKeySet(outputDir);
+    PartitionedClosureSnapshotInfo info = makeSnapshotInfo(name, outputDir, active, inspection, stats.buildSeconds);
+    return info;
+}
+
+PartitionedClosureSnapshotInfo buildSnapshotFromBuilder(
+    ExternalKeySetBuilder& builder,
+    const std::filesystem::path& keysFile,
+    int soldierCount,
+    const std::filesystem::path& outputDir,
+    const std::string& name,
+    bool active,
+    uint32_t bucketCount,
+    PartitionMethod method,
+    uint64_t progressInterval) {
+    {
+        KeysWriter writer(keysFile, soldierCount);
+        builder.finishToStream([&](uint64_t key) {
+            writer.write(key);
+        });
+        writer.finish();
+    }
+    return buildSnapshotFromKeys(
+        keysFile,
+        outputDir,
+        name,
+        active,
+        bucketCount,
+        method,
+        progressInterval);
+}
+
+PartitionedClosureSnapshotInfo snapshotInfoFromExisting(
+    const std::filesystem::path& path,
+    const std::string& name,
+    bool active) {
+    return makeSnapshotInfo(name, path, active, inspectPartitionedKeySet(path));
+}
+
+uint64_t snapshotKeyCount(
+    const std::unordered_map<std::string, PartitionedClosureSnapshotRef>& snapshots,
+    const std::string& name) {
+    const auto found = snapshots.find(name);
+    return found == snapshots.end() ? 0 : found->second.keyCount;
+}
+
+void writePartitionedClosureRunManifest(
+    const std::filesystem::path& outputDir,
+    const PartitionedClosureCheckpointInfo& previous,
+    const std::string& checkpointKind,
+    uint64_t expandedStates,
+    bool complete,
+    bool truncated,
+    uint32_t bucketCount,
+    PartitionMethod method,
+    const std::vector<PartitionedClosureSnapshotInfo>& snapshots) {
+    ClosureCheckpointState state;
+    state.soldierCount = previous.soldierCount;
+    state.checkpointKind = checkpointKind;
+    state.expandedStates = expandedStates;
+    state.complete = complete;
+    state.truncated = truncated;
+    writePartitionedClosureManifest(outputDir, previous.sourceLayerDir, state, bucketCount, method, snapshots);
+}
+
+std::vector<PartitionedClosureSnapshotInfo> collectActiveManifestSnapshots(
+    const std::unordered_map<std::string, PartitionedClosureSnapshotRef>& previousSnapshots,
+    const std::vector<PartitionedClosureSnapshotInfo>& newSnapshots,
+    const std::vector<std::string>& keepInactiveNames) {
+    std::vector<PartitionedClosureSnapshotInfo> snapshots;
+    for (const std::string& name : keepInactiveNames) {
+        const auto found = previousSnapshots.find(name);
+        if (found != previousSnapshots.end()) {
+            snapshots.push_back(snapshotInfoFromExisting(found->second.path, name, false));
+        }
+    }
+    snapshots.insert(snapshots.end(), newSnapshots.begin(), newSnapshots.end());
+    return snapshots;
+}
+
+void replacePartitionedCheckpoint(
+    const std::filesystem::path& checkpointDir,
+    const std::filesystem::path& stagedDir,
+    bool keepTempFiles) {
+    const std::filesystem::path backupDir = checkpointDir.parent_path() / (checkpointDir.filename().string() + ".bak");
+    std::error_code error;
+    std::filesystem::remove_all(backupDir, error);
+    error.clear();
+    std::filesystem::rename(checkpointDir, backupDir, error);
+    if (error) {
+        throw std::runtime_error("failed to move current partitioned checkpoint aside: " + checkpointDir.string());
+    }
+    error.clear();
+    std::filesystem::rename(stagedDir, checkpointDir, error);
+    if (error) {
+        std::error_code restoreError;
+        std::filesystem::rename(backupDir, checkpointDir, restoreError);
+        throw std::runtime_error("failed to activate partitioned checkpoint: " + checkpointDir.string());
+    }
+    if (!keepTempFiles) {
+        removeAllNoThrow(backupDir);
+    }
+}
+
 std::string truncationReasonString(const ExternalClosureStats& stats) {
     if (stats.truncatedByMaxStates) {
         return "max-states";
@@ -1184,38 +1427,52 @@ void writeClosureCheckpoint(
         }
         const auto partitionStarted = Clock::now();
         const PartitionMethod method = closurePartitionMethodFromString(options.closurePartitionMethod);
+        std::vector<PartitionedClosureSnapshotInfo> partitionSnapshots;
         writeCheckpointPartition(
             checkpointVisitedPath(checkpointDir),
             checkpointPartitionDir(checkpointDir, "visited"),
             options.closurePartitionBuckets,
             method);
+        partitionSnapshots.push_back(snapshotInfoFromExisting(checkpointPartitionDir(checkpointDir, "visited"), "visited", !state.pendingIteration));
         writeCheckpointPartition(
             checkpointFrontierPath(checkpointDir),
             checkpointPartitionDir(checkpointDir, "frontier"),
             options.closurePartitionBuckets,
             method);
+        partitionSnapshots.push_back(snapshotInfoFromExisting(checkpointPartitionDir(checkpointDir, "frontier"), "frontier", !state.pendingIteration));
         writeCheckpointPartition(
             checkpointRemainingFrontierPath(checkpointDir),
             checkpointPartitionDir(checkpointDir, "remaining-frontier"),
             options.closurePartitionBuckets,
             method);
+        partitionSnapshots.push_back(snapshotInfoFromExisting(checkpointPartitionDir(checkpointDir, "remaining-frontier"), "remaining-frontier", state.pendingIteration));
         writeCheckpointPartition(
             checkpointNextSeedPath(checkpointDir),
             checkpointPartitionDir(checkpointDir, "next-seeds"),
             options.closurePartitionBuckets,
             method);
+        partitionSnapshots.push_back(snapshotInfoFromExisting(checkpointPartitionDir(checkpointDir, "next-seeds"), "next-seeds", true));
         if (!pendingCandidatePath.empty()) {
             writeCheckpointPartition(
                 checkpointPendingCandidatePath(checkpointDir),
                 checkpointPartitionDir(checkpointDir, "pending-candidates"),
                 options.closurePartitionBuckets,
                 method);
+            partitionSnapshots.push_back(snapshotInfoFromExisting(checkpointPartitionDir(checkpointDir, "pending-candidates"), "pending-candidates", true));
             writeCheckpointPartition(
                 checkpointBaseVisitedPath(checkpointDir),
                 checkpointPartitionDir(checkpointDir, "base-visited"),
                 options.closurePartitionBuckets,
                 method);
+            partitionSnapshots.push_back(snapshotInfoFromExisting(checkpointPartitionDir(checkpointDir, "base-visited"), "base-visited", true));
         }
+        writePartitionedClosureManifest(
+            checkpointDir / "partitioned",
+            checkpointDir,
+            state,
+            options.closurePartitionBuckets,
+            method,
+            partitionSnapshots);
         stats.partitionSeconds += std::chrono::duration<double>(Clock::now() - partitionStarted).count();
         ++stats.partitionedSnapshotsWritten;
     }
@@ -1637,6 +1894,269 @@ ClosureCheckpointMigrationResult migrateClosureCheckpointToPartitioned(
     (void)inspectPartitionedClosureCheckpoint(outputDir, state.soldierCount);
     result.totalSeconds = std::chrono::duration<double>(Clock::now() - totalStarted).count();
     return result;
+}
+
+PartitionedClosureRunStats resumePartitionedClosure(
+    const PartitionedClosureOptions& options) {
+    if (options.partitionedCheckpointDir.empty() && options.layerDir.empty()) {
+        throw std::invalid_argument("partitioned closure resume requires a layer dir or checkpoint dir");
+    }
+    requireSoldierCountRange(options.soldierCount);
+    if (options.candidateChunkKeyLimit == 0) {
+        throw std::invalid_argument("partitioned closure candidate chunk limit must be greater than zero");
+    }
+    const auto started = Clock::now();
+    const std::filesystem::path checkpointDir = options.partitionedCheckpointDir.empty()
+        ? options.layerDir / "work" / ("layer-" + std::to_string(options.soldierCount)) / "partitioned"
+        : options.partitionedCheckpointDir;
+    const PartitionedClosureCheckpointInfo checkpoint =
+        inspectPartitionedClosureCheckpoint(checkpointDir, options.soldierCount);
+    const uint32_t bucketCount = options.bucketCount == 0 ? checkpoint.bucketCount : options.bucketCount;
+    const std::string methodText = options.partitionMethod.empty() ? checkpoint.partitionMethod : options.partitionMethod;
+    const PartitionMethod method = partitionMethodFromString(methodText);
+    if (checkpoint.bucketCount != bucketCount) {
+        throw std::runtime_error("partitioned closure resume bucket count does not match checkpoint");
+    }
+    if (checkpoint.partitionMethod != partitionMethodToString(method)) {
+        throw std::runtime_error("partitioned closure resume method does not match checkpoint");
+    }
+
+    const auto previous = snapshotMap(checkpoint);
+    const bool midIteration = checkpoint.checkpointKind == "mid-iteration";
+    const PartitionedClosureSnapshotRef baseVisited =
+        requireSnapshot(previous, midIteration ? "base-visited" : "visited");
+    const PartitionedClosureSnapshotRef activeFrontier =
+        requireSnapshot(previous, midIteration ? "remaining-frontier" : "frontier");
+    const PartitionedClosureSnapshotRef nextSeeds =
+        requireSnapshot(previous, "next-seeds");
+    const PartitionedClosureSnapshotRef pendingCandidates =
+        midIteration ? requireSnapshot(previous, "pending-candidates") : PartitionedClosureSnapshotRef{};
+
+    requirePartitionCompatible(inspectPartitionedKeySet(baseVisited.path), options.soldierCount, bucketCount, checkpoint.partitionMethod, baseVisited.name);
+    requirePartitionCompatible(inspectPartitionedKeySet(activeFrontier.path), options.soldierCount, bucketCount, checkpoint.partitionMethod, activeFrontier.name);
+    requirePartitionCompatible(inspectPartitionedKeySet(nextSeeds.path), options.soldierCount > 0 ? options.soldierCount - 1 : 0, bucketCount, checkpoint.partitionMethod, "next-seeds");
+    if (midIteration) {
+        requirePartitionCompatible(inspectPartitionedKeySet(pendingCandidates.path), options.soldierCount, bucketCount, checkpoint.partitionMethod, "pending-candidates");
+    }
+
+    PartitionedClosureRunStats stats;
+    stats.soldierCount = options.soldierCount;
+    stats.dryRun = options.dryRun;
+    stats.checkpointDir = checkpointDir;
+    stats.initialCheckpointKind = checkpoint.checkpointKind;
+    stats.finalCheckpointKind = checkpoint.checkpointKind;
+    stats.initialExpandedStates = checkpoint.expandedStates;
+    stats.finalExpandedStates = checkpoint.expandedStates;
+    stats.initialVisitedStates = baseVisited.keyCount;
+    stats.finalVisitedStates = baseVisited.keyCount;
+    stats.initialFrontierStates = activeFrontier.keyCount;
+    stats.finalFrontierStates = activeFrontier.keyCount;
+    stats.initialNextSeedStates = nextSeeds.keyCount;
+    stats.finalNextSeedStates = nextSeeds.keyCount;
+    stats.pendingCandidateStates = midIteration ? pendingCandidates.keyCount : 0;
+    stats.complete = checkpoint.complete;
+    stats.truncated = checkpoint.truncated;
+    stats.truncationReason = checkpoint.truncated ? "existing-checkpoint" : "none";
+
+    if (options.dryRun || checkpoint.complete || options.expandedBudget == 0) {
+        stats.totalSeconds = std::chrono::duration<double>(Clock::now() - started).count();
+        return stats;
+    }
+
+    const std::filesystem::path runDir =
+        partitionedRunPath(checkpointDir, checkpoint.expandedStates, options.expandedBudget);
+    stats.runDir = runDir;
+    const std::filesystem::path stageDir = runDir / "stage";
+    removeAllNoThrow(runDir);
+    std::filesystem::create_directories(stageDir);
+
+    ExternalKeySetOptions candidateOptions;
+    candidateOptions.tempDir = runDir / "candidate-runs";
+    candidateOptions.chunkKeyLimit = options.candidateChunkKeyLimit;
+    candidateOptions.keepTempFiles = options.keepTempFiles;
+    ExternalKeySetBuilder generatedCandidates(candidateOptions);
+
+    ExternalKeySetOptions seedOptions;
+    seedOptions.tempDir = runDir / "capture-runs";
+    seedOptions.chunkKeyLimit = options.candidateChunkKeyLimit;
+    seedOptions.keepTempFiles = options.keepTempFiles;
+    ExternalKeySetBuilder generatedSeeds(seedOptions);
+
+    bool stoppedByBudget = false;
+    uint32_t nextBucketToProcess = bucketCount;
+    const auto expansionStarted = Clock::now();
+    for (uint32_t bucket = 0; bucket < bucketCount; ++bucket) {
+        if (stoppedByBudget) {
+            break;
+        }
+        std::vector<uint64_t> frontierKeys = readPartitionBucketKeys(activeFrontier.path, bucket);
+        for (uint64_t key : frontierKeys) {
+            const Position pos = unpackPosition(key);
+            const int soldiers = popcount25(pos.soldiers);
+            if (soldiers != options.soldierCount) {
+                throw std::runtime_error("partitioned frontier key has unexpected soldier count");
+            }
+            ++stats.expandedThisRun;
+            ++stats.finalExpandedStates;
+            if (!isTerminal(pos)) {
+                const std::vector<Move> moves = generateLegalMoves(pos);
+                for (const Move& move : moves) {
+                    const Position next = applyMove(pos, move);
+                    const int nextSoldiers = popcount25(next.soldiers);
+                    const uint64_t nextKey = packPosition(next);
+                    if (nextSoldiers == options.soldierCount) {
+                        generatedCandidates.add(nextKey);
+                        ++stats.sameEdgesGenerated;
+                    } else if (nextSoldiers == options.soldierCount - 1) {
+                        if (options.soldierCount == 0) {
+                            throw std::logic_error("0-soldier partitioned closure generated a capture transition");
+                        }
+                        generatedSeeds.add(nextKey);
+                        ++stats.captureEdgesGenerated;
+                    } else {
+                        throw std::logic_error("illegal soldier count transition during partitioned closure");
+                    }
+                }
+            }
+        }
+        if (options.progress && options.progressInterval != 0 &&
+            stats.expandedThisRun >= options.progressInterval &&
+            stats.expandedThisRun % options.progressInterval <= frontierKeys.size()) {
+            PartitionedClosureProgressInfo info;
+            info.soldierCount = options.soldierCount;
+            info.expandedThisRun = stats.expandedThisRun;
+            info.finalExpandedStates = stats.finalExpandedStates;
+            info.sameEdgesGenerated = stats.sameEdgesGenerated;
+            info.captureEdgesGenerated = stats.captureEdgesGenerated;
+            info.bucketId = bucket;
+            info.elapsedSeconds = std::chrono::duration<double>(Clock::now() - started).count();
+            options.progress(info);
+        }
+        if (options.expandedBudget != 0 && stats.expandedThisRun >= options.expandedBudget) {
+            stoppedByBudget = bucket + 1 < bucketCount;
+            nextBucketToProcess = bucket + 1;
+        }
+    }
+    stats.expansionSeconds = std::chrono::duration<double>(Clock::now() - expansionStarted).count();
+
+    const auto mergeStarted = Clock::now();
+    std::vector<PartitionedClosureSnapshotInfo> newSnapshots;
+    const std::filesystem::path generatedCandidatesKeys = runDir / "generated-candidates.s15keys";
+    const PartitionedClosureSnapshotInfo generatedCandidatesSnapshot = buildSnapshotFromBuilder(
+        generatedCandidates,
+        generatedCandidatesKeys,
+        options.soldierCount,
+        runDir / "generated-candidates",
+        "generated-candidates",
+        false,
+        bucketCount,
+        method,
+        0);
+
+    const std::filesystem::path generatedSeedsKeys = runDir / "generated-capture-seeds.s15keys";
+    const PartitionedClosureSnapshotInfo generatedSeedsSnapshot = buildSnapshotFromBuilder(
+        generatedSeeds,
+        generatedSeedsKeys,
+        options.soldierCount > 0 ? options.soldierCount - 1 : 0,
+        runDir / "generated-capture-seeds",
+        "generated-capture-seeds",
+        false,
+        bucketCount,
+        method,
+        0);
+
+    const std::filesystem::path pendingOut = runDir / "pending-candidates";
+    if (midIteration) {
+        (void)partitionedUnion(pendingCandidates.path, generatedCandidatesSnapshot.path, pendingOut, true);
+    } else {
+        copyPartitionedSnapshot(generatedCandidatesSnapshot.path, pendingOut);
+    }
+    const PartitionedClosureSnapshotInfo pendingSnapshot =
+        snapshotInfoFromExisting(pendingOut, "pending-candidates", stoppedByBudget);
+
+    const std::filesystem::path nextSeedsOut = runDir / "next-seeds";
+    (void)partitionedUnion(nextSeeds.path, generatedSeedsSnapshot.path, nextSeedsOut, true);
+    const PartitionedClosureSnapshotInfo nextSeedsSnapshot =
+        snapshotInfoFromExisting(nextSeedsOut, "next-seeds", true);
+    stats.finalNextSeedStates = nextSeedsSnapshot.keyCount;
+
+    if (stoppedByBudget) {
+        const std::filesystem::path remainingKeys = runDir / "remaining-frontier.s15keys";
+        writeRemainingFrontierFromBuckets(
+            remainingKeys,
+            activeFrontier.path,
+            options.soldierCount,
+            nextBucketToProcess,
+            bucketCount,
+            runDir / "remaining-frontier-runs",
+            options.candidateChunkKeyLimit,
+            options.keepTempFiles);
+        const PartitionedClosureSnapshotInfo remainingSnapshot = buildSnapshotFromKeys(
+            remainingKeys,
+            runDir / "remaining-frontier",
+            "remaining-frontier",
+            true,
+            bucketCount,
+            method,
+            0);
+        PartitionedClosureSnapshotInfo baseSnapshot =
+            snapshotInfoFromExisting(baseVisited.path, "base-visited", true);
+        newSnapshots = collectActiveManifestSnapshots(
+            previous,
+            {baseSnapshot, remainingSnapshot, pendingSnapshot, nextSeedsSnapshot},
+            {"visited", "frontier"});
+        stats.finalCheckpointKind = "mid-iteration";
+        stats.truncated = true;
+        stats.truncationReason = "expanded-budget";
+        stats.finalVisitedStates = baseSnapshot.keyCount;
+        stats.finalFrontierStates = remainingSnapshot.keyCount;
+        stats.pendingCandidateStates = pendingSnapshot.keyCount;
+    } else {
+        const std::filesystem::path nextFrontierOut = runDir / "frontier";
+        (void)partitionedDifference(pendingOut, baseVisited.path, nextFrontierOut, true);
+        const PartitionedClosureSnapshotInfo frontierSnapshot =
+            snapshotInfoFromExisting(nextFrontierOut, "frontier", true);
+        const std::filesystem::path visitedOut = runDir / "visited";
+        (void)partitionedUnion(baseVisited.path, nextFrontierOut, visitedOut, true);
+        const PartitionedClosureSnapshotInfo visitedSnapshot =
+            snapshotInfoFromExisting(visitedOut, "visited", true);
+        newSnapshots = collectActiveManifestSnapshots(
+            previous,
+            {visitedSnapshot, frontierSnapshot, nextSeedsSnapshot},
+            {"base-visited", "remaining-frontier", "pending-candidates"});
+        stats.finalCheckpointKind = "iteration-boundary";
+        stats.truncated = frontierSnapshot.keyCount != 0;
+        stats.truncationReason = stats.truncated ? "frontier-not-empty" : "none";
+        stats.complete = frontierSnapshot.keyCount == 0;
+        stats.finalVisitedStates = visitedSnapshot.keyCount;
+        stats.finalFrontierStates = frontierSnapshot.keyCount;
+        stats.pendingCandidateStates = 0;
+        ++stats.iterationsCompleted;
+    }
+
+    stats.partitionMergeSeconds = std::chrono::duration<double>(Clock::now() - mergeStarted).count();
+    stats.snapshotsWritten = static_cast<uint64_t>(newSnapshots.size());
+
+    writePartitionedClosureRunManifest(
+        checkpointDir,
+        checkpoint,
+        stats.finalCheckpointKind,
+        stats.finalExpandedStates,
+        stats.complete,
+        stats.truncated,
+        bucketCount,
+        method,
+        newSnapshots);
+    (void)inspectPartitionedClosureCheckpoint(checkpointDir, options.soldierCount);
+
+    if (!options.keepTempFiles) {
+        removeAllNoThrow(candidateOptions.tempDir);
+        removeAllNoThrow(seedOptions.tempDir);
+        removeIfExists(generatedCandidatesKeys);
+        removeIfExists(generatedSeedsKeys);
+    }
+    stats.totalSeconds = std::chrono::duration<double>(Clock::now() - started).count();
+    return stats;
 }
 
 ExternalClosureStats buildLayerClosureExternal(const ExternalClosureOptions& options) {

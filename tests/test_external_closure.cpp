@@ -58,6 +58,28 @@ std::string readText(const std::filesystem::path& path) {
     return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
 }
 
+std::vector<uint64_t> readPartitionedKeys(const std::filesystem::path& partitionDir) {
+    const PartitionInspection inspection = inspectPartitionedKeySet(partitionDir);
+    std::vector<uint64_t> keys;
+    for (uint32_t bucket = 0; bucket < inspection.bucketCount; ++bucket) {
+        std::vector<uint64_t> bucketKeys = readPartitionBucketKeys(partitionDir, bucket);
+        keys.insert(keys.end(), bucketKeys.begin(), bucketKeys.end());
+    }
+    std::sort(keys.begin(), keys.end());
+    return keys;
+}
+
+std::filesystem::path partitionedSnapshotPath(
+    const PartitionedClosureCheckpointInfo& checkpoint,
+    const std::string& name) {
+    for (const PartitionedClosureSnapshotInfo& snapshot : checkpoint.snapshots) {
+        if (snapshot.name == name) {
+            return snapshot.path;
+        }
+    }
+    throw std::runtime_error("missing partitioned snapshot in test: " + name);
+}
+
 }  // namespace
 
 SANPAO15_TEST(sortedDifferenceSubtractsRightFromLeft) {
@@ -663,6 +685,146 @@ SANPAO15_TEST(partitionedClosureCheckpointValidatorRejectsCorruptManifest) {
         [&] { (void)inspectPartitionedClosureCheckpoint(migration.outputDir, 1); },
         "partitioned closure validator should reject bad snapshot count");
     std::filesystem::remove_all(dir);
+}
+
+SANPAO15_TEST(partitionedClosureResumeCompletesBoundaryIterationLikeFlatResume) {
+    const std::filesystem::path flatDir = tempDir("sanpao15-partitioned-resume-flat");
+    const auto flatSeed = flatDir / "seeds-01.s15seed";
+    const auto flatLayer = flatDir / "layer-01.s15layer";
+    const auto flatNextSeed = flatDir / "seeds-00.s15seed";
+    writeSeedFile(flatSeed, 1, {packPosition(oneSoldierCapturePosition())});
+    ExternalClosureOptions flatFirst;
+    flatFirst.workDir = flatDir / "work";
+    flatFirst.seedFile = flatSeed;
+    flatFirst.outputLayerFile = flatLayer;
+    flatFirst.outputNextSeedFile = flatNextSeed;
+    flatFirst.soldierCount = 1;
+    flatFirst.maxIterations = 1;
+    flatFirst.chunkKeyLimit = 2;
+    (void)buildLayerClosureExternal(flatFirst);
+    ExternalClosureOptions flatSecond = flatFirst;
+    flatSecond.resume = true;
+    flatSecond.maxIterations = 1;
+    const ExternalClosureStats flatStats = buildLayerClosureExternal(flatSecond);
+    const KeysFileData flatVisited = readKeysFile(flatSecond.workDir / "visited.s15keys", 1);
+    const KeysFileData flatNextSeeds = readKeysFile(flatSecond.workDir / "next-seeds.s15keys", 0);
+
+    const std::filesystem::path partDir = tempDir("sanpao15-partitioned-resume-boundary");
+    const auto partSeed = partDir / "seeds-01.s15seed";
+    const auto partLayer = partDir / "layer-01.s15layer";
+    const auto partNextSeed = partDir / "seeds-00.s15seed";
+    writeSeedFile(partSeed, 1, {packPosition(oneSoldierCapturePosition())});
+    ExternalClosureOptions partFirst;
+    partFirst.workDir = partDir / "work";
+    partFirst.seedFile = partSeed;
+    partFirst.outputLayerFile = partLayer;
+    partFirst.outputNextSeedFile = partNextSeed;
+    partFirst.soldierCount = 1;
+    partFirst.maxIterations = 1;
+    partFirst.chunkKeyLimit = 2;
+    (void)buildLayerClosureExternal(partFirst);
+    ClosureCheckpointMigrationOptions migration;
+    migration.checkpointDir = partFirst.workDir;
+    migration.outputDir = partFirst.workDir / "partitioned";
+    migration.expectedSoldierCount = 1;
+    migration.bucketCount = 4;
+    (void)migrateClosureCheckpointToPartitioned(migration);
+    PartitionedClosureOptions resume;
+    resume.layerDir = partDir;
+    resume.partitionedCheckpointDir = migration.outputDir;
+    resume.soldierCount = 1;
+    resume.expandedBudget = 1000;
+    resume.bucketCount = 4;
+    resume.candidateChunkKeyLimit = 2;
+    const PartitionedClosureRunStats partStats = resumePartitionedClosure(resume);
+    const PartitionedClosureCheckpointInfo checkpoint =
+        inspectPartitionedClosureCheckpoint(migration.outputDir, 1);
+    const std::vector<uint64_t> partVisited = readPartitionedKeys(partitionedSnapshotPath(checkpoint, "visited"));
+    const std::vector<uint64_t> partNextSeeds = readPartitionedKeys(partitionedSnapshotPath(checkpoint, "next-seeds"));
+    std::filesystem::remove_all(flatDir);
+    std::filesystem::remove_all(partDir);
+
+    SANPAO15_REQUIRE(flatStats.iterations == 2);
+    SANPAO15_REQUIRE(partStats.iterationsCompleted == 1);
+    SANPAO15_REQUIRE(checkpoint.checkpointKind == "iteration-boundary");
+    SANPAO15_REQUIRE(partVisited == flatVisited.keys);
+    SANPAO15_REQUIRE(partNextSeeds == flatNextSeeds.keys);
+}
+
+SANPAO15_TEST(partitionedClosureResumeSupportsMidIterationBudgetCheckpoint) {
+    const std::filesystem::path dir = tempDir("sanpao15-partitioned-resume-mid");
+    const auto seed = dir / "seeds-01.s15seed";
+    const auto layer = dir / "layer-01.s15layer";
+    const auto nextSeed = dir / "seeds-00.s15seed";
+    writeSeedFile(seed, 1, keysFor(1, {0, 1}));
+
+    ExternalClosureOptions closure;
+    closure.workDir = dir / "work";
+    closure.seedFile = seed;
+    closure.outputLayerFile = layer;
+    closure.outputNextSeedFile = nextSeed;
+    closure.soldierCount = 1;
+    closure.maxExpandedStates = 1;
+    closure.chunkKeyLimit = 2;
+    (void)buildLayerClosureExternal(closure);
+    ClosureCheckpointMigrationOptions migration;
+    migration.checkpointDir = closure.workDir;
+    migration.outputDir = closure.workDir / "partitioned";
+    migration.expectedSoldierCount = 1;
+    migration.bucketCount = 4;
+    (void)migrateClosureCheckpointToPartitioned(migration);
+
+    PartitionedClosureOptions resume;
+    resume.partitionedCheckpointDir = migration.outputDir;
+    resume.soldierCount = 1;
+    resume.expandedBudget = 1;
+    resume.bucketCount = 4;
+    resume.candidateChunkKeyLimit = 2;
+    const PartitionedClosureRunStats stats = resumePartitionedClosure(resume);
+    const PartitionedClosureCheckpointInfo checkpoint =
+        inspectPartitionedClosureCheckpoint(migration.outputDir, 1);
+    std::filesystem::remove_all(dir);
+
+    SANPAO15_REQUIRE(stats.expandedThisRun >= 1);
+    SANPAO15_REQUIRE(stats.finalCheckpointKind == "mid-iteration" || stats.finalCheckpointKind == "iteration-boundary");
+    SANPAO15_REQUIRE(checkpoint.requiresTransientRuns == false);
+    SANPAO15_REQUIRE(!checkpoint.snapshots.empty());
+}
+
+SANPAO15_TEST(partitionedClosureDryRunDoesNotModifyManifest) {
+    const std::filesystem::path dir = tempDir("sanpao15-partitioned-resume-dry");
+    const auto seed = dir / "seeds-01.s15seed";
+    const auto layer = dir / "layer-01.s15layer";
+    const auto nextSeed = dir / "seeds-00.s15seed";
+    writeSeedFile(seed, 1, {packPosition(oneSoldierCapturePosition())});
+
+    ExternalClosureOptions closure;
+    closure.workDir = dir / "work";
+    closure.seedFile = seed;
+    closure.outputLayerFile = layer;
+    closure.outputNextSeedFile = nextSeed;
+    closure.soldierCount = 1;
+    closure.maxIterations = 1;
+    (void)buildLayerClosureExternal(closure);
+    ClosureCheckpointMigrationOptions migration;
+    migration.checkpointDir = closure.workDir;
+    migration.outputDir = closure.workDir / "partitioned";
+    migration.expectedSoldierCount = 1;
+    migration.bucketCount = 4;
+    (void)migrateClosureCheckpointToPartitioned(migration);
+    const std::string before = readText(partitionedClosureCheckpointManifestPath(migration.outputDir));
+
+    PartitionedClosureOptions resume;
+    resume.partitionedCheckpointDir = migration.outputDir;
+    resume.soldierCount = 1;
+    resume.bucketCount = 4;
+    resume.dryRun = true;
+    const PartitionedClosureRunStats stats = resumePartitionedClosure(resume);
+    const std::string after = readText(partitionedClosureCheckpointManifestPath(migration.outputDir));
+    std::filesystem::remove_all(dir);
+
+    SANPAO15_REQUIRE(stats.dryRun);
+    SANPAO15_REQUIRE(before == after);
 }
 
 SANPAO15_TEST(layeredBuildExternalClosureRecordsMaxExpandedTruncation) {

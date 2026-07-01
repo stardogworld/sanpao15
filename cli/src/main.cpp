@@ -56,6 +56,8 @@ struct CliOptions {
     bool repairLayerProvided = false;
     bool migrateClosureCheckpoint = false;
     bool migrateOutputProvided = false;
+    bool resumePartitionedClosure = false;
+    bool expandedBudgetProvided = false;
     bool partitionOverwrite = false;
     bool benchmarkSampleProvided = false;
     bool lookupKeyProvided = false;
@@ -65,6 +67,7 @@ struct CliOptions {
     uint64_t checkpointInterval = 0;
     uint64_t maxIterations = 0;
     uint64_t maxExpandedStates = 0;
+    uint64_t expandedBudget = 0;
     uint64_t partitionBuckets = 256;
     uint64_t closurePartitionBuckets = 256;
     uint64_t partitionCacheBuckets = 32;
@@ -102,6 +105,7 @@ struct CliOptions {
     std::optional<std::filesystem::path> repairClosureCheckpointDir;
     std::optional<std::filesystem::path> migrateClosureCheckpointDir;
     std::optional<std::filesystem::path> migrateOutputDir;
+    std::optional<std::filesystem::path> resumePartitionedClosureDir;
     std::optional<std::string> analysisNotation;
     std::optional<std::filesystem::path> saveTablePath;
     std::optional<std::filesystem::path> loadTablePath;
@@ -124,6 +128,8 @@ void printUsage() {
         << "  sanpao15_cli --migrate-closure-checkpoint DIR --layer K [--dry-run]\n"
         << "                  [--migrate-output DIR] [--partition-buckets N]\n"
         << "                  [--partition-method splitmix64_mod|key_mod] [--overwrite]\n"
+        << "  sanpao15_cli --resume-partitioned-closure DIR --layer K [--dry-run]\n"
+        << "                  [--expanded-budget N] [--progress N]\n"
         << "  sanpao15_cli --validate-layer FILE | --validate-seed FILE\n"
         << "  sanpao15_cli --inspect-layer FILE | --inspect-seed FILE\n"
         << "  sanpao15_cli --partition-keyset INPUT --partition-output DIR [--partition-buckets N]\n"
@@ -169,8 +175,10 @@ void printUsage() {
         << "  --cleanup-stale-runs  Remove stale transient runs during closure checkpoint repair.\n"
         << "  --migrate-closure-checkpoint DIR  Convert a flat closure checkpoint to partitioned snapshots.\n"
         << "  --migrate-output DIR  Output dir for --migrate-closure-checkpoint. Default: DIR/work/layer-K/partitioned.\n"
-        << "  --layer K       Layer index for closure repair or migration.\n"
-        << "  --dry-run       Validate repair/migration target without writing changes.\n"
+        << "  --resume-partitioned-closure DIR  Resume closure from DIR/work/layer-K/partitioned.\n"
+        << "  --expanded-budget N  Additional states to expand for --resume-partitioned-closure.\n"
+        << "  --layer K       Layer index for closure repair, migration, or partitioned resume.\n"
+        << "  --dry-run       Validate repair/migration/resume target without writing changes.\n"
         << "  --inspect-layer FILE  Show summary for one .s15layer file.\n"
         << "  --inspect-seed FILE  Show summary for one .s15seed file.\n"
         << "  --partition-keyset FILE  Build partitioned index from .s15layer/.s15seed/.s15keys.\n"
@@ -357,6 +365,12 @@ CliOptions parseArgs(int argc, char** argv) {
                 throw std::invalid_argument("--max-expanded-states requires a value");
             }
             options.maxExpandedStates = parseLimit(argv[++i]);
+        } else if (arg == "--expanded-budget") {
+            if (i + 1 >= argc) {
+                throw std::invalid_argument("--expanded-budget requires a value");
+            }
+            options.expandedBudget = parseLimit(argv[++i]);
+            options.expandedBudgetProvided = true;
         } else if (arg == "--validate-layer") {
             if (i + 1 >= argc) {
                 throw std::invalid_argument("--validate-layer requires a file path");
@@ -384,6 +398,12 @@ CliOptions parseArgs(int argc, char** argv) {
             }
             options.migrateClosureCheckpointDir = std::filesystem::path(argv[++i]);
             options.migrateClosureCheckpoint = true;
+        } else if (arg == "--resume-partitioned-closure") {
+            if (i + 1 >= argc) {
+                throw std::invalid_argument("--resume-partitioned-closure requires a directory path");
+            }
+            options.resumePartitionedClosureDir = std::filesystem::path(argv[++i]);
+            options.resumePartitionedClosure = true;
         } else if (arg == "--cleanup-stale-runs") {
             options.cleanupStaleRuns = true;
         } else if (arg == "--dry-run") {
@@ -543,6 +563,7 @@ CliOptions parseArgs(int argc, char** argv) {
         static_cast<int>(options.inspectLayerPath.has_value()) +
         static_cast<int>(options.inspectSeedPath.has_value());
     const int migrationModeCount = static_cast<int>(options.migrateClosureCheckpoint);
+    const int partitionedResumeModeCount = static_cast<int>(options.resumePartitionedClosure);
     const int partitionModeCount =
         static_cast<int>(options.partitionKeysetInput.has_value()) +
         static_cast<int>(options.validatePartitionDir.has_value()) +
@@ -550,7 +571,7 @@ CliOptions parseArgs(int argc, char** argv) {
         static_cast<int>(options.lookupPartitionDir.has_value()) +
         static_cast<int>(options.benchmarkPartitionDir.has_value()) +
         static_cast<int>(options.probeLayerEdgesDir.has_value());
-    if (validationModeCount + partitionModeCount + migrationModeCount > 1) {
+    if (validationModeCount + partitionModeCount + migrationModeCount + partitionedResumeModeCount > 1) {
         throw std::invalid_argument("choose only one validate/inspect/partition mode");
     }
     if (options.partitionBucketsProvided) {
@@ -566,7 +587,7 @@ CliOptions parseArgs(int argc, char** argv) {
     }
     if (options.partitionCacheBucketsProvided) {
         if (!options.lookupPartitionDir.has_value() && !options.benchmarkPartitionDir.has_value() &&
-            !options.probeLayerEdgesDir.has_value()) {
+            !options.probeLayerEdgesDir.has_value() && !options.resumePartitionedClosure) {
             throw std::invalid_argument("--partition-cache-buckets is only valid with lookup/benchmark/probe partition modes");
         }
         if (options.partitionCacheBuckets == 0 || options.partitionCacheBuckets > std::numeric_limits<uint32_t>::max()) {
@@ -589,8 +610,8 @@ CliOptions parseArgs(int argc, char** argv) {
         throw std::invalid_argument("--cleanup-stale-runs is only valid with --repair-closure-checkpoint");
     }
     if ((options.repairDryRun || options.repairLayerProvided) &&
-        !options.repairClosureCheckpoint && !options.migrateClosureCheckpoint) {
-        throw std::invalid_argument("--dry-run and --layer are only valid with closure repair or migration");
+        !options.repairClosureCheckpoint && !options.migrateClosureCheckpoint && !options.resumePartitionedClosure) {
+        throw std::invalid_argument("--dry-run and --layer are only valid with closure repair, migration, or partitioned resume");
     }
     if (options.partitionOverwrite && !options.partitionKeysetInput.has_value() && !options.migrateClosureCheckpoint) {
         throw std::invalid_argument("--overwrite is only valid with --partition-keyset or --migrate-closure-checkpoint");
@@ -606,6 +627,12 @@ CliOptions parseArgs(int argc, char** argv) {
     }
     if (options.migrateClosureCheckpoint && !options.repairLayerProvided) {
         throw std::invalid_argument("--migrate-closure-checkpoint requires --layer K");
+    }
+    if (options.resumePartitionedClosure && !options.repairLayerProvided) {
+        throw std::invalid_argument("--resume-partitioned-closure requires --layer K");
+    }
+    if (options.expandedBudgetProvided && !options.resumePartitionedClosure) {
+        throw std::invalid_argument("--expanded-budget is only valid with --resume-partitioned-closure");
     }
     if (options.lookupKeyProvided && !options.lookupPartitionDir.has_value()) {
         throw std::invalid_argument("--key is only valid with --lookup-partition");
@@ -635,6 +662,21 @@ CliOptions parseArgs(int argc, char** argv) {
             options.benchmarkModeProvided || options.benchmarkSampleProvided || options.lookupKeyProvided ||
             options.sampleStatesProvided || options.nextSeedPartitionDir.has_value()) {
             throw std::invalid_argument("migration mode cannot be combined with build, solve, stats, probe, validate, partition, or table modes");
+        }
+    }
+    if (partitionedResumeModeCount != 0) {
+        if (options.buildLayersDir.has_value() || options.statsOnly || options.probe || options.analysisNotation.has_value() ||
+            options.saveTablePath.has_value() || options.loadTablePath.has_value() || options.full ||
+            options.limitProvided || options.noPred || options.maxStatesPerLayerProvided ||
+            options.startLayerProvided || options.stopAfterLayerProvided || options.externalLayerClosure || options.externalSeedDedup ||
+            options.partitionedClosure || options.closurePartitionBucketsProvided || options.closurePartitionMethodProvided ||
+            options.dedupChunkSizeProvided || options.tempDir.has_value() || options.keepTemp ||
+            options.resumeClosure || options.checkpointIntervalProvided ||
+            externalLayerOptionProvided || validationModeCount != 0 || partitionModeCount != 0 || migrationModeCount != 0 ||
+            options.partitionOutputDir.has_value() || options.partitionBucketsProvided || options.partitionMethodProvided ||
+            options.benchmarkModeProvided || options.benchmarkSampleProvided || options.lookupKeyProvided ||
+            options.sampleStatesProvided || options.nextSeedPartitionDir.has_value() || options.partitionOverwrite) {
+            throw std::invalid_argument("partitioned resume mode cannot be combined with build, solve, stats, probe, validate, partition, migration, or table modes");
         }
     }
     if (partitionModeCount != 0) {
@@ -1124,6 +1166,68 @@ void printMigrateClosureCheckpoint(const CliOptions& options) {
     std::cout << "Total migration time: " << formatDuration(result.totalSeconds) << "\n";
     std::cout << "Manifest: " << partitionedClosureCheckpointManifestPath(result.outputDir).string() << "\n";
     std::cout << "Status: migrated\n";
+}
+
+PartitionedClosureOptions makePartitionedClosureOptions(const CliOptions& options) {
+    PartitionedClosureOptions resume;
+    resume.layerDir = *options.resumePartitionedClosureDir;
+    resume.soldierCount = options.repairLayer;
+    resume.expandedBudget = options.expandedBudget;
+    resume.maxIterations = options.maxIterations;
+    resume.progressInterval = options.progressInterval;
+    resume.partitionCacheBuckets = static_cast<uint32_t>(options.partitionCacheBuckets);
+    resume.dryRun = options.repairDryRun;
+    if (options.progressInterval != 0) {
+        resume.progress = [](const PartitionedClosureProgressInfo& info) {
+            std::cout << "[partitioned closure] expandedThisRun=" << formatInteger(info.expandedThisRun)
+                      << " totalExpanded=" << formatInteger(info.finalExpandedStates)
+                      << " bucket=" << formatInteger(info.bucketId)
+                      << " sameEdges=" << formatInteger(info.sameEdgesGenerated)
+                      << " captureEdges=" << formatInteger(info.captureEdgesGenerated)
+                      << " elapsed=" << formatDuration(info.elapsedSeconds) << "\n";
+        };
+    }
+    return resume;
+}
+
+void printResumePartitionedClosure(const CliOptions& options) {
+    std::cout << "Resume partitioned closure\n";
+    std::cout << "Layer dir: " << options.resumePartitionedClosureDir->string() << "\n";
+    std::cout << "Layer: " << options.repairLayer << "\n";
+    std::cout << "Dry run: " << (options.repairDryRun ? "yes" : "no") << "\n";
+    std::cout << "Expanded budget: "
+              << (options.expandedBudget == 0 ? std::string("none") : formatInteger(options.expandedBudget))
+              << "\n\n";
+
+    const PartitionedClosureRunStats stats =
+        resumePartitionedClosure(makePartitionedClosureOptions(options));
+
+    std::cout << "Checkpoint dir: " << stats.checkpointDir.string() << "\n";
+    if (!stats.runDir.empty()) {
+        std::cout << "Run dir: " << stats.runDir.string() << "\n";
+    }
+    std::cout << "Initial kind: " << stats.initialCheckpointKind << "\n";
+    std::cout << "Final kind: " << stats.finalCheckpointKind << "\n";
+    std::cout << "Initial expanded: " << formatInteger(stats.initialExpandedStates) << "\n";
+    std::cout << "Final expanded: " << formatInteger(stats.finalExpandedStates) << "\n";
+    std::cout << "Expanded this run: " << formatInteger(stats.expandedThisRun) << "\n";
+    std::cout << "Initial visited/baseVisited: " << formatInteger(stats.initialVisitedStates) << "\n";
+    std::cout << "Final visited/baseVisited: " << formatInteger(stats.finalVisitedStates) << "\n";
+    std::cout << "Initial frontier/remainingFrontier: " << formatInteger(stats.initialFrontierStates) << "\n";
+    std::cout << "Final frontier/remainingFrontier: " << formatInteger(stats.finalFrontierStates) << "\n";
+    std::cout << "Initial next seeds: " << formatInteger(stats.initialNextSeedStates) << "\n";
+    std::cout << "Final next seeds: " << formatInteger(stats.finalNextSeedStates) << "\n";
+    std::cout << "Pending candidates: " << formatInteger(stats.pendingCandidateStates) << "\n";
+    std::cout << "Same-layer edges: " << formatInteger(stats.sameEdgesGenerated) << "\n";
+    std::cout << "Capture edges: " << formatInteger(stats.captureEdgesGenerated) << "\n";
+    std::cout << "Iterations completed: " << formatInteger(stats.iterationsCompleted) << "\n";
+    std::cout << "Complete: " << (stats.complete ? "yes" : "no") << "\n";
+    std::cout << "Truncated: " << (stats.truncated ? "yes" : "no") << "\n";
+    std::cout << "Truncation reason: " << stats.truncationReason << "\n";
+    std::cout << "Expansion time: " << formatDuration(stats.expansionSeconds) << "\n";
+    std::cout << "Partition merge time: " << formatDuration(stats.partitionMergeSeconds) << "\n";
+    std::cout << "Total time: " << formatDuration(stats.totalSeconds) << "\n";
+    std::cout << "Status: " << (stats.dryRun ? "dry-run valid" : "resumed") << "\n";
 }
 
 void printValidatePartition(const std::filesystem::path& dir) {
@@ -1817,6 +1921,10 @@ int main(int argc, char** argv) {
         }
         if (options.migrateClosureCheckpoint) {
             printMigrateClosureCheckpoint(options);
+            return 0;
+        }
+        if (options.resumePartitionedClosure) {
+            printResumePartitionedClosure(options);
             return 0;
         }
         if (options.inspectLayerPath.has_value()) {

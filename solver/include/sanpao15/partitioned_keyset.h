@@ -134,6 +134,9 @@ std::filesystem::path partitionBucketPath(const std::filesystem::path& partition
 PartitionedKeySetStats buildPartitionedKeySet(const PartitionedKeySetOptions& options);
 PartitionValidationResult validatePartitionedKeySet(const std::filesystem::path& partitionDir);
 PartitionInspection inspectPartitionedKeySet(const std::filesystem::path& partitionDir);
+std::vector<uint64_t> readPartitionBucketKeys(
+    const std::filesystem::path& partitionDir,
+    uint32_t bucketId);
 PartitionedKeySetOpStats partitionedDifference(
     const std::filesystem::path& leftPartitionDir,
     const std::filesystem::path& rightPartitionDir,

@@ -226,6 +226,65 @@ struct ClosureCheckpointMigrationResult {
     double totalSeconds = 0.0;
 };
 
+struct PartitionedClosureProgressInfo {
+    int soldierCount = 0;
+    uint64_t expandedThisRun = 0;
+    uint64_t finalExpandedStates = 0;
+    uint64_t sameEdgesGenerated = 0;
+    uint64_t captureEdgesGenerated = 0;
+    uint32_t bucketId = 0;
+    double elapsedSeconds = 0.0;
+};
+
+using PartitionedClosureProgressCallback =
+    std::function<void(const PartitionedClosureProgressInfo& info)>;
+
+struct PartitionedClosureOptions {
+    std::filesystem::path layerDir;
+    std::filesystem::path partitionedCheckpointDir;
+    int soldierCount = 0;
+    uint64_t expandedBudget = 0;
+    uint64_t maxIterations = 0;
+    uint64_t progressInterval = 0;
+    uint32_t bucketCount = 0;
+    std::string partitionMethod;
+    uint64_t candidateChunkKeyLimit = 1000000;
+    uint32_t partitionCacheBuckets = 32;
+    bool keepTempFiles = false;
+    bool dryRun = false;
+    PartitionedClosureProgressCallback progress;
+};
+
+struct PartitionedClosureRunStats {
+    int soldierCount = 0;
+    bool resumed = true;
+    bool dryRun = false;
+    bool complete = false;
+    bool truncated = false;
+    std::string truncationReason = "none";
+    std::string initialCheckpointKind;
+    std::string finalCheckpointKind;
+    uint64_t initialExpandedStates = 0;
+    uint64_t finalExpandedStates = 0;
+    uint64_t expandedThisRun = 0;
+    uint64_t initialVisitedStates = 0;
+    uint64_t finalVisitedStates = 0;
+    uint64_t initialFrontierStates = 0;
+    uint64_t finalFrontierStates = 0;
+    uint64_t initialNextSeedStates = 0;
+    uint64_t finalNextSeedStates = 0;
+    uint64_t pendingCandidateStates = 0;
+    uint64_t sameEdgesGenerated = 0;
+    uint64_t captureEdgesGenerated = 0;
+    uint64_t iterationsCompleted = 0;
+    uint64_t snapshotsWritten = 0;
+    std::filesystem::path checkpointDir;
+    std::filesystem::path runDir;
+    double totalSeconds = 0.0;
+    double expansionSeconds = 0.0;
+    double partitionMergeSeconds = 0.0;
+};
+
 std::filesystem::path closureCheckpointManifestPath(const std::filesystem::path& checkpointDir);
 std::filesystem::path partitionedClosureCheckpointManifestPath(const std::filesystem::path& outputDir);
 ExternalClosureCheckpointInfo inspectClosureCheckpoint(
@@ -241,6 +300,8 @@ ClosureCheckpointRepairResult repairClosureCheckpoint(
     bool dryRun = false);
 ClosureCheckpointMigrationResult migrateClosureCheckpointToPartitioned(
     const ClosureCheckpointMigrationOptions& options);
+PartitionedClosureRunStats resumePartitionedClosure(
+    const PartitionedClosureOptions& options);
 
 ExternalClosureStats buildLayerClosureExternal(const ExternalClosureOptions& options);
 

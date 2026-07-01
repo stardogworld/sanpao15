@@ -31,11 +31,13 @@
 - Merge external keyset runs with bounded fan-in to avoid opening hundreds of `.s15run` files at once.
 - Run bucket-wise partitioned keyset union and difference.
 - Write and validate partitioned closure checkpoint snapshots with `--partitioned-closure`.
+- Migrate flat closure checkpoints with `--migrate-closure-checkpoint`.
+- Resume closure from partitioned checkpoints with `--resume-partitioned-closure`.
 
 ## Next Steps
 
-- Migrate the existing 90M layer-15 checkpoint to partitioned checkpoint snapshots.
-- Replace flat external closure candidate/frontier operations with bucket/block processing.
+- Run the existing 90M layer-15 partitioned checkpoint in controlled small slices.
+- Improve partitioned closure performance with a direct per-bucket candidate collector if needed.
 - Design layer-local CSR edge files.
 - Canonicalize the 8 board symmetries.
 - Implement lower-to-higher layered retrograde.
