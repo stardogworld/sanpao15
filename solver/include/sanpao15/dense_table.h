@@ -34,6 +34,8 @@ public:
 
     Outcome get(uint64_t index) const;
     void set(uint64_t index, Outcome outcome);
+    Outcome getUnchecked(uint64_t index) const;
+    void setUnchecked(uint64_t index, Outcome outcome);
 
     uint64_t size() const;
     uint64_t bytes() const;

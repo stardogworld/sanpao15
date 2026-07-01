@@ -1,6 +1,7 @@
 #include "sanpao15/lowk_tablebase.h"
 
 #include <algorithm>
+#include <bit>
 #include <chrono>
 #include <deque>
 #include <iomanip>
@@ -8,6 +9,7 @@
 #include <sstream>
 #include <stdexcept>
 
+#include "sanpao15/bitboard.h"
 #include "sanpao15/dense_index.h"
 #include "sanpao15/dense_successor.h"
 #include "sanpao15/rules.h"
@@ -16,6 +18,66 @@
 namespace sanpao15 {
 
 namespace {
+
+bool bitIsSet(uint32_t mask, int square) {
+    return (mask & (uint32_t{1} << square)) != 0;
+}
+
+uint32_t bitForSquare(int square) {
+    return uint32_t{1} << square;
+}
+
+template <typename Fn>
+void forEachSetSquare(uint32_t mask, Fn&& fn) {
+    mask &= BoardMask;
+    while (mask != 0) {
+        const int square = static_cast<int>(std::countr_zero(mask));
+        fn(square);
+        mask &= mask - 1u;
+    }
+}
+
+template <typename Fn>
+void forEachOrthogonalNeighbor(int square, Fn&& fn) {
+    const int row = square / BoardSize;
+    const int col = square % BoardSize;
+    if (row > 0) {
+        fn(square - BoardSize);
+    }
+    if (row + 1 < BoardSize) {
+        fn(square + BoardSize);
+    }
+    if (col > 0) {
+        fn(square - 1);
+    }
+    if (col + 1 < BoardSize) {
+        fn(square + 1);
+    }
+}
+
+template <typename Fn>
+void forEachCannonJump(int square, Fn&& fn) {
+    const int row = square / BoardSize;
+    const int col = square % BoardSize;
+    const auto addJump = [&](int dRow, int dCol) {
+        const int overRow = row + dRow;
+        const int overCol = col + dCol;
+        const int landingRow = row + 2 * dRow;
+        const int landingCol = col + 2 * dCol;
+        if (overRow < 0 || overRow >= BoardSize || overCol < 0 || overCol >= BoardSize) {
+            return;
+        }
+        if (landingRow < 0 || landingRow >= BoardSize || landingCol < 0 || landingCol >= BoardSize) {
+            return;
+        }
+        fn(overRow * BoardSize + overCol, landingRow * BoardSize + landingCol);
+    };
+
+    addJump(-1, 0);
+    addJump(1, 0);
+    addJump(0, -1);
+    addJump(0, 1);
+}
 
 void requireLowK(int maxK) {
     if (maxK < 0 || maxK > 3) {
@@ -271,6 +333,107 @@ uint8_t checkedStreamingRemainingCount(uint64_t remainingCount) {
     return static_cast<uint8_t>(remainingCount);
 }
 
+DenseStreamingInitScan scanDenseStateForStreamingInitialization(
+    int soldierCount,
+    uint64_t index,
+    const Position& pos,
+    const PackedOutcomeTable2Bit* lowerLayer) {
+    DenseStreamingInitScan scan;
+    const std::optional<Outcome> material = forcedOutcomeByMaterialRule(soldierCount);
+    if (material.has_value()) {
+        scan.terminal = DenseTerminalInfo{true, *material};
+        return scan;
+    }
+    if (soldierCount > 0 && lowerLayer == nullptr) {
+        throw std::invalid_argument("lower-layer table is required for streaming initialization scan");
+    }
+    if (popcount25(pos.cannons) != 3 || popcount25(pos.soldiers) != soldierCount ||
+        (pos.cannons & pos.soldiers) != 0) {
+        throw std::invalid_argument("position does not match streaming initialization layer");
+    }
+
+    const uint32_t occupied = pos.cannons | pos.soldiers;
+    bool cannonCanMove = false;
+    if (pos.side == Side::Cannon) {
+        forEachSetSquare(pos.cannons, [&](int from) {
+            forEachOrthogonalNeighbor(from, [&](int to) {
+                if (bitIsSet(occupied, to)) {
+                    return;
+                }
+                cannonCanMove = true;
+                ++scan.successorCount;
+                ++scan.sameLayerEdges;
+                if (!scan.resolved) {
+                    ++scan.remainingCount;
+                }
+            });
+            forEachCannonJump(from, [&](int over, int landing) {
+                if (bitIsSet(occupied, over) || !bitIsSet(pos.soldiers, landing)) {
+                    return;
+                }
+                cannonCanMove = true;
+                ++scan.successorCount;
+                ++scan.captureEdges;
+
+                Position next = pos;
+                next.cannons = (next.cannons & ~bitForSquare(from)) | bitForSquare(landing);
+                next.soldiers &= ~bitForSquare(landing);
+                next.side = Side::Soldier;
+                const uint64_t toIndex = denseIndex(next);
+                const Outcome child = lowerLayer->getUnchecked(toIndex);
+                if (isWinForSide(child, pos.side) && !scan.resolved) {
+                    scan.resolved = true;
+                    scan.resolvedOutcome = child;
+                } else if (child == Outcome::Draw && !scan.resolved) {
+                    ++scan.remainingCount;
+                }
+            });
+        });
+        if (!cannonCanMove) {
+            scan.terminal = DenseTerminalInfo{true, Outcome::SoldierWin};
+        }
+        return scan;
+    }
+
+    forEachSetSquare(pos.cannons, [&](int from) {
+        if (cannonCanMove) {
+            return;
+        }
+        forEachOrthogonalNeighbor(from, [&](int to) {
+            if (!cannonCanMove && !bitIsSet(occupied, to)) {
+                cannonCanMove = true;
+            }
+        });
+        forEachCannonJump(from, [&](int over, int landing) {
+            if (!cannonCanMove && !bitIsSet(occupied, over) && bitIsSet(pos.soldiers, landing)) {
+                cannonCanMove = true;
+            }
+        });
+    });
+    if (!cannonCanMove) {
+        scan.terminal = DenseTerminalInfo{true, Outcome::SoldierWin};
+        return scan;
+    }
+
+    forEachSetSquare(pos.soldiers, [&](int from) {
+        forEachOrthogonalNeighbor(from, [&](int to) {
+            if (bitIsSet(occupied, to)) {
+                return;
+            }
+            ++scan.successorCount;
+            ++scan.sameLayerEdges;
+            if (!scan.resolved) {
+                ++scan.remainingCount;
+            }
+        });
+    });
+    if (scan.successorCount == 0) {
+        scan.terminal = DenseTerminalInfo{true, Outcome::CannonWin};
+    }
+    (void)index;
+    return scan;
+}
+
 DenseLayerSolveResult solveDenseLayerOutcome(
     int soldierCount,
     const PackedOutcomeTable2Bit* lowerLayer,
@@ -438,20 +601,16 @@ DenseLayerSolveResult solveDenseLayerOutcomeStreaming(
     std::vector<uint8_t> remaining(static_cast<size_t>(stateCount), 0);
     std::vector<uint64_t> queue;
     size_t queueHead = 0;
-    std::vector<DenseSuccessor> successors;
-    successors.reserve(32);
-    std::vector<DensePredecessor> predecessors;
-    predecessors.reserve(32);
+    std::vector<uint64_t> predecessorIndices;
+    predecessorIndices.reserve(32);
 
     const auto initStart = std::chrono::steady_clock::now();
     for (uint64_t index = 0; index < stateCount; ++index) {
         const Position pos = positionFromDenseIndex(soldierCount, index);
-        generateDenseSuccessorsFromPosition(soldierCount, index, pos, successors);
-        result.maxSuccessors = std::max<uint64_t>(result.maxSuccessors, successors.size());
-
-        const DenseTerminalInfo terminal = terminalOutcomeForPositionWithSuccessors(pos, successors);
-        if (terminal.terminal) {
-            output.set(index, terminal.outcome);
+        const DenseStreamingInitScan scan =
+            scanDenseStateForStreamingInitialization(soldierCount, index, pos, lowerLayer);
+        if (scan.terminal.terminal) {
+            output.setUnchecked(index, scan.terminal.outcome);
             ++result.terminalStates;
             ++result.resolvedByTerminal;
             queue.push_back(index);
@@ -459,39 +618,24 @@ DenseLayerSolveResult solveDenseLayerOutcomeStreaming(
             continue;
         }
 
-        bool resolved = false;
-        uint64_t remainingCount = 0;
-        for (const DenseSuccessor& successor : successors) {
-            if (successor.kind == DenseSuccessorKind::SameLayer) {
-                ++result.sameLayerEdges;
-                if (!resolved) {
-                    ++remainingCount;
-                }
-                continue;
-            }
-
-            ++result.captureEdges;
-            const Outcome child = lowerLayer->get(successor.toIndex);
-            if (isWinForSide(child, pos.side) && !resolved) {
-                output.set(index, child);
-                ++result.resolvedByLowerLayer;
-                queue.push_back(index);
-                noteQueueSize(result, static_cast<uint64_t>(queue.size() - queueHead));
-                resolved = true;
-            } else if (child == Outcome::Draw && !resolved) {
-                ++remainingCount;
-            }
+        result.maxSuccessors = std::max(result.maxSuccessors, scan.successorCount);
+        result.sameLayerEdges += scan.sameLayerEdges;
+        result.captureEdges += scan.captureEdges;
+        if (scan.resolved) {
+            output.setUnchecked(index, scan.resolvedOutcome);
+            ++result.resolvedByLowerLayer;
+            queue.push_back(index);
+            noteQueueSize(result, static_cast<uint64_t>(queue.size() - queueHead));
+            continue;
         }
 
-        if (!resolved) {
-            remaining[static_cast<size_t>(index)] = checkedStreamingRemainingCount(remainingCount);
-            result.maxRemaining = std::max(result.maxRemaining, remainingCount);
-            if (remainingCount == 0) {
-                output.set(index, opponentWinFor(pos.side));
+        remaining[static_cast<size_t>(index)] = checkedStreamingRemainingCount(scan.remainingCount);
+        result.maxRemaining = std::max(result.maxRemaining, scan.remainingCount);
+        if (scan.remainingCount == 0) {
+            output.setUnchecked(index, opponentWinFor(pos.side));
                 ++result.resolvedByLowerLayer;
                 queue.push_back(index);
                 noteQueueSize(result, static_cast<uint64_t>(queue.size() - queueHead));
-            }
         }
     }
     const auto initFinish = std::chrono::steady_clock::now();
@@ -504,30 +648,28 @@ DenseLayerSolveResult solveDenseLayerOutcomeStreaming(
     }
     while (queueHead < queue.size()) {
         const uint64_t childIndex = queue[queueHead++];
-        const Outcome childOutcome = output.get(childIndex);
+        const Outcome childOutcome = output.getUnchecked(childIndex);
         if (childOutcome == Outcome::Unknown || childOutcome == Outcome::Draw) {
             continue;
         }
 
         const Position child = positionFromDenseIndex(soldierCount, childIndex);
         const Side parentSide = opposite(child.side);
-        generateDensePredecessorsFromPosition(
+        generateDensePredecessorIndicesFromPosition(
             soldierCount,
             childIndex,
             child,
-            DensePredecessorValidation::None,
-            predecessors);
+            predecessorIndices);
         ++result.predecessorCalls;
-        result.generatedPredecessors += static_cast<uint64_t>(predecessors.size());
-        result.maxPredecessors = std::max<uint64_t>(result.maxPredecessors, predecessors.size());
+        result.generatedPredecessors += static_cast<uint64_t>(predecessorIndices.size());
+        result.maxPredecessors = std::max<uint64_t>(result.maxPredecessors, predecessorIndices.size());
 
-        for (const DensePredecessor& predecessor : predecessors) {
-            const uint64_t parentIndex = predecessor.index;
-            if (output.get(parentIndex) != Outcome::Unknown) {
+        for (uint64_t parentIndex : predecessorIndices) {
+            if (output.getUnchecked(parentIndex) != Outcome::Unknown) {
                 continue;
             }
             if (isWinForSide(childOutcome, parentSide)) {
-                output.set(parentIndex, childOutcome);
+                output.setUnchecked(parentIndex, childOutcome);
                 ++result.retrogradeResolved;
                 ++result.resolvedByPropagation;
                 queue.push_back(parentIndex);
@@ -541,7 +683,7 @@ DenseLayerSolveResult solveDenseLayerOutcomeStreaming(
                 }
                 --remainingCount;
                 if (remainingCount == 0) {
-                    output.set(parentIndex, opponentWinFor(parentSide));
+                    output.setUnchecked(parentIndex, opponentWinFor(parentSide));
                     ++result.retrogradeResolved;
                     ++result.resolvedByPropagation;
                     queue.push_back(parentIndex);
@@ -555,9 +697,9 @@ DenseLayerSolveResult solveDenseLayerOutcomeStreaming(
 
     const auto finalizeStart = std::chrono::steady_clock::now();
     for (uint64_t index = 0; index < stateCount; ++index) {
-        Outcome outcome = output.get(index);
+        Outcome outcome = output.getUnchecked(index);
         if (outcome == Outcome::Unknown) {
-            output.set(index, Outcome::Draw);
+            output.setUnchecked(index, Outcome::Draw);
             outcome = Outcome::Draw;
             ++result.unresolvedAsDraw;
             ++result.drawAfterQueue;

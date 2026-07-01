@@ -95,6 +95,42 @@ finalize:       0.25s -> 0.13s
 total:          17:31 -> 04:48
 ```
 
+## K4 Sub-3 Hot-Path Pass
+
+The `k4-sub3-hotpath-pass` confirmed a separate Release build first. Release
+baseline was already below the three-minute target:
+
+```text
+initialization: 35.5s
+propagation:    54.0s
+finalize:       0.08s
+total:          01:30
+```
+
+The pass then tightened the single-thread hot path:
+
+- streaming initialization uses a solver-specific scan and no longer computes
+  `toIndex` for same-layer moves;
+- only capture-to-lower-layer moves compute a lower-layer dense index;
+- fast predecessor generation skips checked-mode sort/dedup;
+- propagation uses an index-only predecessor API and does not build
+  `DensePredecessor` or `Move` structs;
+- packed 2-bit outcome tables expose checked and unchecked get/set APIs, with
+  unchecked calls limited to solver loops where dense indexes are already
+  validated;
+- terminal-with-successors avoids an extra cannon-move scan when the side to
+  move is Cannon.
+
+The Release `k=4` run after this pass stayed count-identical and finished in
+01:06:
+
+```text
+initialization: 13.6s
+propagation:    52.5s
+finalize:       0.06s
+total:          01:06
+```
+
 ## CLI
 
 Default streaming low-k solve:
@@ -161,9 +197,9 @@ payloads are checked for valid size and unused-bit cleanliness when applicable.
 
 ## Next Direction
 
-Because optimized `k=4` completes in under five minutes with exact baseline
-counts, the recommended next step is a per-layer production CLI for the dense
-streaming solver. File-backed or mmap outcome tables are still likely needed
-for much larger layers, but they should follow a production per-layer solve
-path and another measured `k=5` benchmark. Distance and best move data should
-remain optional side data until outcome solving is stable.
+Because optimized Release `k=4` completes in 01:06 with exact baseline counts,
+the recommended next step is a per-layer production CLI for the dense streaming
+solver. File-backed or mmap outcome tables are still likely needed for much
+larger layers, but they should follow a production per-layer solve path and
+another measured `k=5` benchmark. Distance and best move data should remain
+optional side data until outcome solving is stable.

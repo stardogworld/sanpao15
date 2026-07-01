@@ -266,6 +266,10 @@ Outcome PackedOutcomeTable2Bit::get(uint64_t index) const {
     if (index >= stateCount_) {
         throw std::out_of_range("packed outcome index out of range");
     }
+    return getUnchecked(index);
+}
+
+Outcome PackedOutcomeTable2Bit::getUnchecked(uint64_t index) const {
     const size_t byteIndex = static_cast<size_t>(index / 4u);
     const int shift = static_cast<int>((index % 4u) * 2u);
     return decodeOutcome(static_cast<uint8_t>((packed_[byteIndex] >> shift) & 0x3u));
@@ -275,6 +279,10 @@ void PackedOutcomeTable2Bit::set(uint64_t index, Outcome outcome) {
     if (index >= stateCount_) {
         throw std::out_of_range("packed outcome index out of range");
     }
+    setUnchecked(index, outcome);
+}
+
+void PackedOutcomeTable2Bit::setUnchecked(uint64_t index, Outcome outcome) {
     const size_t byteIndex = static_cast<size_t>(index / 4u);
     const int shift = static_cast<int>((index % 4u) * 2u);
     const uint8_t clearMask = static_cast<uint8_t>(~(uint8_t{0x3u} << shift));

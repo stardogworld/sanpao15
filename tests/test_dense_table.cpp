@@ -63,6 +63,22 @@ SANPAO15_TEST(packedOutcomeTableSetGetCrossesByteBoundaries) {
     SANPAO15_REQUIRE(table.get(9) == Outcome::Unknown);
 }
 
+SANPAO15_TEST(packedOutcomeTableUncheckedMatchesCheckedApi) {
+    PackedOutcomeTable2Bit table(10);
+    table.setUnchecked(0, Outcome::CannonWin);
+    table.setUnchecked(3, Outcome::Draw);
+    table.setUnchecked(9, Outcome::SoldierWin);
+    SANPAO15_REQUIRE(table.get(0) == Outcome::CannonWin);
+    SANPAO15_REQUIRE(table.get(3) == Outcome::Draw);
+    SANPAO15_REQUIRE(table.get(9) == Outcome::SoldierWin);
+
+    table.set(4, Outcome::Draw);
+    table.set(8, Outcome::CannonWin);
+    SANPAO15_REQUIRE(table.getUnchecked(4) == Outcome::Draw);
+    SANPAO15_REQUIRE(table.getUnchecked(8) == Outcome::CannonWin);
+    SANPAO15_REQUIRE(table.getUnchecked(1) == Outcome::Unknown);
+}
+
 SANPAO15_TEST(denseResultByteRoundtrip) {
     const int soldiers = 0;
     DenseOutcomeTable table(denseStateCount(soldiers));

@@ -20,6 +20,13 @@ void requireSoldierCount(int soldierCount) {
     }
 }
 
+void requireDensePositionForLayer(const Position& pos, int soldierCount, const char* message) {
+    if (popcount25(pos.cannons) != 3 || popcount25(pos.soldiers) != soldierCount ||
+        (pos.cannons & pos.soldiers) != 0) {
+        throw std::invalid_argument(message);
+    }
+}
+
 DenseSuccessorKind successorKindForCounts(int fromSoldierCount, int toSoldierCount) {
     if (toSoldierCount == fromSoldierCount) {
         return DenseSuccessorKind::SameLayer;
@@ -258,10 +265,7 @@ void generateDenseSuccessorsFromPosition(
     if (denseIndexValue >= denseStateCount(soldierCount)) {
         throw std::out_of_range("dense successor source index is outside the layer state count");
     }
-    if (popcount25(pos.cannons) != 3 || popcount25(pos.soldiers) != soldierCount ||
-        (pos.cannons & pos.soldiers) != 0) {
-        throw std::invalid_argument("position does not match dense successor source index");
-    }
+    requireDensePositionForLayer(pos, soldierCount, "position does not match dense successor source index");
 
     out.clear();
     if (pos.side == Side::Cannon) {
@@ -330,10 +334,7 @@ void generateDensePredecessorsFromPosition(
     if (childIndex >= denseStateCount(soldierCount)) {
         throw std::out_of_range("dense predecessor child index is outside the layer state count");
     }
-    if (popcount25(child.cannons) != 3 || popcount25(child.soldiers) != soldierCount ||
-        (child.cannons & child.soldiers) != 0) {
-        throw std::invalid_argument("position does not match dense predecessor child index");
-    }
+    requireDensePositionForLayer(child, soldierCount, "position does not match dense predecessor child index");
 
     const uint32_t occupied = child.cannons | child.soldiers;
     out.clear();
@@ -357,7 +358,9 @@ void generateDensePredecessorsFromPosition(
                     validation);
             });
         });
-        deduplicatePredecessors(out);
+        if (validation == DensePredecessorValidation::Checked) {
+            deduplicatePredecessors(out);
+        }
         return;
     }
 
@@ -379,7 +382,51 @@ void generateDensePredecessorsFromPosition(
                 validation);
         });
     });
-    deduplicatePredecessors(out);
+    if (validation == DensePredecessorValidation::Checked) {
+        deduplicatePredecessors(out);
+    }
+}
+
+void generateDensePredecessorIndicesFromPosition(
+    int soldierCount,
+    uint64_t childIndex,
+    const Position& child,
+    std::vector<uint64_t>& out) {
+    requireSoldierCount(soldierCount);
+    if (childIndex >= denseStateCount(soldierCount)) {
+        throw std::out_of_range("dense predecessor child index is outside the layer state count");
+    }
+    requireDensePositionForLayer(child, soldierCount, "position does not match dense predecessor child index");
+
+    const uint32_t occupied = child.cannons | child.soldiers;
+    out.clear();
+
+    if (child.side == Side::Soldier) {
+        forEachSetSquare(child.cannons, [&](int to) {
+            forEachOrthogonalNeighbor(to, [&](int from) {
+                if (bitIsSet(occupied, from)) {
+                    return;
+                }
+                Position parent = child;
+                parent.side = Side::Cannon;
+                parent.cannons = (parent.cannons & ~bitForSquare(to)) | bitForSquare(from);
+                out.push_back(denseIndex(parent));
+            });
+        });
+        return;
+    }
+
+    forEachSetSquare(child.soldiers, [&](int to) {
+        forEachOrthogonalNeighbor(to, [&](int from) {
+            if (bitIsSet(occupied, from)) {
+                return;
+            }
+            Position parent = child;
+            parent.side = Side::Soldier;
+            parent.soldiers = (parent.soldiers & ~bitForSquare(to)) | bitForSquare(from);
+            out.push_back(denseIndex(parent));
+        });
+    });
 }
 
 std::vector<DensePredecessor> generateDensePredecessors(int soldierCount, uint64_t childIndex) {
@@ -413,6 +460,12 @@ DenseTerminalInfo terminalOutcomeForPositionWithSuccessors(
     const std::optional<Outcome> material = forcedOutcomeByMaterialRule(popcount25(pos.soldiers));
     if (material.has_value()) {
         return DenseTerminalInfo{true, *material};
+    }
+    if (pos.side == Side::Cannon) {
+        if (legalSuccessors.empty()) {
+            return DenseTerminalInfo{true, Outcome::SoldierWin};
+        }
+        return DenseTerminalInfo{};
     }
     if (!cannonHasAnyMoveFast(pos)) {
         return DenseTerminalInfo{true, Outcome::SoldierWin};

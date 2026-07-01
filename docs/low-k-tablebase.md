@@ -81,10 +81,11 @@ Capture-to-lower-layer successors are handled during initialization by looking
 up the lower layer table.
 
 The optimized streaming backend keeps initialization to one dense unrank per
-state, generates successors from the already-decoded position, reuses successor
-and predecessor scratch buffers, and uses a vector-backed worklist. The
-remaining counter is `uint8_t` with a runtime guard, and propagation avoids
-per-predecessor parent unrank by deriving the parent side from the child side.
+state and uses a solver-specific scan that does not rank same-layer successor
+targets. It uses an index-only predecessor API in propagation, a vector-backed
+worklist, unchecked packed-table access in validated loops, and a `uint8_t`
+remaining counter with a runtime guard. Propagation avoids per-predecessor
+parent unrank by deriving the parent side from the child side.
 
 Both solver entry points reset their output table to `Unknown` before solving,
 so reusing a previously-filled `PackedOutcomeTable2Bit` cannot contaminate
@@ -153,7 +154,7 @@ are intercepted by the material rule and become `CannonWin`. The first layer
 where SoldierWin or Draw can appear is `k=4`; it should be treated as a
 benchmark for the streaming solver rather than a default unit-test workload.
 
-Optimized `k=4` benchmark:
+Optimized Release `k=4` benchmark:
 
 ```text
 states: 33,649,000
@@ -164,9 +165,10 @@ Unknown: 0
 terminalStates: 184
 sameLayerEdges: 282,650,840
 captureEdges: 15,800,400
-initialization: 01:56
-propagation: 02:52
-total: 04:48
+initialization: 13.6s
+propagation: 52.5s
+finalize: 0.06s
+total: 01:06
 ```
 
 ## Next Direction

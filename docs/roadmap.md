@@ -43,10 +43,10 @@
 - Generate dense successor ids for legal moves with same-layer and capture-to-lower-layer classification.
 - Generate same-layer dense predecessors on demand for streaming retrograde propagation.
 - Use fast dense predecessor generation in streaming propagation while retaining checked predecessor mode for tests and inspection.
-- Optimize the dense streaming hot path with position-aware successor helpers, scratch predecessor buffers, a vector-backed worklist, `uint8_t` remaining counters, and no per-predecessor parent unrank.
+- Optimize the dense streaming hot path with a no-rank initialization scan for same-layer moves, index-only predecessors, unchecked packed-table access, a vector-backed worklist, `uint8_t` remaining counters, and no per-predecessor parent unrank.
 - Inspect dense successors and sample dense layer move statistics from the CLI.
 - Solve low full-tablebase layers `k=0..3` with outcome-only retrograde and write `.s15res` results.
-- Solve low full-tablebase layers with a streaming/on-the-fly predecessor backend via `--solve-lowk-streaming`; optimized `k=4` completes in 04:48 with exact baseline counts.
+- Solve low full-tablebase layers with a streaming/on-the-fly predecessor backend via `--solve-lowk-streaming`; optimized Release `k=4` completes in 01:06 with exact baseline counts.
 - Verify low-k `.s15res` headers and sampled successor consistency.
 - Centralize the current ruleset as `sanpao15-min-four-soldiers`, where `soldierCount < 4` is immediate `CannonWin`.
 

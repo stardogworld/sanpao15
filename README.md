@@ -212,17 +212,18 @@ target dense ids, with same-layer and capture-to-lower-layer classification; see
 Dense same-layer predecessor generation supports on-the-fly retrograde
 propagation without storing a `vector<vector<uint32_t>>` predecessor graph.
 The CLI/test path uses checked predecessors; streaming propagation uses the
-fast predecessor path. The optimized streaming hot path uses position-aware
-successor helpers, scratch predecessor buffers, a vector-backed worklist,
-`uint8_t` remaining counters, and no per-predecessor parent unrank.
+fast predecessor path. The optimized streaming hot path uses a no-rank
+initialization scan for same-layer moves, index-only predecessors, unchecked
+packed-table access in validated loops, a vector-backed worklist, `uint8_t`
+remaining counters, and no per-predecessor parent unrank.
 The low-k full tablebase prototype solves complete dense layers `k=0..3` into
 outcome-only `.s15res` files and verifies sampled successor consistency; see
 `docs/low-k-tablebase.md`.
 Under the current ruleset all `k=0..3` dense states are immediate
 `CannonWin`; the first layer where SoldierWin or Draw can appear is `k=4`.
 The streaming low-k solver can solve `k=0..3` by default and allows an explicit
-`k=4` benchmark with `--allow-k4`. The current optimized `k=4` run completed
-in 04:48 with exact baseline counts: `CannonWin=33,398,108`,
+`k=4` benchmark with `--allow-k4`. The current optimized Release `k=4` run
+completed in 01:06 with exact baseline counts: `CannonWin=33,398,108`,
 `SoldierWin=736`, `Draw=250,156`, `Unknown=0`; see
 `docs/scalable-tablebase-solver.md`.
 `.s15res --validate-res` scans payload bytes instead of checking only headers.

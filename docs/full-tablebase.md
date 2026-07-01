@@ -208,10 +208,12 @@ generateDensePredecessors(k, childIndex, DensePredecessorValidation::Checked)
 generateDensePredecessors(k, childIndex, DensePredecessorValidation::None)
 ```
 
-The streaming hot path now uses position-aware successor helpers, scratch
-buffers for successor and predecessor vectors, a vector-backed worklist, and a
-`uint8_t` remaining counter guarded against overflow. Propagation derives the
-parent side from the child side, so it does not unrank each predecessor parent.
+The streaming hot path now uses position-aware successor helpers, a
+solver-specific initialization scan, an index-only predecessor API, a
+vector-backed worklist, unchecked packed-table access in validated loops, and a
+`uint8_t` remaining counter guarded against overflow. Initialization does not
+rank same-layer successor targets, and propagation derives the parent side from
+the child side, so it does not unrank each predecessor parent.
 
 `k=4` is available only as an explicit benchmark:
 
@@ -219,7 +221,7 @@ parent side from the child side, so it does not unrank each predecessor parent.
 .\build\sanpao15_cli.exe --solve-lowk-streaming 4 --allow-k4 --out-dir build\stream-k4 --encoding 2bit
 ```
 
-The current optimized `k=4` run completed in 04:48 with exact expected counts:
+The current optimized Release `k=4` run completed in 01:06 with exact expected counts:
 
 ```text
 CannonWin=33,398,108

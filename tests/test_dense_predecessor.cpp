@@ -78,6 +78,17 @@ bool predecessorContainsParent(int soldierCount, uint64_t childIndex, uint64_t p
     return false;
 }
 
+std::vector<uint64_t> sortedUniquePredecessorIndexes(const std::vector<DensePredecessor>& predecessors) {
+    std::vector<uint64_t> indexes;
+    indexes.reserve(predecessors.size());
+    for (const DensePredecessor& predecessor : predecessors) {
+        indexes.push_back(predecessor.index);
+    }
+    std::sort(indexes.begin(), indexes.end());
+    indexes.erase(std::unique(indexes.begin(), indexes.end()), indexes.end());
+    return indexes;
+}
+
 }  // namespace
 
 SANPAO15_TEST(densePredecessorsRoundtripThroughSuccessors) {
@@ -183,6 +194,29 @@ SANPAO15_TEST(densePredecessorScratchClearsOldContents) {
         DensePredecessorValidation::None,
         scratch);
     SANPAO15_REQUIRE(predecessorSignature(scratch) == expected);
+}
+
+SANPAO15_TEST(densePredecessorIndexOnlyMatchesFastApiForSampledLayers) {
+    std::vector<DensePredecessor> predecessors;
+    std::vector<uint64_t> indexOnly;
+    for (int soldierCount : {0, 1, 2, 3, 4, 15}) {
+        for (uint64_t childIndex : largerSampleIndexes(soldierCount)) {
+            const Position child = positionFromDenseIndex(soldierCount, childIndex);
+            generateDensePredecessorsFromPosition(
+                soldierCount,
+                childIndex,
+                child,
+                DensePredecessorValidation::None,
+                predecessors);
+            generateDensePredecessorIndicesFromPosition(soldierCount, childIndex, child, indexOnly);
+
+            std::vector<uint64_t> sortedIndexOnly = indexOnly;
+            std::sort(sortedIndexOnly.begin(), sortedIndexOnly.end());
+            SANPAO15_REQUIRE(
+                std::adjacent_find(sortedIndexOnly.begin(), sortedIndexOnly.end()) == sortedIndexOnly.end());
+            SANPAO15_REQUIRE(sortedIndexOnly == sortedUniquePredecessorIndexes(predecessors));
+        }
+    }
 }
 
 SANPAO15_TEST(densePredecessorsRejectInvalidIndex) {

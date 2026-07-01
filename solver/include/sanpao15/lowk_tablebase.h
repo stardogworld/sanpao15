@@ -4,6 +4,7 @@
 #include <filesystem>
 #include <vector>
 
+#include "sanpao15/dense_successor.h"
 #include "sanpao15/dense_table.h"
 
 namespace sanpao15 {
@@ -72,6 +73,16 @@ struct LowKTablebaseVerifyResult {
     std::vector<LowKTablebaseVerifyLayerResult> layers;
 };
 
+struct DenseStreamingInitScan {
+    DenseTerminalInfo terminal;
+    uint64_t successorCount = 0;
+    uint64_t sameLayerEdges = 0;
+    uint64_t captureEdges = 0;
+    uint64_t remainingCount = 0;
+    bool resolved = false;
+    Outcome resolvedOutcome = Outcome::Unknown;
+};
+
 DenseLayerSolveResult solveDenseLayerOutcome(
     int soldierCount,
     const PackedOutcomeTable2Bit* lowerLayer,
@@ -81,6 +92,11 @@ DenseLayerSolveResult solveDenseLayerOutcomeStreaming(
     const PackedOutcomeTable2Bit* lowerLayer,
     PackedOutcomeTable2Bit& output);
 uint8_t checkedStreamingRemainingCount(uint64_t remainingCount);
+DenseStreamingInitScan scanDenseStateForStreamingInitialization(
+    int soldierCount,
+    uint64_t index,
+    const Position& pos,
+    const PackedOutcomeTable2Bit* lowerLayer);
 
 std::filesystem::path lowKLayerResultPath(const std::filesystem::path& dir, int soldierCount);
 

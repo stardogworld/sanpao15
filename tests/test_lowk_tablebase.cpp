@@ -1,6 +1,8 @@
 #include "test_common.h"
 
+#include <algorithm>
 #include <filesystem>
+#include <vector>
 
 #include "sanpao15/bitboard.h"
 #include "sanpao15/dense_index.h"
@@ -35,6 +37,58 @@ Position captureOneSoldierPosition() {
     pos.soldiers = maskOf({10});
     pos.side = Side::Cannon;
     return pos;
+}
+
+uint64_t nextRandom(uint64_t& state) {
+    state = state * 6364136223846793005ull + 1442695040888963407ull;
+    return state;
+}
+
+std::vector<uint64_t> scanSampleIndexes(int soldierCount) {
+    const uint64_t count = denseStateCount(soldierCount);
+    std::vector<uint64_t> indexes{0, count / 2, count - 1};
+    uint64_t rng = 0x5343414E4C4F574Bull ^ static_cast<uint64_t>(soldierCount);
+    for (int sample = 0; sample < 16; ++sample) {
+        indexes.push_back(nextRandom(rng) % count);
+    }
+    std::sort(indexes.begin(), indexes.end());
+    indexes.erase(std::unique(indexes.begin(), indexes.end()), indexes.end());
+    return indexes;
+}
+
+DenseStreamingInitScan referenceStreamingInitScan(
+    int soldierCount,
+    uint64_t index,
+    const Position& pos,
+    const PackedOutcomeTable2Bit* lowerLayer) {
+    DenseStreamingInitScan scan;
+    std::vector<DenseSuccessor> successors;
+    generateDenseSuccessorsFromPosition(soldierCount, index, pos, successors);
+    scan.terminal = terminalOutcomeForPositionWithSuccessors(pos, successors);
+    if (scan.terminal.terminal) {
+        return scan;
+    }
+
+    for (const DenseSuccessor& successor : successors) {
+        ++scan.successorCount;
+        if (successor.kind == DenseSuccessorKind::SameLayer) {
+            ++scan.sameLayerEdges;
+            if (!scan.resolved) {
+                ++scan.remainingCount;
+            }
+            continue;
+        }
+
+        ++scan.captureEdges;
+        const Outcome child = lowerLayer->get(successor.toIndex);
+        if (child == winFor(pos.side) && !scan.resolved) {
+            scan.resolved = true;
+            scan.resolvedOutcome = child;
+        } else if (child == Outcome::Draw && !scan.resolved) {
+            ++scan.remainingCount;
+        }
+    }
+    return scan;
 }
 
 }  // namespace
@@ -137,6 +191,30 @@ SANPAO15_TEST(streamingRemainingCountUsesUint8Guard) {
     sanpao15::test::requireThrows([] {
         (void)checkedStreamingRemainingCount(256);
     }, "streaming remaining counter rejects values above uint8_t");
+}
+
+SANPAO15_TEST(streamingInitializationScanMatchesSuccessorReference) {
+    for (int soldierCount = 0; soldierCount <= 4; ++soldierCount) {
+        PackedOutcomeTable2Bit lower = soldierCount == 0
+            ? PackedOutcomeTable2Bit(0)
+            : PackedOutcomeTable2Bit(denseStateCount(soldierCount - 1), Outcome::CannonWin);
+        const PackedOutcomeTable2Bit* lowerLayer = soldierCount == 0 ? nullptr : &lower;
+        for (uint64_t index : scanSampleIndexes(soldierCount)) {
+            const Position pos = positionFromDenseIndex(soldierCount, index);
+            const DenseStreamingInitScan expected =
+                referenceStreamingInitScan(soldierCount, index, pos, lowerLayer);
+            const DenseStreamingInitScan actual =
+                scanDenseStateForStreamingInitialization(soldierCount, index, pos, lowerLayer);
+            SANPAO15_REQUIRE(actual.terminal.terminal == expected.terminal.terminal);
+            SANPAO15_REQUIRE(actual.terminal.outcome == expected.terminal.outcome);
+            SANPAO15_REQUIRE(actual.successorCount == expected.successorCount);
+            SANPAO15_REQUIRE(actual.sameLayerEdges == expected.sameLayerEdges);
+            SANPAO15_REQUIRE(actual.captureEdges == expected.captureEdges);
+            SANPAO15_REQUIRE(actual.remainingCount == expected.remainingCount);
+            SANPAO15_REQUIRE(actual.resolved == expected.resolved);
+            SANPAO15_REQUIRE(actual.resolvedOutcome == expected.resolvedOutcome);
+        }
+    }
 }
 
 SANPAO15_TEST(lowKTerminalPriorityKeepsK0CannonWinDespiteLegalMoves) {
