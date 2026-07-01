@@ -47,6 +47,14 @@ The CLI prints the full table:
 .\build\sanpao15_cli.exe --tablebase-sizes
 ```
 
+Current ruleset metadata:
+
+```text
+name: sanpao15-min-four-soldiers
+summary: soldier-count-below-four-is-cannon-win
+hash: 5994631263128018692 (0x5331355F76325F04)
+```
+
 ## Combinadic Order
 
 Combination ranking uses colexicographic order. For set bits:
@@ -170,6 +178,11 @@ It is not a reachable-subset solve. It enumerates every legal dense state in
 each layer, uses solved lower-layer outcomes for capture edges, performs
 same-layer retrograde for cycles, and finalizes remaining Unknown states as
 Draw. The prototype stores only outcomes, not distance or best moves.
+
+Under the current minimum-four-soldiers ruleset, every state in `k=0..3` is
+terminal `CannonWin`. Earlier low-k results from the old ruleset, including
+`k=3 SoldierWin=32` and `Draw=20,096`, are intentionally invalidated by the new
+ruleset hash.
 
 See `docs/low-k-tablebase.md` for the detailed semantics and observed scale.
 

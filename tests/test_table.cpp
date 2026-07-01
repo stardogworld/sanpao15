@@ -24,10 +24,18 @@ bool sameMove(const std::optional<Move>& lhs, const std::optional<Move>& rhs) {
     return !lhs.has_value() || *lhs == *rhs;
 }
 
+uint32_t maskOf(std::initializer_list<int> bits) {
+    uint32_t mask = 0;
+    for (int bit : bits) {
+        mask = setBit(mask, bit);
+    }
+    return mask;
+}
+
 Position oneStepCannonWinPosition() {
     Position pos;
     pos.cannons = setBit(0, 20);
-    pos.soldiers = setBit(0, 10);
+    pos.soldiers = maskOf({1, 2, 3, 10});
     pos.side = Side::Cannon;
     return pos;
 }

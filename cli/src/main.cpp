@@ -1072,6 +1072,9 @@ void printMemoryEstimate(const MemoryEstimate& estimate) {
 
 void printTablebaseSizes() {
     std::cout << "Full tablebase dense layer sizes\n";
+    std::cout << "Ruleset: " << RulesetName << "\n";
+    std::cout << "Ruleset summary: " << RulesetSummary << "\n";
+    std::cout << "Ruleset hash: " << StandardRulesetHash << "\n";
     std::cout << "Rank order: cannon combination, soldier combination in non-cannon squares, side\n\n";
     std::cout << std::setw(8) << "Layer"
               << std::setw(18) << "States"
@@ -1100,6 +1103,10 @@ void printDenseResultInfo(const DenseResultFileInfo& info) {
     std::cout << "Dense result file\n";
     std::cout << "Version: " << info.version << "\n";
     std::cout << "Ruleset hash: " << info.rulesetHash << "\n";
+    if (info.rulesetHash == StandardRulesetHash) {
+        std::cout << "Ruleset: " << RulesetName << "\n";
+        std::cout << "Ruleset summary: " << RulesetSummary << "\n";
+    }
     std::cout << "Soldier count: " << info.soldierCount << "\n";
     std::cout << "State count: " << formatInteger(info.stateCount) << "\n";
     std::cout << "Encoding: " << denseResultEncodingToString(info.encoding) << "\n";
@@ -1148,6 +1155,14 @@ void printDenseSuccessors(const CliOptions& options) {
     std::cout << "Position: " << positionToNotation(from) << "\n";
     std::cout << "Terminal: " << (terminal.terminal ? "yes" : "no") << "\n";
     std::cout << "Terminal outcome: " << (terminal.terminal ? outcomeToString(terminal.outcome) : std::string("none")) << "\n";
+    if (terminal.terminal) {
+        const std::optional<Outcome> material = forcedOutcomeByMaterialRule(options.denseLayer);
+        if (material.has_value()) {
+            std::cout << "Terminal reason: " << RulesetSummary << "\n";
+        } else {
+            std::cout << "Terminal reason: rules-terminal\n";
+        }
+    }
     std::cout << "Successor count: " << formatInteger(static_cast<uint64_t>(successors.size())) << "\n";
     for (const DenseSuccessor& successor : successors) {
         const Position target = positionFromDenseIndex(successor.toSoldierCount, successor.toIndex);

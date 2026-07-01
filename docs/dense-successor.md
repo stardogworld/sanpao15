@@ -39,11 +39,15 @@ point directly into the dense result table for layer `k-1`.
 `terminalOutcomeForDenseState(k, index)` reuses the existing terminal rules:
 
 ```text
-no soldiers -> CannonWin
+soldierCount < 4 -> CannonWin
 cannon side has no legal moves -> SoldierWin
 side to move has no legal move -> opponent win
 otherwise -> not terminal
 ```
+
+The material rule is checked first. Therefore every dense state in layers
+`k=0..3` is terminal `CannonWin`; no `SoldierWin` or `Draw` can appear until
+`k=4`.
 
 The helper does not infer draws. `Unknown` remains only the non-terminal default
 for later retrograde analysis.

@@ -113,10 +113,34 @@ SANPAO15_TEST(denseSuccessorK0HasNoCaptureAndIsCannonWinTerminal) {
     }
 }
 
-SANPAO15_TEST(denseTerminalDetectsCannonStuckSoldierWin) {
+SANPAO15_TEST(denseTerminalMaterialRuleCoversK0ThroughK3) {
+    uint64_t rng = 0x4D4154455249414Cull;
+    for (int soldierCount : {0, 1, 2, 3}) {
+        const uint64_t count = denseStateCount(soldierCount);
+        for (uint64_t index : {uint64_t{0}, count / 2, count - 1, nextRandom(rng) % count}) {
+            const DenseTerminalInfo terminal = terminalOutcomeForDenseState(soldierCount, index);
+            SANPAO15_REQUIRE(terminal.terminal);
+            SANPAO15_REQUIRE(terminal.outcome == Outcome::CannonWin);
+        }
+    }
+}
+
+SANPAO15_TEST(denseTerminalMaterialRuleBeatsCannonStuck) {
     Position pos;
     pos.cannons = maskOf({0, 1, 5});
     pos.soldiers = maskOf({2, 6, 10});
+    pos.side = Side::Cannon;
+    SANPAO15_REQUIRE(generateCannonMoves(pos).empty());
+
+    const DenseTerminalInfo terminal = terminalOutcomeForDenseState(popcount25(pos.soldiers), denseIndex(pos));
+    SANPAO15_REQUIRE(terminal.terminal);
+    SANPAO15_REQUIRE(terminal.outcome == Outcome::CannonWin);
+}
+
+SANPAO15_TEST(denseTerminalDetectsCannonStuckSoldierWinAtK4) {
+    Position pos;
+    pos.cannons = maskOf({0, 1, 5});
+    pos.soldiers = maskOf({2, 3, 6, 10});
     pos.side = Side::Cannon;
     SANPAO15_REQUIRE(generateCannonMoves(pos).empty());
 
@@ -143,6 +167,7 @@ SANPAO15_TEST(denseMoveStatsSmoke) {
 
     const DenseLayerMoveStats k1 = analyzeDenseLayerMoves(1, 0);
     SANPAO15_REQUIRE(k1.sampledStates == denseStateCount(1));
+    SANPAO15_REQUIRE(k1.terminalStates == denseStateCount(1));
     SANPAO15_REQUIRE(k1.sameLayerSuccessors + k1.captureSuccessors == k1.totalSuccessors);
     SANPAO15_REQUIRE(k1.captureSuccessors > 0);
 

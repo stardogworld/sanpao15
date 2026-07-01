@@ -24,10 +24,18 @@ void requireEdgeAccountingInvariant(const SolveStats& stats) {
     }
 }
 
-Position oneSoldierPosition() {
+uint32_t maskOf(std::initializer_list<int> bits) {
+    uint32_t mask = 0;
+    for (int bit : bits) {
+        mask = setBit(mask, bit);
+    }
+    return mask;
+}
+
+Position fourSoldierPosition() {
     Position pos;
     pos.cannons = setBit(0, 20);
-    pos.soldiers = setBit(0, 10);
+    pos.soldiers = maskOf({1, 2, 3, 10});
     pos.side = Side::Cannon;
     return pos;
 }
@@ -116,7 +124,7 @@ SANPAO15_TEST(completeSmallGraphHasNoDroppedEdges) {
     GraphStatsOptions options;
     options.maxStates = 0;
     options.graphBackend = GraphBackend::Csr;
-    const GraphStatsResult result = collectGraphStats(oneSoldierPosition(), options);
+    const GraphStatsResult result = collectGraphStats(fourSoldierPosition(), options);
 
     SANPAO15_REQUIRE(!result.stats.truncated);
     SANPAO15_REQUIRE(result.stats.reachableStates > 1);

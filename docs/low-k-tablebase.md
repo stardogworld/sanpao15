@@ -41,13 +41,14 @@ during solving; solved `.s15res` outputs should not contain Unknown outcomes.
 Terminal states are resolved before their generated legal moves are considered:
 
 ```text
-no soldiers -> CannonWin
+soldierCount < 4 -> CannonWin
 cannon side has no legal moves -> SoldierWin
 side to move has no legal move -> opponent win
 ```
 
-This is especially important for `k=0`: all 4,600 states are `CannonWin`, even
-when `generateLegalMoves` would still produce cannon moves.
+The material rule has priority over cannon-stuck loss detection. This means all
+states in `k=0..3` are immediate `CannonWin`, even when `generateLegalMoves`
+would still produce moves or the cannon side would otherwise be stuck.
 
 ## Retrograde Logic
 
@@ -102,15 +103,18 @@ enough for a smoke run.
 On the current development machine, 2-bit output produced:
 
 ```text
-k  states       CannonWin  SoldierWin  Draw    Unknown  sameEdges   captureEdges
-0  4,600        4,600      0           0       0        0           0
-1  101,200      101,200    0           0       0        566,720     13,860
-2  1,062,600    1,062,600  0           0       0        7,084,000   277,200
-3  7,084,000    7,063,872  32          20,096  0        53,838,376  2,633,400
+k  states       CannonWin  SoldierWin  Draw  Unknown  sameEdges  captureEdges
+0  4,600        4,600      0           0     0        0          0
+1  101,200      101,200    0           0     0        0          0
+2  1,062,600    1,062,600  0           0     0        0          0
+3  7,084,000    7,084,000  0           0     0        0          0
 ```
 
-The `k=3` run completed, but its predecessor graph is already large enough that
-future layers should not simply extend this in-memory vector prototype.
+The old ruleset once produced `k=3 SoldierWin=32` and `Draw=20,096`; those
+results are obsolete. Under `sanpao15-min-four-soldiers`, all of those states
+are intercepted by the material rule and become `CannonWin`. The first layer
+where SoldierWin or Draw can appear is `k=4`, but this prototype intentionally
+does not solve `k=4`.
 
 ## Next Direction
 

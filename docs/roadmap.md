@@ -42,6 +42,7 @@
 - Inspect dense successors and sample dense layer move statistics from the CLI.
 - Solve low full-tablebase layers `k=0..3` with outcome-only retrograde and write `.s15res` results.
 - Verify low-k `.s15res` headers and sampled successor consistency.
+- Centralize the current ruleset as `sanpao15-min-four-soldiers`, where `soldierCount < 4` is immediate `CannonWin`.
 
 ## Solver Lines
 
@@ -51,6 +52,7 @@
 ## Next Steps
 
 - Design a scalable full `0..15` tablebase architecture.
+- Prototype the first non-material layer, `k=4`, with streaming/on-the-fly predecessor handling before extending the low-k in-memory solver.
 - Replace the low-k vector predecessor prototype with CSR or flat layer-local storage.
 - Evaluate file-backed or mmap dense outcome tables.
 - Evaluate D4 symmetry reduction for dense layers.

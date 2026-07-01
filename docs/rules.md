@@ -44,10 +44,21 @@ Soldiers:
 
 ## Terminal Rules
 
-- `soldiers == 0`: Cannon wins.
+- `soldierCount < 4`: Cannon wins.
 - Cannon has no legal moves: Soldier wins.
 - If the current side has no legal continuation, the opponent wins.
 - Cycles are handled by the solver through retrograde analysis, not recursive minimax.
+
+The material rule has the highest priority. A position with fewer than four
+soldiers is `CannonWin` even when the cannon side has no legal move.
+
+Current ruleset metadata:
+
+```text
+name: sanpao15-min-four-soldiers
+summary: soldier-count-below-four-is-cannon-win
+hash: 5994631263128018692 (0x5331355F76325F04)
+```
 
 ## Notation
 

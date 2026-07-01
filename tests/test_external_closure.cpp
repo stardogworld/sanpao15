@@ -25,10 +25,18 @@ std::filesystem::path tempDir(const char* name) {
     return dir;
 }
 
-Position oneSoldierCapturePosition() {
+Position fourSoldierCapturePosition() {
     Position pos;
     pos.cannons = setBit(0, 20);
-    pos.soldiers = setBit(0, 10);
+    pos.soldiers = setBit(setBit(setBit(setBit(0, 1), 2), 3), 10);
+    pos.side = Side::Cannon;
+    return pos;
+}
+
+Position fourSoldierBlockedPosition() {
+    Position pos;
+    pos.cannons = setBit(0, 20);
+    pos.soldiers = setBit(setBit(setBit(setBit(0, 10), 15), 16), 21);
     pos.side = Side::Cannon;
     return pos;
 }
@@ -145,31 +153,31 @@ SANPAO15_TEST(sortedSetOpsHandleEmptyInputs) {
     SANPAO15_REQUIRE(unionNonempty.keys == values);
 }
 
-SANPAO15_TEST(externalClosureMatchesInMemoryClosureForOneSoldierSeed) {
+SANPAO15_TEST(externalClosureMatchesInMemoryClosureForFourSoldierSeed) {
     const std::filesystem::path memoryDir = tempDir("sanpao15-external-closure-memory");
     LayeredBuildOptions memoryOptions;
     memoryOptions.outputDir = memoryDir;
-    const LayeredBuildStats memoryStats = buildReachableLayersFromSeed(oneSoldierCapturePosition(), memoryOptions);
+    const LayeredBuildStats memoryStats = buildReachableLayersFromSeed(fourSoldierBlockedPosition(), memoryOptions);
 
     const std::filesystem::path externalDir = tempDir("sanpao15-external-closure-work");
-    const auto seed = externalDir / "seeds-01.s15seed";
-    const auto layer = externalDir / "layer-01.s15layer";
-    const auto nextSeed = externalDir / "seeds-00.s15seed";
-    writeSeedFile(seed, 1, {packPosition(oneSoldierCapturePosition())});
+    const auto seed = externalDir / "seeds-04.s15seed";
+    const auto layer = externalDir / "layer-04.s15layer";
+    const auto nextSeed = externalDir / "seeds-03.s15seed";
+    writeSeedFile(seed, 4, {packPosition(fourSoldierBlockedPosition())});
 
     ExternalClosureOptions options;
     options.workDir = externalDir / "work";
     options.seedFile = seed;
     options.outputLayerFile = layer;
     options.outputNextSeedFile = nextSeed;
-    options.soldierCount = 1;
+    options.soldierCount = 4;
     options.chunkKeyLimit = 3;
     const ExternalClosureStats externalStats = buildLayerClosureExternal(options);
 
-    const LayerFileData memoryLayer = readLayerFile(layerFilePath(memoryDir, 1), 1);
-    const SeedFileData memoryNextSeed = readSeedFile(seedFilePath(memoryDir, 0), 0);
-    const LayerFileData externalLayer = readLayerFile(layer, 1);
-    const SeedFileData externalNextSeed = readSeedFile(nextSeed, 0);
+    const LayerFileData memoryLayer = readLayerFile(layerFilePath(memoryDir, 4), 4);
+    const SeedFileData memoryNextSeed = readSeedFile(seedFilePath(memoryDir, 3), 3);
+    const LayerFileData externalLayer = readLayerFile(layer, 4);
+    const SeedFileData externalNextSeed = readSeedFile(nextSeed, 3);
     std::filesystem::remove_all(memoryDir);
     std::filesystem::remove_all(externalDir);
 
@@ -177,52 +185,52 @@ SANPAO15_TEST(externalClosureMatchesInMemoryClosureForOneSoldierSeed) {
     SANPAO15_REQUIRE(!externalStats.truncated);
     SANPAO15_REQUIRE(memoryLayer.keys == externalLayer.keys);
     SANPAO15_REQUIRE(memoryNextSeed.keys == externalNextSeed.keys);
-    SANPAO15_REQUIRE(memoryStats.layers[1].generatedSameLayerEdges == externalStats.generatedSameLayerEdges);
-    SANPAO15_REQUIRE(memoryStats.layers[1].generatedCaptureEdges == externalStats.generatedCaptureEdges);
+    SANPAO15_REQUIRE(memoryStats.layers[4].generatedSameLayerEdges == externalStats.generatedSameLayerEdges);
+    SANPAO15_REQUIRE(memoryStats.layers[4].generatedCaptureEdges == externalStats.generatedCaptureEdges);
 }
 
 SANPAO15_TEST(externalClosureTruncationWritesValidOutputs) {
     const std::filesystem::path dir = tempDir("sanpao15-external-closure-trunc");
-    const auto seed = dir / "seeds-01.s15seed";
-    const auto layer = dir / "layer-01.s15layer";
-    const auto nextSeed = dir / "seeds-00.s15seed";
-    writeSeedFile(seed, 1, {packPosition(oneSoldierCapturePosition())});
+    const auto seed = dir / "seeds-04.s15seed";
+    const auto layer = dir / "layer-04.s15layer";
+    const auto nextSeed = dir / "seeds-03.s15seed";
+    writeSeedFile(seed, 4, {packPosition(fourSoldierCapturePosition())});
 
     ExternalClosureOptions options;
     options.workDir = dir / "work";
     options.seedFile = seed;
     options.outputLayerFile = layer;
     options.outputNextSeedFile = nextSeed;
-    options.soldierCount = 1;
+    options.soldierCount = 4;
     options.chunkKeyLimit = 2;
     options.maxIterations = 1;
     const ExternalClosureStats stats = buildLayerClosureExternal(options);
-    const KeyListFileSummary layerSummary = validateLayerFile(layer, 1);
-    const KeyListFileSummary seedSummary = validateSeedFile(nextSeed, 0);
+    const KeyListFileSummary layerSummary = validateLayerFile(layer, 4);
+    const KeyListFileSummary seedSummary = validateSeedFile(nextSeed, 3);
     std::filesystem::remove_all(dir);
 
     SANPAO15_REQUIRE(stats.truncated);
     SANPAO15_REQUIRE(layerSummary.keyCount > 0);
-    SANPAO15_REQUIRE(seedSummary.soldierCount == 0);
+    SANPAO15_REQUIRE(seedSummary.soldierCount == 3);
 }
 
 SANPAO15_TEST(externalClosureWritesCheckpointOnTruncation) {
     const std::filesystem::path dir = tempDir("sanpao15-external-closure-checkpoint");
-    const auto seed = dir / "seeds-01.s15seed";
-    const auto layer = dir / "layer-01.s15layer";
-    const auto nextSeed = dir / "seeds-00.s15seed";
-    writeSeedFile(seed, 1, {packPosition(oneSoldierCapturePosition())});
+    const auto seed = dir / "seeds-04.s15seed";
+    const auto layer = dir / "layer-04.s15layer";
+    const auto nextSeed = dir / "seeds-03.s15seed";
+    writeSeedFile(seed, 4, {packPosition(fourSoldierCapturePosition())});
 
     ExternalClosureOptions options;
     options.workDir = dir / "work";
     options.seedFile = seed;
     options.outputLayerFile = layer;
     options.outputNextSeedFile = nextSeed;
-    options.soldierCount = 1;
+    options.soldierCount = 4;
     options.chunkKeyLimit = 2;
     options.maxIterations = 1;
     const ExternalClosureStats stats = buildLayerClosureExternal(options);
-    const ExternalClosureCheckpointInfo checkpoint = inspectClosureCheckpoint(options.workDir, 1);
+    const ExternalClosureCheckpointInfo checkpoint = inspectClosureCheckpoint(options.workDir, 4);
     const std::string manifest = readText(closureCheckpointManifestPath(options.workDir));
     std::filesystem::remove_all(dir);
 
@@ -235,7 +243,7 @@ SANPAO15_TEST(externalClosureWritesCheckpointOnTruncation) {
     SANPAO15_REQUIRE(manifest.find("\"requiresTransientRuns\": false") != std::string::npos);
     SANPAO15_REQUIRE(manifest.find("\"checkpointKind\":") != std::string::npos);
     SANPAO15_REQUIRE(manifest.find("\"remainingFrontierFile\":") != std::string::npos);
-    SANPAO15_REQUIRE(checkpoint.soldierCount == 1);
+    SANPAO15_REQUIRE(checkpoint.soldierCount == 4);
     SANPAO15_REQUIRE(checkpoint.visitedStates == stats.finalStates);
     SANPAO15_REQUIRE(checkpoint.frontierStates == stats.finalFrontierStates);
     SANPAO15_REQUIRE(checkpoint.nextSeedStates == stats.nextSeedStates);
@@ -243,17 +251,17 @@ SANPAO15_TEST(externalClosureWritesCheckpointOnTruncation) {
 
 SANPAO15_TEST(externalClosureCheckpointIgnoresStaleTransientRuns) {
     const std::filesystem::path dir = tempDir("sanpao15-external-closure-stale-runs");
-    const auto seed = dir / "seeds-01.s15seed";
-    const auto layer = dir / "layer-01.s15layer";
-    const auto nextSeed = dir / "seeds-00.s15seed";
-    writeSeedFile(seed, 1, {packPosition(oneSoldierCapturePosition())});
+    const auto seed = dir / "seeds-04.s15seed";
+    const auto layer = dir / "layer-04.s15layer";
+    const auto nextSeed = dir / "seeds-03.s15seed";
+    writeSeedFile(seed, 4, {packPosition(fourSoldierCapturePosition())});
 
     ExternalClosureOptions first;
     first.workDir = dir / "work";
     first.seedFile = seed;
     first.outputLayerFile = layer;
     first.outputNextSeedFile = nextSeed;
-    first.soldierCount = 1;
+    first.soldierCount = 4;
     first.chunkKeyLimit = 1;
     first.maxExpandedStates = 1;
     const ExternalClosureStats firstStats = buildLayerClosureExternal(first);
@@ -264,12 +272,12 @@ SANPAO15_TEST(externalClosureCheckpointIgnoresStaleTransientRuns) {
     writeRunFile(staleRuns / "keys-0.s15run", {1, 2, 3});
     SANPAO15_REQUIRE(std::filesystem::exists(staleRuns / "keys-0.s15run"));
 
-    const ExternalClosureCheckpointInfo before = inspectClosureCheckpoint(first.workDir, 1);
+    const ExternalClosureCheckpointInfo before = inspectClosureCheckpoint(first.workDir, 4);
     SANPAO15_REQUIRE(!before.requiresTransientRuns);
     const uint64_t removed = cleanupStaleClosureRuns(first.workDir);
     SANPAO15_REQUIRE(removed >= 1);
     SANPAO15_REQUIRE(!std::filesystem::exists(first.workDir / "runs"));
-    const ExternalClosureCheckpointInfo after = inspectClosureCheckpoint(first.workDir, 1);
+    const ExternalClosureCheckpointInfo after = inspectClosureCheckpoint(first.workDir, 4);
     SANPAO15_REQUIRE(after.visitedStates == before.visitedStates);
 
     ExternalClosureOptions second = first;
@@ -283,31 +291,31 @@ SANPAO15_TEST(externalClosureCheckpointIgnoresStaleTransientRuns) {
 
 SANPAO15_TEST(externalClosureResumeMatchesUninterruptedRun) {
     const std::filesystem::path fullDir = tempDir("sanpao15-external-closure-full");
-    const auto fullSeed = fullDir / "seeds-01.s15seed";
-    const auto fullLayer = fullDir / "layer-01.s15layer";
-    const auto fullNextSeed = fullDir / "seeds-00.s15seed";
-    writeSeedFile(fullSeed, 1, {packPosition(oneSoldierCapturePosition())});
+    const auto fullSeed = fullDir / "seeds-04.s15seed";
+    const auto fullLayer = fullDir / "layer-04.s15layer";
+    const auto fullNextSeed = fullDir / "seeds-03.s15seed";
+    writeSeedFile(fullSeed, 4, {packPosition(fourSoldierCapturePosition())});
     ExternalClosureOptions full;
     full.workDir = fullDir / "work";
     full.seedFile = fullSeed;
     full.outputLayerFile = fullLayer;
     full.outputNextSeedFile = fullNextSeed;
-    full.soldierCount = 1;
+    full.soldierCount = 4;
     full.chunkKeyLimit = 3;
     full.maxExpandedStates = 20;
     const ExternalClosureStats fullStats = buildLayerClosureExternal(full);
 
     const std::filesystem::path resumeDir = tempDir("sanpao15-external-closure-resume");
-    const auto resumeSeed = resumeDir / "seeds-01.s15seed";
-    const auto resumeLayer = resumeDir / "layer-01.s15layer";
-    const auto resumeNextSeed = resumeDir / "seeds-00.s15seed";
-    writeSeedFile(resumeSeed, 1, {packPosition(oneSoldierCapturePosition())});
+    const auto resumeSeed = resumeDir / "seeds-04.s15seed";
+    const auto resumeLayer = resumeDir / "layer-04.s15layer";
+    const auto resumeNextSeed = resumeDir / "seeds-03.s15seed";
+    writeSeedFile(resumeSeed, 4, {packPosition(fourSoldierCapturePosition())});
     ExternalClosureOptions first;
     first.workDir = resumeDir / "work";
     first.seedFile = resumeSeed;
     first.outputLayerFile = resumeLayer;
     first.outputNextSeedFile = resumeNextSeed;
-    first.soldierCount = 1;
+    first.soldierCount = 4;
     first.chunkKeyLimit = 3;
     first.maxExpandedStates = 10;
     const ExternalClosureStats firstStats = buildLayerClosureExternal(first);
@@ -318,10 +326,10 @@ SANPAO15_TEST(externalClosureResumeMatchesUninterruptedRun) {
     second.maxExpandedStates = 10;
     const ExternalClosureStats secondStats = buildLayerClosureExternal(second);
 
-    const LayerFileData fullLayerData = readLayerFile(fullLayer, 1);
-    const SeedFileData fullSeedData = readSeedFile(fullNextSeed, 0);
-    const LayerFileData resumeLayerData = readLayerFile(resumeLayer, 1);
-    const SeedFileData resumeSeedData = readSeedFile(resumeNextSeed, 0);
+    const LayerFileData fullLayerData = readLayerFile(fullLayer, 4);
+    const SeedFileData fullSeedData = readSeedFile(fullNextSeed, 3);
+    const LayerFileData resumeLayerData = readLayerFile(resumeLayer, 4);
+    const SeedFileData resumeSeedData = readSeedFile(resumeNextSeed, 3);
     std::filesystem::remove_all(fullDir);
     std::filesystem::remove_all(resumeDir);
 
@@ -337,27 +345,27 @@ SANPAO15_TEST(externalClosureResumeMatchesUninterruptedRun) {
 
 SANPAO15_TEST(externalClosureResumePreservesCaptureSeeds) {
     const std::filesystem::path dir = tempDir("sanpao15-external-closure-capture-resume");
-    const auto seed = dir / "seeds-01.s15seed";
-    const auto layer = dir / "layer-01.s15layer";
-    const auto nextSeed = dir / "seeds-00.s15seed";
-    writeSeedFile(seed, 1, {packPosition(oneSoldierCapturePosition())});
+    const auto seed = dir / "seeds-04.s15seed";
+    const auto layer = dir / "layer-04.s15layer";
+    const auto nextSeed = dir / "seeds-03.s15seed";
+    writeSeedFile(seed, 4, {packPosition(fourSoldierCapturePosition())});
 
     ExternalClosureOptions first;
     first.workDir = dir / "work";
     first.seedFile = seed;
     first.outputLayerFile = layer;
     first.outputNextSeedFile = nextSeed;
-    first.soldierCount = 1;
+    first.soldierCount = 4;
     first.chunkKeyLimit = 2;
     first.maxExpandedStates = 1;
     const ExternalClosureStats firstStats = buildLayerClosureExternal(first);
-    const SeedFileData firstSeeds = readSeedFile(nextSeed, 0);
+    const SeedFileData firstSeeds = readSeedFile(nextSeed, 3);
 
     ExternalClosureOptions second = first;
     second.resume = true;
     second.maxExpandedStates = 10;
     const ExternalClosureStats secondStats = buildLayerClosureExternal(second);
-    const SeedFileData resumedSeeds = readSeedFile(nextSeed, 0);
+    const SeedFileData resumedSeeds = readSeedFile(nextSeed, 3);
     std::filesystem::remove_all(dir);
 
     SANPAO15_REQUIRE(firstStats.truncated);
@@ -370,17 +378,17 @@ SANPAO15_TEST(externalClosureResumePreservesCaptureSeeds) {
 
 SANPAO15_TEST(externalClosureRejectsBadCheckpoint) {
     const std::filesystem::path dir = tempDir("sanpao15-external-closure-bad-checkpoint");
-    const auto seed = dir / "seeds-01.s15seed";
-    const auto layer = dir / "layer-01.s15layer";
-    const auto nextSeed = dir / "seeds-00.s15seed";
-    writeSeedFile(seed, 1, {packPosition(oneSoldierCapturePosition())});
+    const auto seed = dir / "seeds-04.s15seed";
+    const auto layer = dir / "layer-04.s15layer";
+    const auto nextSeed = dir / "seeds-03.s15seed";
+    writeSeedFile(seed, 4, {packPosition(fourSoldierCapturePosition())});
 
     ExternalClosureOptions options;
     options.workDir = dir / "work";
     options.seedFile = seed;
     options.outputLayerFile = layer;
     options.outputNextSeedFile = nextSeed;
-    options.soldierCount = 1;
+    options.soldierCount = 4;
     options.maxIterations = 1;
     (void)buildLayerClosureExternal(options);
 
@@ -391,14 +399,14 @@ SANPAO15_TEST(externalClosureRejectsBadCheckpoint) {
         [&] { (void)buildLayerClosureExternal(missing); },
         "resume should reject a checkpoint with a missing frontier file");
     sanpao15::test::requireThrows(
-        [&] { (void)inspectClosureCheckpoint(options.workDir, 1); },
+        [&] { (void)inspectClosureCheckpoint(options.workDir, 4); },
         "checkpoint validation should reject a missing frontier file");
 
     const std::filesystem::path dir2 = tempDir("sanpao15-external-closure-bad-checkpoint-rules");
-    const auto seed2 = dir2 / "seeds-01.s15seed";
-    const auto layer2 = dir2 / "layer-01.s15layer";
-    const auto nextSeed2 = dir2 / "seeds-00.s15seed";
-    writeSeedFile(seed2, 1, {packPosition(oneSoldierCapturePosition())});
+    const auto seed2 = dir2 / "seeds-04.s15seed";
+    const auto layer2 = dir2 / "layer-04.s15layer";
+    const auto nextSeed2 = dir2 / "seeds-03.s15seed";
+    writeSeedFile(seed2, 4, {packPosition(fourSoldierCapturePosition())});
     ExternalClosureOptions options2 = options;
     options2.workDir = dir2 / "work";
     options2.seedFile = seed2;
@@ -426,25 +434,25 @@ SANPAO15_TEST(externalClosureRejectsBadCheckpoint) {
 
 SANPAO15_TEST(externalClosureRepairRewritesStableManifest) {
     const std::filesystem::path dir = tempDir("sanpao15-external-closure-repair");
-    const auto seed = dir / "seeds-01.s15seed";
-    const auto layer = dir / "layer-01.s15layer";
-    const auto nextSeed = dir / "seeds-00.s15seed";
-    writeSeedFile(seed, 1, {packPosition(oneSoldierCapturePosition())});
+    const auto seed = dir / "seeds-04.s15seed";
+    const auto layer = dir / "layer-04.s15layer";
+    const auto nextSeed = dir / "seeds-03.s15seed";
+    writeSeedFile(seed, 4, {packPosition(fourSoldierCapturePosition())});
 
     ExternalClosureOptions options;
     options.workDir = dir / "work";
     options.seedFile = seed;
     options.outputLayerFile = layer;
     options.outputNextSeedFile = nextSeed;
-    options.soldierCount = 1;
+    options.soldierCount = 4;
     options.maxExpandedStates = 1;
     (void)buildLayerClosureExternal(options);
 
-    ClosureCheckpointRepairResult dryRun = repairClosureCheckpoint(options.workDir, 1, true);
+    ClosureCheckpointRepairResult dryRun = repairClosureCheckpoint(options.workDir, 4, true);
     const std::string before = readText(closureCheckpointManifestPath(options.workDir));
-    ClosureCheckpointRepairResult repaired = repairClosureCheckpoint(options.workDir, 1, false);
+    ClosureCheckpointRepairResult repaired = repairClosureCheckpoint(options.workDir, 4, false);
     const std::string after = readText(closureCheckpointManifestPath(options.workDir));
-    const ExternalClosureCheckpointInfo info = inspectClosureCheckpoint(options.workDir, 1);
+    const ExternalClosureCheckpointInfo info = inspectClosureCheckpoint(options.workDir, 4);
     std::filesystem::remove_all(dir);
 
     SANPAO15_REQUIRE(dryRun.dryRun);
@@ -457,17 +465,17 @@ SANPAO15_TEST(externalClosureRepairRewritesStableManifest) {
 
 SANPAO15_TEST(externalClosureWritesPartitionedCheckpointSnapshots) {
     const std::filesystem::path dir = tempDir("sanpao15-external-closure-partitioned");
-    const auto seed = dir / "seeds-01.s15seed";
-    const auto layer = dir / "layer-01.s15layer";
-    const auto nextSeed = dir / "seeds-00.s15seed";
-    writeSeedFile(seed, 1, {packPosition(oneSoldierCapturePosition())});
+    const auto seed = dir / "seeds-04.s15seed";
+    const auto layer = dir / "layer-04.s15layer";
+    const auto nextSeed = dir / "seeds-03.s15seed";
+    writeSeedFile(seed, 4, {packPosition(fourSoldierCapturePosition())});
 
     ExternalClosureOptions options;
     options.workDir = dir / "work";
     options.seedFile = seed;
     options.outputLayerFile = layer;
     options.outputNextSeedFile = nextSeed;
-    options.soldierCount = 1;
+    options.soldierCount = 4;
     options.chunkKeyLimit = 2;
     options.maxExpandedStates = 10;
     options.partitionedClosure = true;
@@ -480,7 +488,7 @@ SANPAO15_TEST(externalClosureWritesPartitionedCheckpointSnapshots) {
         validatePartitionedKeySet(options.workDir / "partitioned" / "frontier");
     const PartitionValidationResult nextSeeds =
         validatePartitionedKeySet(options.workDir / "partitioned" / "next-seeds");
-    const ExternalClosureCheckpointInfo checkpoint = inspectClosureCheckpoint(options.workDir, 1);
+    const ExternalClosureCheckpointInfo checkpoint = inspectClosureCheckpoint(options.workDir, 4);
     std::filesystem::remove_all(dir);
 
     SANPAO15_REQUIRE(stats.partitionedClosure);
@@ -497,24 +505,24 @@ SANPAO15_TEST(externalClosureWritesPartitionedCheckpointSnapshots) {
 
 SANPAO15_TEST(closureCheckpointMigrationDryRunDoesNotWrite) {
     const std::filesystem::path dir = tempDir("sanpao15-closure-migrate-dry-run");
-    const auto seed = dir / "seeds-01.s15seed";
-    const auto layer = dir / "layer-01.s15layer";
-    const auto nextSeed = dir / "seeds-00.s15seed";
-    writeSeedFile(seed, 1, {packPosition(oneSoldierCapturePosition())});
+    const auto seed = dir / "seeds-04.s15seed";
+    const auto layer = dir / "layer-04.s15layer";
+    const auto nextSeed = dir / "seeds-03.s15seed";
+    writeSeedFile(seed, 4, {packPosition(fourSoldierCapturePosition())});
 
     ExternalClosureOptions closure;
     closure.workDir = dir / "work";
     closure.seedFile = seed;
     closure.outputLayerFile = layer;
     closure.outputNextSeedFile = nextSeed;
-    closure.soldierCount = 1;
+    closure.soldierCount = 4;
     closure.maxExpandedStates = 1;
     (void)buildLayerClosureExternal(closure);
 
     ClosureCheckpointMigrationOptions migration;
     migration.checkpointDir = closure.workDir;
     migration.outputDir = dir / "partitioned";
-    migration.expectedSoldierCount = 1;
+    migration.expectedSoldierCount = 4;
     migration.bucketCount = 4;
     migration.dryRun = true;
     const ClosureCheckpointMigrationResult result = migrateClosureCheckpointToPartitioned(migration);
@@ -528,30 +536,30 @@ SANPAO15_TEST(closureCheckpointMigrationDryRunDoesNotWrite) {
 
 SANPAO15_TEST(closureCheckpointMigrationRoundtripValidatesCounts) {
     const std::filesystem::path dir = tempDir("sanpao15-closure-migrate-roundtrip");
-    const auto seed = dir / "seeds-01.s15seed";
-    const auto layer = dir / "layer-01.s15layer";
-    const auto nextSeed = dir / "seeds-00.s15seed";
-    writeSeedFile(seed, 1, {packPosition(oneSoldierCapturePosition())});
+    const auto seed = dir / "seeds-04.s15seed";
+    const auto layer = dir / "layer-04.s15layer";
+    const auto nextSeed = dir / "seeds-03.s15seed";
+    writeSeedFile(seed, 4, {packPosition(fourSoldierCapturePosition())});
 
     ExternalClosureOptions closure;
     closure.workDir = dir / "work";
     closure.seedFile = seed;
     closure.outputLayerFile = layer;
     closure.outputNextSeedFile = nextSeed;
-    closure.soldierCount = 1;
+    closure.soldierCount = 4;
     closure.maxIterations = 1;
     const ExternalClosureStats stats = buildLayerClosureExternal(closure);
 
     ClosureCheckpointMigrationOptions migration;
     migration.checkpointDir = closure.workDir;
     migration.outputDir = dir / "partitioned";
-    migration.expectedSoldierCount = 1;
+    migration.expectedSoldierCount = 4;
     migration.bucketCount = 4;
     const ClosureCheckpointMigrationResult result = migrateClosureCheckpointToPartitioned(migration);
     const PartitionedClosureCheckpointInfo partitioned =
-        inspectPartitionedClosureCheckpoint(migration.outputDir, 1);
+        inspectPartitionedClosureCheckpoint(migration.outputDir, 4);
     PartitionedKeySetReader visitedReader(migration.outputDir / "visited");
-    const KeysFileData visited = readKeysFile(closure.workDir / "visited.s15keys", 1);
+    const KeysFileData visited = readKeysFile(closure.workDir / "visited.s15keys", 4);
 
     SANPAO15_REQUIRE(stats.truncated);
     SANPAO15_REQUIRE(!result.dryRun);
@@ -565,29 +573,29 @@ SANPAO15_TEST(closureCheckpointMigrationRoundtripValidatesCounts) {
 
 SANPAO15_TEST(closureCheckpointMigrationIncludesMidIterationSnapshots) {
     const std::filesystem::path dir = tempDir("sanpao15-closure-migrate-mid");
-    const auto seed = dir / "seeds-01.s15seed";
-    const auto layer = dir / "layer-01.s15layer";
-    const auto nextSeed = dir / "seeds-00.s15seed";
-    writeSeedFile(seed, 1, keysFor(1, {0, 1}));
+    const auto seed = dir / "seeds-04.s15seed";
+    const auto layer = dir / "layer-04.s15layer";
+    const auto nextSeed = dir / "seeds-03.s15seed";
+    writeSeedFile(seed, 4, keysFor(4, {0, 1}));
 
     ExternalClosureOptions closure;
     closure.workDir = dir / "work";
     closure.seedFile = seed;
     closure.outputLayerFile = layer;
     closure.outputNextSeedFile = nextSeed;
-    closure.soldierCount = 1;
+    closure.soldierCount = 4;
     closure.maxExpandedStates = 1;
     const ExternalClosureStats stats = buildLayerClosureExternal(closure);
-    const ExternalClosureCheckpointInfo checkpoint = inspectClosureCheckpoint(closure.workDir, 1);
+    const ExternalClosureCheckpointInfo checkpoint = inspectClosureCheckpoint(closure.workDir, 4);
 
     ClosureCheckpointMigrationOptions migration;
     migration.checkpointDir = closure.workDir;
     migration.outputDir = dir / "partitioned";
-    migration.expectedSoldierCount = 1;
+    migration.expectedSoldierCount = 4;
     migration.bucketCount = 4;
     (void)migrateClosureCheckpointToPartitioned(migration);
     const PartitionedClosureCheckpointInfo partitioned =
-        inspectPartitionedClosureCheckpoint(migration.outputDir, 1);
+        inspectPartitionedClosureCheckpoint(migration.outputDir, 4);
 
     bool sawBaseVisited = false;
     bool sawPendingCandidates = false;
@@ -608,24 +616,24 @@ SANPAO15_TEST(closureCheckpointMigrationIncludesMidIterationSnapshots) {
 
 SANPAO15_TEST(closureCheckpointMigrationRejectsInvalidInputs) {
     const std::filesystem::path dir = tempDir("sanpao15-closure-migrate-invalid");
-    const auto seed = dir / "seeds-01.s15seed";
-    const auto layer = dir / "layer-01.s15layer";
-    const auto nextSeed = dir / "seeds-00.s15seed";
-    writeSeedFile(seed, 1, {packPosition(oneSoldierCapturePosition())});
+    const auto seed = dir / "seeds-04.s15seed";
+    const auto layer = dir / "layer-04.s15layer";
+    const auto nextSeed = dir / "seeds-03.s15seed";
+    writeSeedFile(seed, 4, {packPosition(fourSoldierCapturePosition())});
 
     ExternalClosureOptions closure;
     closure.workDir = dir / "work";
     closure.seedFile = seed;
     closure.outputLayerFile = layer;
     closure.outputNextSeedFile = nextSeed;
-    closure.soldierCount = 1;
+    closure.soldierCount = 4;
     closure.maxIterations = 1;
     (void)buildLayerClosureExternal(closure);
 
     ClosureCheckpointMigrationOptions exists;
     exists.checkpointDir = closure.workDir;
     exists.outputDir = dir / "partitioned";
-    exists.expectedSoldierCount = 1;
+    exists.expectedSoldierCount = 4;
     exists.bucketCount = 4;
     std::filesystem::create_directories(exists.outputDir);
     sanpao15::test::requireThrows(
@@ -650,24 +658,24 @@ SANPAO15_TEST(closureCheckpointMigrationRejectsInvalidInputs) {
 
 SANPAO15_TEST(partitionedClosureCheckpointValidatorRejectsCorruptManifest) {
     const std::filesystem::path dir = tempDir("sanpao15-closure-migrate-corrupt");
-    const auto seed = dir / "seeds-01.s15seed";
-    const auto layer = dir / "layer-01.s15layer";
-    const auto nextSeed = dir / "seeds-00.s15seed";
-    writeSeedFile(seed, 1, {packPosition(oneSoldierCapturePosition())});
+    const auto seed = dir / "seeds-04.s15seed";
+    const auto layer = dir / "layer-04.s15layer";
+    const auto nextSeed = dir / "seeds-03.s15seed";
+    writeSeedFile(seed, 4, {packPosition(fourSoldierCapturePosition())});
 
     ExternalClosureOptions closure;
     closure.workDir = dir / "work";
     closure.seedFile = seed;
     closure.outputLayerFile = layer;
     closure.outputNextSeedFile = nextSeed;
-    closure.soldierCount = 1;
+    closure.soldierCount = 4;
     closure.maxIterations = 1;
     (void)buildLayerClosureExternal(closure);
 
     ClosureCheckpointMigrationOptions migration;
     migration.checkpointDir = closure.workDir;
     migration.outputDir = dir / "partitioned";
-    migration.expectedSoldierCount = 1;
+    migration.expectedSoldierCount = 4;
     migration.bucketCount = 4;
     (void)migrateClosureCheckpointToPartitioned(migration);
 
@@ -682,23 +690,23 @@ SANPAO15_TEST(partitionedClosureCheckpointValidatorRejectsCorruptManifest) {
         output << manifest;
     }
     sanpao15::test::requireThrows(
-        [&] { (void)inspectPartitionedClosureCheckpoint(migration.outputDir, 1); },
+        [&] { (void)inspectPartitionedClosureCheckpoint(migration.outputDir, 4); },
         "partitioned closure validator should reject bad snapshot count");
     std::filesystem::remove_all(dir);
 }
 
 SANPAO15_TEST(partitionedClosureResumeCompletesBoundaryIterationLikeFlatResume) {
     const std::filesystem::path flatDir = tempDir("sanpao15-partitioned-resume-flat");
-    const auto flatSeed = flatDir / "seeds-01.s15seed";
-    const auto flatLayer = flatDir / "layer-01.s15layer";
-    const auto flatNextSeed = flatDir / "seeds-00.s15seed";
-    writeSeedFile(flatSeed, 1, {packPosition(oneSoldierCapturePosition())});
+    const auto flatSeed = flatDir / "seeds-04.s15seed";
+    const auto flatLayer = flatDir / "layer-04.s15layer";
+    const auto flatNextSeed = flatDir / "seeds-03.s15seed";
+    writeSeedFile(flatSeed, 4, {packPosition(fourSoldierCapturePosition())});
     ExternalClosureOptions flatFirst;
     flatFirst.workDir = flatDir / "work";
     flatFirst.seedFile = flatSeed;
     flatFirst.outputLayerFile = flatLayer;
     flatFirst.outputNextSeedFile = flatNextSeed;
-    flatFirst.soldierCount = 1;
+    flatFirst.soldierCount = 4;
     flatFirst.maxIterations = 1;
     flatFirst.chunkKeyLimit = 2;
     (void)buildLayerClosureExternal(flatFirst);
@@ -706,39 +714,39 @@ SANPAO15_TEST(partitionedClosureResumeCompletesBoundaryIterationLikeFlatResume) 
     flatSecond.resume = true;
     flatSecond.maxIterations = 1;
     const ExternalClosureStats flatStats = buildLayerClosureExternal(flatSecond);
-    const KeysFileData flatVisited = readKeysFile(flatSecond.workDir / "visited.s15keys", 1);
-    const KeysFileData flatNextSeeds = readKeysFile(flatSecond.workDir / "next-seeds.s15keys", 0);
+    const KeysFileData flatVisited = readKeysFile(flatSecond.workDir / "visited.s15keys", 4);
+    const KeysFileData flatNextSeeds = readKeysFile(flatSecond.workDir / "next-seeds.s15keys", 3);
 
     const std::filesystem::path partDir = tempDir("sanpao15-partitioned-resume-boundary");
-    const auto partSeed = partDir / "seeds-01.s15seed";
-    const auto partLayer = partDir / "layer-01.s15layer";
-    const auto partNextSeed = partDir / "seeds-00.s15seed";
-    writeSeedFile(partSeed, 1, {packPosition(oneSoldierCapturePosition())});
+    const auto partSeed = partDir / "seeds-04.s15seed";
+    const auto partLayer = partDir / "layer-04.s15layer";
+    const auto partNextSeed = partDir / "seeds-03.s15seed";
+    writeSeedFile(partSeed, 4, {packPosition(fourSoldierCapturePosition())});
     ExternalClosureOptions partFirst;
     partFirst.workDir = partDir / "work";
     partFirst.seedFile = partSeed;
     partFirst.outputLayerFile = partLayer;
     partFirst.outputNextSeedFile = partNextSeed;
-    partFirst.soldierCount = 1;
+    partFirst.soldierCount = 4;
     partFirst.maxIterations = 1;
     partFirst.chunkKeyLimit = 2;
     (void)buildLayerClosureExternal(partFirst);
     ClosureCheckpointMigrationOptions migration;
     migration.checkpointDir = partFirst.workDir;
     migration.outputDir = partFirst.workDir / "partitioned";
-    migration.expectedSoldierCount = 1;
+    migration.expectedSoldierCount = 4;
     migration.bucketCount = 4;
     (void)migrateClosureCheckpointToPartitioned(migration);
     PartitionedClosureOptions resume;
     resume.layerDir = partDir;
     resume.partitionedCheckpointDir = migration.outputDir;
-    resume.soldierCount = 1;
+    resume.soldierCount = 4;
     resume.expandedBudget = 1000;
     resume.bucketCount = 4;
     resume.candidateChunkKeyLimit = 2;
     const PartitionedClosureRunStats partStats = resumePartitionedClosure(resume);
     const PartitionedClosureCheckpointInfo checkpoint =
-        inspectPartitionedClosureCheckpoint(migration.outputDir, 1);
+        inspectPartitionedClosureCheckpoint(migration.outputDir, 4);
     const std::vector<uint64_t> partVisited = readPartitionedKeys(partitionedSnapshotPath(checkpoint, "visited"));
     const std::vector<uint64_t> partNextSeeds = readPartitionedKeys(partitionedSnapshotPath(checkpoint, "next-seeds"));
     std::filesystem::remove_all(flatDir);
@@ -753,36 +761,36 @@ SANPAO15_TEST(partitionedClosureResumeCompletesBoundaryIterationLikeFlatResume) 
 
 SANPAO15_TEST(partitionedClosureResumeSupportsMidIterationBudgetCheckpoint) {
     const std::filesystem::path dir = tempDir("sanpao15-partitioned-resume-mid");
-    const auto seed = dir / "seeds-01.s15seed";
-    const auto layer = dir / "layer-01.s15layer";
-    const auto nextSeed = dir / "seeds-00.s15seed";
-    writeSeedFile(seed, 1, keysFor(1, {0, 1}));
+    const auto seed = dir / "seeds-04.s15seed";
+    const auto layer = dir / "layer-04.s15layer";
+    const auto nextSeed = dir / "seeds-03.s15seed";
+    writeSeedFile(seed, 4, keysFor(4, {0, 1}));
 
     ExternalClosureOptions closure;
     closure.workDir = dir / "work";
     closure.seedFile = seed;
     closure.outputLayerFile = layer;
     closure.outputNextSeedFile = nextSeed;
-    closure.soldierCount = 1;
+    closure.soldierCount = 4;
     closure.maxExpandedStates = 1;
     closure.chunkKeyLimit = 2;
     (void)buildLayerClosureExternal(closure);
     ClosureCheckpointMigrationOptions migration;
     migration.checkpointDir = closure.workDir;
     migration.outputDir = closure.workDir / "partitioned";
-    migration.expectedSoldierCount = 1;
+    migration.expectedSoldierCount = 4;
     migration.bucketCount = 4;
     (void)migrateClosureCheckpointToPartitioned(migration);
 
     PartitionedClosureOptions resume;
     resume.partitionedCheckpointDir = migration.outputDir;
-    resume.soldierCount = 1;
+    resume.soldierCount = 4;
     resume.expandedBudget = 1;
     resume.bucketCount = 4;
     resume.candidateChunkKeyLimit = 2;
     const PartitionedClosureRunStats stats = resumePartitionedClosure(resume);
     const PartitionedClosureCheckpointInfo checkpoint =
-        inspectPartitionedClosureCheckpoint(migration.outputDir, 1);
+        inspectPartitionedClosureCheckpoint(migration.outputDir, 4);
     std::filesystem::remove_all(dir);
 
     SANPAO15_REQUIRE(stats.expandedThisRun >= 1);
@@ -793,30 +801,30 @@ SANPAO15_TEST(partitionedClosureResumeSupportsMidIterationBudgetCheckpoint) {
 
 SANPAO15_TEST(partitionedClosureDryRunDoesNotModifyManifest) {
     const std::filesystem::path dir = tempDir("sanpao15-partitioned-resume-dry");
-    const auto seed = dir / "seeds-01.s15seed";
-    const auto layer = dir / "layer-01.s15layer";
-    const auto nextSeed = dir / "seeds-00.s15seed";
-    writeSeedFile(seed, 1, {packPosition(oneSoldierCapturePosition())});
+    const auto seed = dir / "seeds-04.s15seed";
+    const auto layer = dir / "layer-04.s15layer";
+    const auto nextSeed = dir / "seeds-03.s15seed";
+    writeSeedFile(seed, 4, {packPosition(fourSoldierCapturePosition())});
 
     ExternalClosureOptions closure;
     closure.workDir = dir / "work";
     closure.seedFile = seed;
     closure.outputLayerFile = layer;
     closure.outputNextSeedFile = nextSeed;
-    closure.soldierCount = 1;
+    closure.soldierCount = 4;
     closure.maxIterations = 1;
     (void)buildLayerClosureExternal(closure);
     ClosureCheckpointMigrationOptions migration;
     migration.checkpointDir = closure.workDir;
     migration.outputDir = closure.workDir / "partitioned";
-    migration.expectedSoldierCount = 1;
+    migration.expectedSoldierCount = 4;
     migration.bucketCount = 4;
     (void)migrateClosureCheckpointToPartitioned(migration);
     const std::string before = readText(partitionedClosureCheckpointManifestPath(migration.outputDir));
 
     PartitionedClosureOptions resume;
     resume.partitionedCheckpointDir = migration.outputDir;
-    resume.soldierCount = 1;
+    resume.soldierCount = 4;
     resume.bucketCount = 4;
     resume.dryRun = true;
     const PartitionedClosureRunStats stats = resumePartitionedClosure(resume);

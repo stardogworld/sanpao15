@@ -44,7 +44,10 @@ Rules implemented now:
 - Soldiers move one orthogonal step to an empty square and do not capture.
 - Cannons move first, then sides alternate.
 - Pieces of the same type are indistinguishable.
-- Terminal rules: no soldiers means `CannonWin`; no cannon legal move means `SoldierWin`; if the side to move has no legal move, the opponent wins.
+- Ruleset: `sanpao15-min-four-soldiers`.
+- Ruleset hash: `5994631263128018692` (`0x5331355F76325F04`).
+- Terminal rules: fewer than 4 soldiers means `CannonWin`; no cannon legal move means `SoldierWin`; if the side to move has no legal move, the opponent wins.
+- The material rule is checked first, so a `k=3` position is `CannonWin` even if the cannon side has no legal move.
 
 ## State Representation
 
@@ -202,6 +205,8 @@ target dense ids, with same-layer and capture-to-lower-layer classification; see
 The low-k full tablebase prototype solves complete dense layers `k=0..3` into
 outcome-only `.s15res` files and verifies sampled successor consistency; see
 `docs/low-k-tablebase.md`.
+Under the current ruleset all `k=0..3` dense states are immediate
+`CannonWin`; the first layer where SoldierWin or Draw can appear is `k=4`.
 
 Layer-local edge probe:
 

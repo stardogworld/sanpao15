@@ -13,6 +13,7 @@ add_library(sanpao15_core
     core/src/notation.cpp
     core/src/position.cpp
     core/src/rules.cpp
+    core/src/ruleset.cpp
 )
 
 target_include_directories(sanpao15_core

@@ -31,8 +31,11 @@ u64      rulesetHash
 
 ```text
 5x5, soldiers 0..14, cannons 21/22/23, cannon first,
-orthogonal moves, cannon-empty-soldier capture
+orthogonal moves, cannon-empty-soldier capture,
+soldierCount < 4 is immediate CannonWin
 ```
+
+Current ruleset hash: `5994631263128018692` (`0x5331355F76325F04`).
 
 ## Entries
 

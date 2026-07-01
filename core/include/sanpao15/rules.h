@@ -4,6 +4,7 @@
 
 #include "sanpao15/move.h"
 #include "sanpao15/position.h"
+#include "sanpao15/ruleset.h"
 
 namespace sanpao15 {
 

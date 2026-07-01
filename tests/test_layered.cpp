@@ -22,10 +22,18 @@ std::filesystem::path tempDir(const char* name) {
     return dir;
 }
 
-Position oneSoldierCapturePosition() {
+uint32_t maskOf(std::initializer_list<int> bits) {
+    uint32_t mask = 0;
+    for (int bit : bits) {
+        mask = setBit(mask, bit);
+    }
+    return mask;
+}
+
+Position fourSoldierCapturePosition() {
     Position pos;
     pos.cannons = setBit(0, 20);
-    pos.soldiers = setBit(0, 10);
+    pos.soldiers = maskOf({1, 2, 3, 10});
     pos.side = Side::Cannon;
     return pos;
 }
@@ -185,28 +193,28 @@ SANPAO15_TEST(layeredBuildFromZeroSoldierSeedWritesCompleteZeroLayer) {
     SANPAO15_REQUIRE(layer.keys[0] == packPosition(zeroSoldierPosition()));
 }
 
-SANPAO15_TEST(layeredBuildFromOneSoldierSeedCreatesZeroLayerSeed) {
-    const std::filesystem::path dir = tempDir("sanpao15-layer-one");
+SANPAO15_TEST(layeredBuildFromFourSoldierSeedCreatesThreeSoldierSeed) {
+    const std::filesystem::path dir = tempDir("sanpao15-layer-four");
     LayeredBuildOptions options;
     options.outputDir = dir;
-    const LayeredBuildStats stats = buildReachableLayersFromSeed(oneSoldierCapturePosition(), options);
-    const LayerFileData oneLayer = readLayerFile(layerFilePath(dir, 1), 1);
-    const LayerFileData zeroLayer = readLayerFile(layerFilePath(dir, 0), 0);
-    const SeedFileData zeroSeeds = readSeedFile(seedFilePath(dir, 0), 0);
+    const LayeredBuildStats stats = buildReachableLayersFromSeed(fourSoldierCapturePosition(), options);
+    const LayerFileData fourLayer = readLayerFile(layerFilePath(dir, 4), 4);
+    const LayerFileData threeLayer = readLayerFile(layerFilePath(dir, 3), 3);
+    const SeedFileData threeSeeds = readSeedFile(seedFilePath(dir, 3), 3);
     std::filesystem::remove_all(dir);
 
     SANPAO15_REQUIRE(!stats.truncated);
-    SANPAO15_REQUIRE(stats.layers[1].seedStates == 1);
-    SANPAO15_REQUIRE(stats.layers[1].generatedCaptureEdges > 0);
-    SANPAO15_REQUIRE(stats.layers[1].newNextLayerSeeds > 0);
-    SANPAO15_REQUIRE(!oneLayer.keys.empty());
-    SANPAO15_REQUIRE(!zeroLayer.keys.empty());
-    SANPAO15_REQUIRE(!zeroSeeds.keys.empty());
-    for (uint64_t key : oneLayer.keys) {
-        SANPAO15_REQUIRE(popcount25(unpackPosition(key).soldiers) == 1);
+    SANPAO15_REQUIRE(stats.layers[4].seedStates == 1);
+    SANPAO15_REQUIRE(stats.layers[4].generatedCaptureEdges > 0);
+    SANPAO15_REQUIRE(stats.layers[4].newNextLayerSeeds > 0);
+    SANPAO15_REQUIRE(!fourLayer.keys.empty());
+    SANPAO15_REQUIRE(!threeLayer.keys.empty());
+    SANPAO15_REQUIRE(!threeSeeds.keys.empty());
+    for (uint64_t key : fourLayer.keys) {
+        SANPAO15_REQUIRE(popcount25(unpackPosition(key).soldiers) == 4);
     }
-    for (uint64_t key : zeroLayer.keys) {
-        SANPAO15_REQUIRE(popcount25(unpackPosition(key).soldiers) == 0);
+    for (uint64_t key : threeLayer.keys) {
+        SANPAO15_REQUIRE(popcount25(unpackPosition(key).soldiers) == 3);
     }
 }
 
@@ -286,7 +294,7 @@ SANPAO15_TEST(validateAndInspectReturnExpectedSummaries) {
 }
 
 SANPAO15_TEST(layeredMoveGenerationKeepsSoldierCountMonotone) {
-    const Position pos = oneSoldierCapturePosition();
+    const Position pos = fourSoldierCapturePosition();
     const int currentSoldiers = popcount25(pos.soldiers);
     bool sawCapture = false;
     for (const Move& move : generateLegalMoves(pos)) {

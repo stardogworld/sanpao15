@@ -7,6 +7,7 @@
 #include "sanpao15/dense_successor.h"
 #include "sanpao15/lowk_tablebase.h"
 #include "sanpao15/notation.h"
+#include "sanpao15/rules.h"
 #include "sanpao15/table.h"
 
 using namespace sanpao15;
@@ -38,34 +39,28 @@ Position captureOneSoldierPosition() {
 
 }  // namespace
 
-SANPAO15_TEST(lowKSolvesK0AsAllCannonWin) {
-    PackedOutcomeTable2Bit table(denseStateCount(0));
-    const DenseLayerSolveResult result = solveDenseLayerOutcome(0, nullptr, table);
+SANPAO15_TEST(lowKSolvesK0ThroughK3AsMaterialCannonWin) {
+    std::vector<PackedOutcomeTable2Bit> solved;
+    for (int k = 0; k <= 3; ++k) {
+        PackedOutcomeTable2Bit table(denseStateCount(k));
+        const PackedOutcomeTable2Bit* lower = k == 0 ? nullptr : &solved[static_cast<size_t>(k - 1)];
+        const DenseLayerSolveResult result = solveDenseLayerOutcome(k, lower, table);
 
-    SANPAO15_REQUIRE(result.stateCount == 4600);
-    SANPAO15_REQUIRE(result.cannonWin == 4600);
-    SANPAO15_REQUIRE(result.soldierWin == 0);
-    SANPAO15_REQUIRE(result.draw == 0);
-    SANPAO15_REQUIRE(result.unknown == 0);
-    SANPAO15_REQUIRE(result.terminalStates == 4600);
-    SANPAO15_REQUIRE(table.get(0) == Outcome::CannonWin);
-    SANPAO15_REQUIRE(table.get(table.size() - 1) == Outcome::CannonWin);
+        SANPAO15_REQUIRE(result.stateCount == denseStateCount(k));
+        SANPAO15_REQUIRE(result.cannonWin == denseStateCount(k));
+        SANPAO15_REQUIRE(result.soldierWin == 0);
+        SANPAO15_REQUIRE(result.draw == 0);
+        SANPAO15_REQUIRE(result.unknown == 0);
+        SANPAO15_REQUIRE(result.terminalStates == denseStateCount(k));
+        SANPAO15_REQUIRE(result.sameLayerEdges == 0);
+        SANPAO15_REQUIRE(result.captureEdges == 0);
+        SANPAO15_REQUIRE(table.get(0) == Outcome::CannonWin);
+        SANPAO15_REQUIRE(table.get(table.size() - 1) == Outcome::CannonWin);
+        solved.push_back(std::move(table));
+    }
 }
 
-SANPAO15_TEST(lowKSolvesK1WithoutUnknown) {
-    PackedOutcomeTable2Bit k0(denseStateCount(0));
-    (void)solveDenseLayerOutcome(0, nullptr, k0);
-
-    PackedOutcomeTable2Bit k1(denseStateCount(1));
-    const DenseLayerSolveResult result = solveDenseLayerOutcome(1, &k0, k1);
-
-    SANPAO15_REQUIRE(result.stateCount == denseStateCount(1));
-    SANPAO15_REQUIRE(result.unknown == 0);
-    SANPAO15_REQUIRE(result.cannonWin + result.soldierWin + result.draw == denseStateCount(1));
-    SANPAO15_REQUIRE(result.captureEdges > 0);
-}
-
-SANPAO15_TEST(lowKTerminalPriorityKeepsK0CannonWin) {
+SANPAO15_TEST(lowKTerminalPriorityKeepsK0CannonWinDespiteLegalMoves) {
     const Position pos = parsePositionNotation("CCC../...../...../...../..... c");
     const uint64_t index = denseIndex(pos);
     SANPAO15_REQUIRE(!generateDenseSuccessors(0, index).empty());
@@ -75,47 +70,67 @@ SANPAO15_TEST(lowKTerminalPriorityKeepsK0CannonWin) {
     SANPAO15_REQUIRE(table.get(index) == Outcome::CannonWin);
 }
 
-SANPAO15_TEST(lowKCaptureUsesLowerLayerOutcome) {
-    PackedOutcomeTable2Bit k0(denseStateCount(0));
-    (void)solveDenseLayerOutcome(0, nullptr, k0);
-
+SANPAO15_TEST(lowKMaterialRulePreemptsCaptureLookup) {
+    PackedOutcomeTable2Bit k0(denseStateCount(0), Outcome::SoldierWin);
     PackedOutcomeTable2Bit k1(denseStateCount(1));
-    (void)solveDenseLayerOutcome(1, &k0, k1);
 
     const Position pos = captureOneSoldierPosition();
     const uint64_t index = denseIndex(pos);
-    bool sawCaptureToCannonWin = false;
+    bool sawCapture = false;
     for (const DenseSuccessor& successor : generateDenseSuccessors(1, index)) {
-        if (successor.kind == DenseSuccessorKind::CaptureToLowerLayer &&
-            k0.get(successor.toIndex) == Outcome::CannonWin) {
-            sawCaptureToCannonWin = true;
+        if (successor.kind == DenseSuccessorKind::CaptureToLowerLayer) {
+            sawCapture = true;
         }
     }
-    SANPAO15_REQUIRE(sawCaptureToCannonWin);
+    SANPAO15_REQUIRE(sawCapture);
+    const DenseLayerSolveResult result = solveDenseLayerOutcome(1, &k0, k1);
+    SANPAO15_REQUIRE(result.captureEdges == 0);
     SANPAO15_REQUIRE(k1.get(index) == Outcome::CannonWin);
 }
 
 SANPAO15_TEST(lowKFileSolveAndVerifyRoundtrip) {
     const std::filesystem::path dir = tempDir("sanpao15-lowk-roundtrip");
     LowKTablebaseSolveOptions options;
-    options.maxK = 1;
+    options.maxK = 3;
     options.outputDir = dir;
     options.encoding = DenseResultEncoding::Packed2Bit;
 
     const std::vector<LowKTablebaseLayerResult> solved = solveLowKTablebase(options);
-    SANPAO15_REQUIRE(solved.size() == 2);
-    SANPAO15_REQUIRE(std::filesystem::exists(lowKLayerResultPath(dir, 0)));
-    SANPAO15_REQUIRE(std::filesystem::exists(lowKLayerResultPath(dir, 1)));
-    SANPAO15_REQUIRE(validateDenseResultFile(lowKLayerResultPath(dir, 1), StandardRulesetHash, 1).encoding ==
+    SANPAO15_REQUIRE(solved.size() == 4);
+    SANPAO15_REQUIRE(std::filesystem::exists(lowKLayerResultPath(dir, 3)));
+    SANPAO15_REQUIRE(validateDenseResultFile(lowKLayerResultPath(dir, 3), StandardRulesetHash, 3).encoding ==
                      DenseResultEncoding::Packed2Bit);
 
-    const LowKTablebaseVerifyResult verified = verifyLowKTablebase(dir, 1, 1000);
+    const LowKTablebaseVerifyResult verified = verifyLowKTablebase(dir, 3, 1000);
     std::filesystem::remove_all(dir);
 
-    SANPAO15_REQUIRE(verified.layers.size() == 2);
-    SANPAO15_REQUIRE(verified.layers[0].unknown == 0);
-    SANPAO15_REQUIRE(verified.layers[1].unknown == 0);
-    SANPAO15_REQUIRE(verified.layers[0].cannonWin == denseStateCount(0));
+    SANPAO15_REQUIRE(verified.layers.size() == 4);
+    for (int k = 0; k <= 3; ++k) {
+        SANPAO15_REQUIRE(verified.layers[static_cast<size_t>(k)].unknown == 0);
+        SANPAO15_REQUIRE(verified.layers[static_cast<size_t>(k)].cannonWin == denseStateCount(k));
+        SANPAO15_REQUIRE(verified.layers[static_cast<size_t>(k)].soldierWin == 0);
+        SANPAO15_REQUIRE(verified.layers[static_cast<size_t>(k)].draw == 0);
+    }
+}
+
+SANPAO15_TEST(lowKResultUsesUpdatedRulesetHash) {
+    constexpr uint64_t OldRulesetHash = 0x5331355F76315F01ull;
+    SANPAO15_REQUIRE(StandardRulesetHash != OldRulesetHash);
+
+    const std::filesystem::path dir = tempDir("sanpao15-lowk-ruleset-hash");
+    LowKTablebaseSolveOptions options;
+    options.maxK = 0;
+    options.outputDir = dir;
+    options.encoding = DenseResultEncoding::Packed2Bit;
+    (void)solveLowKTablebase(options);
+
+    const std::filesystem::path path = lowKLayerResultPath(dir, 0);
+    const DenseResultFileInfo info = validateDenseResultFile(path, StandardRulesetHash, 0);
+    SANPAO15_REQUIRE(info.rulesetHash == StandardRulesetHash);
+    sanpao15::test::requireThrows([&] {
+        (void)validateDenseResultFile(path, OldRulesetHash, 0);
+    }, "old ruleset hash should be rejected");
+    std::filesystem::remove_all(dir);
 }
 
 SANPAO15_TEST(lowKRejectsKAbovePrototypeLimit) {

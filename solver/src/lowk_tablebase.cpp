@@ -375,8 +375,8 @@ LowKTablebaseVerifyResult verifyLowKTablebase(
             countVerifyOutcome(layer, table.get(index));
         }
 
-        if (k == 0 && layer.cannonWin != layer.stateCount) {
-            throw std::runtime_error("low-k verifier expected every k=0 state to be CannonWin");
+        if (soldiersAreBelowSurvivalLimit(k) && layer.cannonWin != layer.stateCount) {
+            throw std::runtime_error("low-k verifier expected every material-rule layer state to be CannonWin");
         }
         if (layer.unknown != 0) {
             throw std::runtime_error("low-k verifier found Unknown outcomes");
