@@ -1,0 +1,13 @@
+{
+  "name": "sanpao15-workspace",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": {
+    "configure": "cmake -S . -B build",
+    "build": "cmake --build build",
+    "test": "ctest --test-dir build --output-on-failure",
+    "cli": "cmake --build build --target sanpao15_cli && ./build/sanpao15_cli",
+    "ui:dev": "npm --prefix ui run dev",
+    "ui:build": "npm --prefix ui run build"
+  }
+}

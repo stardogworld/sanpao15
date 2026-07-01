@@ -1,0 +1,48 @@
+# Build outputs
+build/
+build*/
+out/
+dist/
+.cache/
+.vite/
+
+# Dependencies
+node_modules/
+
+# CMake / compiler artifacts
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+*.obj
+*.o
+*.lib
+*.dll
+*.exe
+*.pdb
+*.ilk
+
+# Solver/generated data
+*.s15tbl
+*.s15layer
+*.s15seed
+*.s15keys
+*.s15run
+*.s15bucket
+partition.json
+closure-state.json
+
+# Large run reports under build/
+overnight-report.md
+partition-edge-probe-report.md
+partitioned-external-closure-report.md
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Local task scratch
+RUN_TODO.md
+*.log

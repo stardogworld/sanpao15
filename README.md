@@ -1,0 +1,207 @@
+# Sanpao15 三炮十五兵
+
+`sanpao15` is a first-stage implementation of the 5x5 "三炮十五兵" game. It contains a C++20 rules core, a retrograde-analysis solver, a command-line table generator/analyzer, focused C++ tests, and a minimal TypeScript UI.
+
+## Current Rule Set
+
+The board has 25 squares numbered left-to-right and top-to-bottom:
+
+```text
+0  1  2  3  4
+5  6  7  8  9
+10 11 12 13 14
+15 16 17 18 19
+20 21 22 23 24
+```
+
+Initial position:
+
+```text
+兵 兵 兵 兵 兵
+兵 兵 兵 兵 兵
+兵 兵 兵 兵 兵
+.  .  .  .  .
+.  炮 炮 炮 .
+```
+
+Notation for the initial position:
+
+```text
+SSSSS/SSSSS/SSSSS/...../.CCC. c
+```
+
+Rules implemented now:
+
+- Cannons move one orthogonal step to an empty square.
+- Cannons capture only in the form `炮 - empty - 兵`, landing on the soldier square and removing that soldier.
+- Soldiers move one orthogonal step to an empty square and do not capture.
+- Cannons move first, then sides alternate.
+- Pieces of the same type are indistinguishable.
+- Terminal rules: no soldiers means `CannonWin`; no cannon legal move means `SoldierWin`; if the side to move has no legal move, the opponent wins.
+
+## State Representation
+
+The C++ core uses two 25-bit bitboards and a side-to-move flag:
+
+```cpp
+struct Position {
+    uint32_t cannons;
+    uint32_t soldiers;
+    Side side;
+};
+```
+
+Packed key:
+
+```cpp
+key = cannonMask | (uint64_t(soldierMask) << 25) | (uint64_t(side) << 50);
+```
+
+## Solver Approach
+
+This game can contain cycles, so plain recursive minimax is not a sound complete solver for the full state space. The intended full solver is finite cyclic-game analysis:
+
+1. Generate the reachable state graph.
+2. Mark terminal states.
+3. Propagate proven wins and losses backward.
+4. On a complete graph, mark remaining unknown states as draws.
+
+The solver stores `outcome`, `distance`, and `bestMove` for each table entry. For first-stage CLI responsiveness, `solveFromInitial()` applies a default state cap and reports when graph generation was truncated. Passing `SolveOptions{0}` requests a full graph. When a graph is truncated, unresolved states remain `Unknown`; only a complete graph converts unresolved states to `Draw`.
+
+The default graph backend is CSR (`--graph csr`). The older `vector<vector<int>>` backend remains available with `--graph vector` for regression comparisons.
+
+Scale statistics distinguish three edge counts:
+
+- `generatedEdges`: legal successors generated from expanded states.
+- `storedEdges`: successor edges actually written to the graph. `totalEdges` is kept as a compatibility alias for this value.
+- `droppedEdges`: generated legal successors that were not stored because a truncated probe hit `--limit`.
+
+Dropped edges are expected in truncated probes. They are not stored and do not contribute to graph-memory estimates. `generatedEdges` is closer to the legal-move density; `storedEdges` is the number that drives CSR/vector graph memory.
+
+## Build C++
+
+```bash
+cmake -S . -B build
+cmake --build build
+./build/sanpao15_cli
+```
+
+On Windows with the generated Ninja build, run:
+
+```powershell
+.\build\sanpao15_cli.exe
+```
+
+Useful CLI modes:
+
+```powershell
+.\build\sanpao15_cli.exe --limit 50000
+.\build\sanpao15_cli.exe --full
+.\build\sanpao15_cli.exe --analyze "SSSSS/SSSSS/SSSSS/...../.CCC. c" --limit 10000
+.\build\sanpao15_cli.exe --stats-only --limit 1000000 --progress 50000
+.\build\sanpao15_cli.exe --stats-only --no-pred --limit 1000000 --progress 50000
+.\build\sanpao15_cli.exe --probe --limit 10000000 --progress 100000
+.\build\sanpao15_cli.exe --stats-only --no-pred --limit 10000000 --graph csr --progress 500000
+.\build\sanpao15_cli.exe --full --progress 50000 --save-table standard.s15tbl
+.\build\sanpao15_cli.exe --limit 100000 --progress 10000 --save-table debug.s15tbl
+.\build\sanpao15_cli.exe --load-table standard.s15tbl --analyze "SSSSS/SSSSS/SSSSS/...../.CCC. c"
+```
+
+Suggested workflow before a full solve:
+
+```powershell
+.\build\sanpao15_cli.exe --probe --limit 1000000 --progress 50000
+.\build\sanpao15_cli.exe --stats-only --limit 10000000 --progress 500000
+.\build\sanpao15_cli.exe --full --progress 500000 --save-table standard.s15tbl
+```
+
+`--stats-only` builds only the reachable graph and does not generate a result table. `--no-pred` is only valid for stats/probe runs and saves predecessor-edge memory, so it cannot be used for retrograde solving. `--probe` is for scale estimation, not final table generation. Truncated statistics are prefix statistics, not complete graph statistics. CSR reduces graph memory pressure, but full solving still needs scale checks before generating a large table.
+
+For CSR scale probing, prefer no-predecessor runs first:
+
+```powershell
+.\build\sanpao15_cli.exe --stats-only --no-pred --limit 10000000 --graph csr --progress 500000
+```
+
+If a 100M CSR no-pred probe is still truncated and has not reached lower-soldier layers, the next phase should move toward layered solving. If the complete graph is reached under CSR with safe memory estimates, then a full solve can be considered.
+
+Layered reachability prototype:
+
+```powershell
+.\build\sanpao15_cli.exe --build-layers build\layers --max-states-per-layer 1000000 --progress 50000
+.\build\sanpao15_cli.exe --build-layers build\layers --stop-after-layer 15 --progress 50000
+.\build\sanpao15_cli.exe --build-layers build\layers --start-layer 14 --stop-after-layer 14 --progress 50000
+.\build\sanpao15_cli.exe --build-layers build\layers-ext --stop-after-layer 15 --max-states-per-layer 1000000 --external-seed-dedup --dedup-chunk-size 100000 --progress 50000
+.\build\sanpao15_cli.exe --build-layers build\layers-ext --external-layer-closure --external-seed-dedup --stop-after-layer 15 --max-expanded-states 1000000 --dedup-chunk-size 100000 --progress 50000
+.\build\sanpao15_cli.exe --build-layers build\layers-ext --external-layer-closure --external-seed-dedup --resume-closure --start-layer 15 --stop-after-layer 15 --max-expanded-states 1000000 --dedup-chunk-size 100000 --progress 50000
+.\build\sanpao15_cli.exe --build-layers build\partitioned-closure-smoke --external-layer-closure --partitioned-closure --external-seed-dedup --stop-after-layer 15 --max-expanded-states 10000 --closure-partition-buckets 16 --dedup-chunk-size 1000 --progress 1000
+.\build\sanpao15_cli.exe --build-layer-external 15 --layer-work-dir build\layer15-work --seed-file build\layers\seeds-15.s15seed --output-layer build\layer15-work\layer-15.s15layer --output-next-seed build\layer15-work\seeds-14.s15seed --dedup-chunk-size 1000 --max-expanded-states 10000 --progress 1000
+.\build\sanpao15_cli.exe --validate-layers build\layers
+.\build\sanpao15_cli.exe --repair-closure-checkpoint build\layers --layer 15 --dry-run
+.\build\sanpao15_cli.exe --inspect-layer build\layers\layer-15.s15layer
+.\build\sanpao15_cli.exe --inspect-seed build\layers\seeds-14.s15seed
+```
+
+This writes sorted, deduplicated `.s15layer` state-key files by soldier count, persists capture-generated `.s15seed` entry files for resume, and writes `manifest.json`. It is reachability only; it does not run retrograde and does not produce `.s15tbl`.
+
+`--external-seed-dedup` uses exact external sorted runs for next-layer seed dedup. It reduces memory pressure from the capture seed set, but layer-local visited states are still held in memory. `--dedup-chunk-size`, `--temp-dir`, and `--keep-temp` control run size and temporary `.s15run` behavior.
+
+`--external-layer-closure` uses internal sorted `.s15keys` files for `visited`, `frontier`, `candidates`, set difference, and set union inside `--build-layers`. It writes a checkpoint under `work\layer-K` with `closure-state.json`, `visited.s15keys`, `frontier.s15keys`, `remaining-frontier.s15keys`, and `next-seeds.s15keys`; mid-iteration slices also keep `base-visited.s15keys` and `pending-candidates.s15keys` so resume matches an uninterrupted run. Checkpoint v2 records `requiresTransientRuns=false`, so resume does not depend on temporary `.s15run` files. `--resume-closure --start-layer K` continues that checkpoint, and `--checkpoint-interval N` writes intermediate checkpoints. In resume mode, `--max-expanded-states N` is an additional per-command budget. `--repair-closure-checkpoint DIR --layer K --dry-run` validates the stable checkpoint and reports a safe metadata repair path; `--cleanup-stale-runs` removes only transient run directories after validation. `--build-layer-external K` runs the same closure for one layer. `--max-expanded-states` limits expanded frontier states; `--max-states-per-layer` limits discovered/final states. A truncated checkpoint is resumable, not complete.
+
+`--partitioned-closure` is a v1 foundation for bucketed external closure. It still runs the flat external closure algorithm, then writes partitioned checkpoint snapshots under `work\layer-K\partitioned` for `visited`, `frontier`, `remaining-frontier`, and `next-seeds` using `--closure-partition-buckets N` and `--closure-partition-method splitmix64_mod|key_mod`. `--validate-layers` validates those partitioned snapshots when the checkpoint manifest records them.
+
+Partition large key lists into bucketed membership indexes:
+
+```powershell
+.\build\sanpao15_cli.exe --partition-keyset build\layers-overnight\layer-15.s15layer --partition-output build\partitions\layer-15 --partition-buckets 256 --progress 1000000
+.\build\sanpao15_cli.exe --validate-partition build\partitions\layer-15
+.\build\sanpao15_cli.exe --inspect-partition build\partitions\layer-15
+.\build\sanpao15_cli.exe --benchmark-partition build\partitions\layer-15 --sample 100000
+```
+
+New partitioned indexes default to stable `splitmix64_mod` buckets because real packed keys distributed poorly under direct `key_mod`; old `key_mod` manifests remain readable. Reader benchmarks support `--benchmark-mode existing|missing|mixed` and `--partition-cache-buckets N`.
+
+The C++ partitioned keyset API also supports exact bucket-wise `partitionedDifference` and `partitionedUnion` for compatible partitioned inputs. These are storage building blocks for the next partitioned/block closure step.
+
+Layer-local edge probe:
+
+```powershell
+.\build\sanpao15_cli.exe --probe-layer-edges build\partitions-splitmix\layer-15 --next-seed-partition build\partitions-splitmix\seeds-14 --sample-states 100000 --partition-cache-buckets 32 --progress 10000
+```
+
+The probe checks generated same-layer and capture-successor membership against partitioned indexes without storing edges or running retrograde. On partial layer files, missing successors are expected observations, not automatic errors.
+
+## Run Tests
+
+```bash
+ctest --test-dir build --output-on-failure
+```
+
+## Run UI
+
+```bash
+cd ui
+npm install
+npm run dev
+```
+
+To use table analysis in the UI, place a generated table at:
+
+```text
+ui/public/tables/standard.s15tbl
+```
+
+The UI mirrors the rules in TypeScript and reads `.s15tbl` files directly. A later milestone will compile the C++ core to WebAssembly so the UI can call the same engine directly.
+
+`Unknown` means not proven, not found in the table, or unresolved because the table was truncated. It must not be treated as `Draw`.
+
+## Layout
+
+```text
+core/    C++ bitboard, move generation, rules, notation
+solver/  C++ reachable graph and retrograde solver skeleton
+cli/     command-line solver entry point
+ui/      TypeScript + HTML + CSS playable interface
+tests/   C++ unit tests
+docs/    rules, solver notes, table/external formats, roadmap
+```
