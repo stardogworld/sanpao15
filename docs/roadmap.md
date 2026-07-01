@@ -40,6 +40,8 @@
 - Print full tablebase theoretical sizes with `--tablebase-sizes`.
 - Generate dense successor ids for legal moves with same-layer and capture-to-lower-layer classification.
 - Inspect dense successors and sample dense layer move statistics from the CLI.
+- Solve low full-tablebase layers `k=0..3` with outcome-only retrograde and write `.s15res` results.
+- Verify low-k `.s15res` headers and sampled successor consistency.
 
 ## Solver Lines
 
@@ -48,8 +50,9 @@
 
 ## Next Steps
 
-- Prototype low-k full tablebase solving for `k=0..2`.
-- Add outcome-only retrograde for low layers before scaling.
+- Design a scalable full `0..15` tablebase architecture.
+- Replace the low-k vector predecessor prototype with CSR or flat layer-local storage.
+- Evaluate file-backed or mmap dense outcome tables.
 - Evaluate D4 symmetry reduction for dense layers.
 - Keep the partitioned reachability line available for standard-initial-position experiments.
 - Improve partitioned closure performance with a direct per-bucket candidate collector if needed.

@@ -18,6 +18,7 @@
 #include "sanpao15/edge_probe.h"
 #include "sanpao15/external_closure.h"
 #include "sanpao15/layered.h"
+#include "sanpao15/lowk_tablebase.h"
 #include "sanpao15/notation.h"
 #include "sanpao15/partitioned_keyset.h"
 #include "sanpao15/rules.h"
@@ -69,6 +70,10 @@ struct CliOptions {
     bool createEmptyRes = false;
     bool denseSuccessors = false;
     bool denseMoveStats = false;
+    bool solveLowK = false;
+    bool verifyLowK = false;
+    bool outDirProvided = false;
+    bool maxKProvided = false;
     bool resEncodingProvided = false;
     uint64_t maxStates = MvpStateLimit;
     uint64_t maxStatesPerLayer = 0;
@@ -89,6 +94,7 @@ struct CliOptions {
     int repairLayer = 15;
     int createEmptyResLayer = 0;
     int denseLayer = 0;
+    int lowKMax = 0;
     uint64_t denseIndexValue = 0;
     GraphBackend graphBackend = GraphBackend::Csr;
     PartitionMethod partitionMethod = PartitionMethod::Splitmix64Mod;
@@ -122,6 +128,8 @@ struct CliOptions {
     std::optional<std::filesystem::path> createEmptyResPath;
     std::optional<std::filesystem::path> inspectResPath;
     std::optional<std::filesystem::path> validateResPath;
+    std::optional<std::filesystem::path> outDir;
+    std::optional<std::filesystem::path> verifyLowKDir;
     std::optional<std::string> analysisNotation;
     std::optional<std::filesystem::path> saveTablePath;
     std::optional<std::filesystem::path> loadTablePath;
@@ -159,6 +167,8 @@ void printUsage() {
         << "  sanpao15_cli --inspect-res FILE | --validate-res FILE\n"
         << "  sanpao15_cli --dense-successors K INDEX\n"
         << "  sanpao15_cli --dense-move-stats K [--sample N|--full]\n"
+        << "  sanpao15_cli --solve-lowk K --out-dir DIR [--encoding byte|2bit]\n"
+        << "  sanpao15_cli --verify-lowk DIR --max-k K [--sample N]\n"
         << "  sanpao15_cli --analyze \"SSSSS/SSSSS/SSSSS/...../.CCC. c\" [--limit N|--full]\n"
         << "  sanpao15_cli --load-table FILE --analyze \"SSSSS/SSSSS/SSSSS/...../.CCC. c\"\n\n"
         << "Options:\n"
@@ -225,6 +235,10 @@ void printUsage() {
         << "  --validate-res FILE  Validate .s15res header and payload size.\n"
         << "  --dense-successors K INDEX  Print legal successors as dense target indexes.\n"
         << "  --dense-move-stats K  Count dense successor categories for a layer.\n"
+        << "  --solve-lowk K  Solve full dense tablebase layers 0..K; K must be 0..3.\n"
+        << "  --out-dir DIR   Output directory for --solve-lowk.\n"
+        << "  --verify-lowk DIR  Verify low-k .s15res files in DIR.\n"
+        << "  --max-k K       Highest layer for --verify-lowk; K must be 0..3.\n"
         << "  --external-seed-dedup  Use external sorted runs for next-layer seed dedup.\n"
         << "  --dedup-chunk-size N  Keys per external dedup chunk. Default: 1000000.\n"
         << "  --temp-dir DIR  Temporary run-file directory for external dedup.\n"
@@ -600,6 +614,30 @@ CliOptions parseArgs(int argc, char** argv) {
             }
             options.denseLayer = parseLayerIndex(argv[++i]);
             options.denseMoveStats = true;
+        } else if (arg == "--solve-lowk") {
+            if (i + 1 >= argc) {
+                throw std::invalid_argument("--solve-lowk requires a max layer");
+            }
+            options.lowKMax = parseLayerIndex(argv[++i]);
+            options.solveLowK = true;
+        } else if (arg == "--out-dir") {
+            if (i + 1 >= argc) {
+                throw std::invalid_argument("--out-dir requires a directory path");
+            }
+            options.outDir = std::filesystem::path(argv[++i]);
+            options.outDirProvided = true;
+        } else if (arg == "--verify-lowk") {
+            if (i + 1 >= argc) {
+                throw std::invalid_argument("--verify-lowk requires a directory path");
+            }
+            options.verifyLowKDir = std::filesystem::path(argv[++i]);
+            options.verifyLowK = true;
+        } else if (arg == "--max-k") {
+            if (i + 1 >= argc) {
+                throw std::invalid_argument("--max-k requires a layer index");
+            }
+            options.lowKMax = parseLayerIndex(argv[++i]);
+            options.maxKProvided = true;
         } else if (arg == "--external-seed-dedup") {
             options.externalSeedDedup = true;
         } else if (arg == "--dedup-chunk-size") {
@@ -663,16 +701,18 @@ CliOptions parseArgs(int argc, char** argv) {
         static_cast<int>(options.inspectResPath.has_value()) +
         static_cast<int>(options.validateResPath.has_value()) +
         static_cast<int>(options.denseSuccessors) +
-        static_cast<int>(options.denseMoveStats);
+        static_cast<int>(options.denseMoveStats) +
+        static_cast<int>(options.solveLowK) +
+        static_cast<int>(options.verifyLowK);
     if (validationModeCount + partitionModeCount + migrationModeCount + partitionedResumeModeCount + denseModeCount > 1) {
         throw std::invalid_argument("choose only one validate/inspect/partition/dense tablebase mode");
     }
-    if (options.resEncodingProvided && !options.createEmptyRes) {
-        throw std::invalid_argument("--encoding is only valid with --create-empty-res");
+    if (options.resEncodingProvided && !options.createEmptyRes && !options.solveLowK) {
+        throw std::invalid_argument("--encoding is only valid with --create-empty-res or --solve-lowk");
     }
     if (denseModeCount != 0) {
         const bool disallowedFull = options.full && !options.denseMoveStats;
-        const bool disallowedSample = options.benchmarkSampleProvided && !options.denseMoveStats;
+        const bool disallowedSample = options.benchmarkSampleProvided && !options.denseMoveStats && !options.verifyLowK;
         if (options.buildLayersDir.has_value() || options.statsOnly || options.probe || options.analysisNotation.has_value() ||
             options.saveTablePath.has_value() || options.loadTablePath.has_value() || disallowedFull ||
             options.limitProvided || options.noPred || options.maxStatesPerLayerProvided ||
@@ -690,6 +730,30 @@ CliOptions parseArgs(int argc, char** argv) {
             options.partitionOverwrite || options.migrateOutputProvided || options.cleanupStaleRuns) {
             throw std::invalid_argument("dense tablebase modes cannot be combined with build, solve, stats, probe, validate, partition, migration, or repair options");
         }
+    }
+    if (options.solveLowK && options.lowKMax > 3) {
+        throw std::invalid_argument("--solve-lowk supports only K in 0..3 in this prototype");
+    }
+    if (options.verifyLowK && options.lowKMax > 3) {
+        throw std::invalid_argument("--verify-lowk supports only K in 0..3 in this prototype");
+    }
+    if (options.solveLowK && !options.outDir.has_value()) {
+        throw std::invalid_argument("--solve-lowk requires --out-dir DIR");
+    }
+    if (options.outDirProvided && !options.solveLowK) {
+        throw std::invalid_argument("--out-dir is only valid with --solve-lowk");
+    }
+    if (options.verifyLowK && !options.maxKProvided) {
+        throw std::invalid_argument("--verify-lowk requires --max-k K");
+    }
+    if (options.maxKProvided && !options.verifyLowK) {
+        throw std::invalid_argument("--max-k is only valid with --verify-lowk");
+    }
+    if (options.solveLowK && options.benchmarkSampleProvided) {
+        throw std::invalid_argument("--sample is only valid with --benchmark-partition, --dense-move-stats, or --verify-lowk");
+    }
+    if (options.verifyLowK && options.resEncodingProvided) {
+        throw std::invalid_argument("--encoding is not used by --verify-lowk");
     }
     if (options.denseMoveStats && options.denseLayer >= 2 && !options.benchmarkSampleProvided && !options.full) {
         throw std::invalid_argument("--dense-move-stats K requires --sample N or --full when K >= 2");
@@ -766,8 +830,9 @@ CliOptions parseArgs(int argc, char** argv) {
     if (options.lookupPartitionDir.has_value() && !options.lookupKeyProvided) {
         throw std::invalid_argument("--lookup-partition requires --key");
     }
-    if (options.benchmarkSampleProvided && !options.benchmarkPartitionDir.has_value() && !options.denseMoveStats) {
-        throw std::invalid_argument("--sample is only valid with --benchmark-partition or --dense-move-stats");
+    if (options.benchmarkSampleProvided && !options.benchmarkPartitionDir.has_value() &&
+        !options.denseMoveStats && !options.verifyLowK) {
+        throw std::invalid_argument("--sample is only valid with --benchmark-partition, --dense-move-stats, or --verify-lowk");
     }
     const bool externalLayerOptionProvided =
         options.buildLayerExternalProvided || options.layerWorkDir.has_value() || options.seedFile.has_value() ||
@@ -1125,6 +1190,67 @@ void printDenseMoveStats(const CliOptions& options) {
     std::cout << "Max successors: " << formatInteger(stats.maxSuccessors) << "\n";
     std::cout << "Time: " << formatDuration(seconds) << "\n";
     std::cout << "States/sec: " << formatRate(stats.sampledStates, seconds) << "\n";
+}
+
+void printLowKLayerResult(const LowKTablebaseLayerResult& layer) {
+    const DenseLayerSolveResult& solve = layer.solve;
+    std::cout << "Layer " << solve.soldierCount << "\n";
+    std::cout << "State count: " << formatInteger(solve.stateCount) << "\n";
+    std::cout << "Terminal states: " << formatInteger(solve.terminalStates) << "\n";
+    std::cout << "Same-layer edges: " << formatInteger(solve.sameLayerEdges) << "\n";
+    std::cout << "Capture edges: " << formatInteger(solve.captureEdges) << "\n";
+    std::cout << "CannonWin: " << formatInteger(solve.cannonWin) << "\n";
+    std::cout << "SoldierWin: " << formatInteger(solve.soldierWin) << "\n";
+    std::cout << "Draw: " << formatInteger(solve.draw) << "\n";
+    std::cout << "Unknown: " << formatInteger(solve.unknown) << "\n";
+    std::cout << "Retrograde resolved: " << formatInteger(solve.retrogradeResolved) << "\n";
+    std::cout << "Unresolved as draw: " << formatInteger(solve.unresolvedAsDraw) << "\n";
+    std::cout << "Time: " << formatDuration(solve.seconds) << "\n";
+    std::cout << "Encoding: " << denseResultEncodingToString(layer.encoding) << "\n";
+    std::cout << "Output file: " << layer.outputFile.string() << "\n";
+    std::cout << "Output bytes: " << formatInteger(layer.outputBytes)
+              << " (" << formatBytes(layer.outputBytes) << ")\n";
+}
+
+void printSolveLowK(const CliOptions& options) {
+    LowKTablebaseSolveOptions solveOptions;
+    solveOptions.maxK = options.lowKMax;
+    solveOptions.outputDir = *options.outDir;
+    solveOptions.encoding = options.resEncoding;
+
+    const std::vector<LowKTablebaseLayerResult> layers = solveLowKTablebase(solveOptions);
+
+    std::cout << "Low-k full tablebase solve\n";
+    std::cout << "Output directory: " << options.outDir->string() << "\n";
+    std::cout << "Max K: " << options.lowKMax << "\n";
+    std::cout << "Encoding: " << denseResultEncodingToString(options.resEncoding) << "\n\n";
+    for (const LowKTablebaseLayerResult& layer : layers) {
+        printLowKLayerResult(layer);
+        std::cout << "\n";
+    }
+    std::cout << "Status: solved\n";
+}
+
+void printVerifyLowK(const CliOptions& options) {
+    const uint64_t sampleLimit = options.benchmarkSampleProvided ? options.benchmarkSample : 0;
+    const LowKTablebaseVerifyResult result =
+        verifyLowKTablebase(*options.verifyLowKDir, options.lowKMax, sampleLimit);
+
+    std::cout << "Verify low-k tablebase\n";
+    std::cout << "Input directory: " << result.inputDir.string() << "\n";
+    std::cout << "Max K: " << result.maxK << "\n";
+    std::cout << "Sample limit: " << (result.sampleLimit == 0 ? std::string("full") : formatInteger(result.sampleLimit)) << "\n\n";
+    for (const LowKTablebaseVerifyLayerResult& layer : result.layers) {
+        std::cout << "Layer " << layer.soldierCount << "\n";
+        std::cout << "State count: " << formatInteger(layer.stateCount) << "\n";
+        std::cout << "Encoding: " << denseResultEncodingToString(layer.encoding) << "\n";
+        std::cout << "Sampled states: " << formatInteger(layer.sampledStates) << "\n";
+        std::cout << "CannonWin: " << formatInteger(layer.cannonWin) << "\n";
+        std::cout << "SoldierWin: " << formatInteger(layer.soldierWin) << "\n";
+        std::cout << "Draw: " << formatInteger(layer.draw) << "\n";
+        std::cout << "Unknown: " << formatInteger(layer.unknown) << "\n\n";
+    }
+    std::cout << "Status: valid\n";
 }
 
 ProgressCallback makeProgressCallback(const CliOptions& options) {
@@ -2229,6 +2355,14 @@ int main(int argc, char** argv) {
         }
         if (options.denseMoveStats) {
             printDenseMoveStats(options);
+            return 0;
+        }
+        if (options.solveLowK) {
+            printSolveLowK(options);
+            return 0;
+        }
+        if (options.verifyLowK) {
+            printVerifyLowK(options);
             return 0;
         }
         if (options.buildLayerExternalProvided) {

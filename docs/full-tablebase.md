@@ -156,6 +156,23 @@ The CLI can inspect one state or sample a layer:
 
 See `docs/dense-successor.md` for the API and command details.
 
+## Low-K Solver Prototype
+
+The low-k full tablebase prototype solves complete dense layers `0..K` for
+`K <= 3` and writes outcome-only `.s15res` files:
+
+```powershell
+.\build\sanpao15_cli.exe --solve-lowk 2 --out-dir build\lowk-smoke --encoding 2bit
+.\build\sanpao15_cli.exe --verify-lowk build\lowk-smoke --max-k 2 --sample 10000
+```
+
+It is not a reachable-subset solve. It enumerates every legal dense state in
+each layer, uses solved lower-layer outcomes for capture edges, performs
+same-layer retrograde for cycles, and finalizes remaining Unknown states as
+Draw. The prototype stores only outcomes, not distance or best moves.
+
+See `docs/low-k-tablebase.md` for the detailed semantics and observed scale.
+
 ## Solver Direction
 
 The full tablebase solver should proceed from low soldier counts upward:
@@ -165,9 +182,9 @@ k=0 -> k=1 -> ... -> k=15
 ```
 
 Lower layers are needed because cannon captures move from layer `k` to `k-1`.
-The current foundation assigns dense ids, stores outcomes, and maps legal moves
-to dense successor ids. It does not yet implement full retrograde, distances, or
-best moves.
+The current foundation assigns dense ids, stores outcomes, maps legal moves to
+dense successor ids, and includes a low-k outcome-only retrograde prototype. It
+does not yet implement scalable full `0..15` solving, distances, or best moves.
 
 ## Relationship To Reachability
 
