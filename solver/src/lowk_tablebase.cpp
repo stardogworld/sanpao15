@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <bit>
 #include <chrono>
+#include <cctype>
 #include <deque>
 #include <fstream>
 #include <iomanip>
@@ -358,6 +359,18 @@ std::filesystem::path tempResultPath(const std::filesystem::path& resultPath) {
     return temp;
 }
 
+std::filesystem::path rangeManifestPath(const std::filesystem::path& outputDir) {
+    return outputDir / "manifest.json";
+}
+
+std::filesystem::path rangeLayerResultPath(const std::filesystem::path& outputDir, int soldierCount) {
+    return lowKLayerResultPath(outputDir, soldierCount);
+}
+
+std::filesystem::path rangeLayerStatsPath(const std::filesystem::path& outputDir, int soldierCount) {
+    return statsJsonPathForResult(rangeLayerResultPath(outputDir, soldierCount));
+}
+
 void validateOutputTarget(
     const std::filesystem::path& outputPath,
     const std::filesystem::path& statsPath,
@@ -374,6 +387,26 @@ void validateOutputTarget(
     }
 }
 
+void requireDenseRangeLayer(int layer) {
+    if (layer < 0 || layer > 15) {
+        throw std::invalid_argument("dense layer range bounds must be in 0..15");
+    }
+}
+
+void validateRangeOptions(const DenseLayerRangeSolveOptions& options) {
+    requireDenseRangeLayer(options.startLayer);
+    requireDenseRangeLayer(options.endLayer);
+    if (options.startLayer > options.endLayer) {
+        throw std::invalid_argument("--solve-layer-range START must be less than or equal to END");
+    }
+    if (options.outputDir.empty()) {
+        throw std::invalid_argument("--solve-layer-range requires --out-dir DIR");
+    }
+    if (options.resume && options.overwrite) {
+        throw std::invalid_argument("--resume and --overwrite cannot be used together");
+    }
+}
+
 void validateLowerResultFile(const std::filesystem::path& path, int expectedSoldierCount) {
     if (!std::filesystem::exists(path)) {
         throw std::runtime_error("lower .s15res file does not exist: " + path.string());
@@ -386,6 +419,143 @@ void validateLowerResultFile(const std::filesystem::path& path, int expectedSold
         throw std::runtime_error("--lower-res state count does not match denseStateCount(K-1)");
     }
     (void)denseEncodingName(info.encoding);
+}
+
+uint64_t parseJsonUnsignedField(const std::string& text, const std::string& field, uint64_t fallback) {
+    const std::string key = "\"" + field + "\"";
+    const size_t keyPos = text.find(key);
+    if (keyPos == std::string::npos) {
+        return fallback;
+    }
+    const size_t colon = text.find(':', keyPos + key.size());
+    if (colon == std::string::npos) {
+        return fallback;
+    }
+    size_t pos = colon + 1;
+    while (pos < text.size() && std::isspace(static_cast<unsigned char>(text[pos]))) {
+        ++pos;
+    }
+    size_t end = pos;
+    while (end < text.size() && std::isdigit(static_cast<unsigned char>(text[end]))) {
+        ++end;
+    }
+    if (end == pos) {
+        return fallback;
+    }
+    return static_cast<uint64_t>(std::stoull(text.substr(pos, end - pos)));
+}
+
+double parseJsonDoubleField(const std::string& text, const std::string& field, double fallback) {
+    const std::string key = "\"" + field + "\"";
+    const size_t keyPos = text.find(key);
+    if (keyPos == std::string::npos) {
+        return fallback;
+    }
+    const size_t colon = text.find(':', keyPos + key.size());
+    if (colon == std::string::npos) {
+        return fallback;
+    }
+    size_t pos = colon + 1;
+    while (pos < text.size() && std::isspace(static_cast<unsigned char>(text[pos]))) {
+        ++pos;
+    }
+    size_t end = pos;
+    while (end < text.size() &&
+           (std::isdigit(static_cast<unsigned char>(text[end])) || text[end] == '.' ||
+            text[end] == '-' || text[end] == '+' || text[end] == 'e' || text[end] == 'E')) {
+        ++end;
+    }
+    if (end == pos) {
+        return fallback;
+    }
+    return std::stod(text.substr(pos, end - pos));
+}
+
+void fillRangeEntryFromStatsJson(DenseLayerRangeEntry& entry) {
+    if (!std::filesystem::exists(entry.statsPath)) {
+        entry.statsPathMissing = true;
+        return;
+    }
+    std::ifstream input(entry.statsPath);
+    if (!input) {
+        entry.statsPathMissing = true;
+        return;
+    }
+    const std::string text((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
+    entry.cannonWin = parseJsonUnsignedField(text, "cannonWin", entry.cannonWin);
+    entry.soldierWin = parseJsonUnsignedField(text, "soldierWin", entry.soldierWin);
+    entry.draw = parseJsonUnsignedField(text, "draw", entry.draw);
+    entry.unknown = parseJsonUnsignedField(text, "unknown", entry.unknown);
+    entry.totalSeconds = parseJsonDoubleField(text, "totalSeconds", entry.totalSeconds);
+    entry.outputBytes = parseJsonUnsignedField(text, "outputBytes", entry.outputBytes);
+}
+
+std::string manifestRelativePath(const std::filesystem::path& outputDir, const std::filesystem::path& path) {
+    std::error_code ec;
+    std::filesystem::path relative = std::filesystem::relative(path, outputDir, ec);
+    if (ec) {
+        relative = path.filename();
+    }
+    return relative.generic_string();
+}
+
+void writeRangeManifest(const DenseLayerRangeSolveResult& result, DenseResultEncoding encoding) {
+    const std::filesystem::path parent = result.manifestPath.parent_path();
+    if (!parent.empty()) {
+        std::filesystem::create_directories(parent);
+    }
+    const std::filesystem::path tempPath = result.manifestPath.string() + ".tmp";
+    std::ofstream out(tempPath);
+    if (!out) {
+        throw std::runtime_error("failed to open range manifest for writing: " + tempPath.string());
+    }
+    out << "{\n";
+    out << "  \"format\": \"sanpao15-layer-range-manifest\",\n";
+    out << "  \"version\": 1,\n";
+    out << "  \"rulesetName\": \"" << RulesetName << "\",\n";
+    out << "  \"rulesetHash\": \"" << rulesetHashHex() << "\",\n";
+    out << "  \"encoding\": \"" << denseEncodingName(encoding) << "\",\n";
+    out << "  \"startLayer\": " << result.startLayer << ",\n";
+    out << "  \"endLayer\": " << result.endLayer << ",\n";
+    out << "  \"layers\": [\n";
+    for (size_t i = 0; i < result.layers.size(); ++i) {
+        const DenseLayerRangeEntry& layer = result.layers[i];
+        out << "    {\n";
+        out << "      \"soldierCount\": " << layer.soldierCount << ",\n";
+        out << "      \"status\": \"" << jsonEscape(layer.status) << "\",\n";
+        out << "      \"resultPath\": \"" << jsonEscape(manifestRelativePath(result.outputDir, layer.resultPath)) << "\",\n";
+        out << "      \"statsPath\": \"" << jsonEscape(manifestRelativePath(result.outputDir, layer.statsPath)) << "\",\n";
+        out << "      \"statsPathMissing\": " << (layer.statsPathMissing ? "true" : "false") << ",\n";
+        out << "      \"stateCount\": " << layer.stateCount << ",\n";
+        out << "      \"outputBytes\": " << layer.outputBytes << ",\n";
+        out << "      \"totalSeconds\": " << std::setprecision(12) << layer.totalSeconds << ",\n";
+        out << "      \"cannonWin\": " << layer.cannonWin << ",\n";
+        out << "      \"soldierWin\": " << layer.soldierWin << ",\n";
+        out << "      \"draw\": " << layer.draw << ",\n";
+        out << "      \"unknown\": " << layer.unknown;
+        if (!layer.error.empty()) {
+            out << ",\n";
+            out << "      \"error\": \"" << jsonEscape(layer.error) << "\"\n";
+        } else {
+            out << "\n";
+        }
+        out << "    }" << (i + 1 == result.layers.size() ? "\n" : ",\n");
+    }
+    out << "  ],\n";
+    out << "  \"totalSeconds\": " << std::setprecision(12) << result.totalSeconds << ",\n";
+    out << "  \"totalOutputBytes\": " << result.totalOutputBytes << "\n";
+    out << "}\n";
+    if (!out) {
+        throw std::runtime_error("failed to write range manifest: " + tempPath.string());
+    }
+    out.close();
+    if (!out) {
+        throw std::runtime_error("failed to close range manifest: " + tempPath.string());
+    }
+    if (std::filesystem::exists(result.manifestPath)) {
+        std::filesystem::remove(result.manifestPath);
+    }
+    std::filesystem::rename(tempPath, result.manifestPath);
 }
 
 void saveDenseResultAnyEncoding(
@@ -1184,6 +1354,113 @@ DenseLayerProductionSolveResult solveDenseLayerProduction(
     if (options.writeStatsJson) {
         writeLayerSolveStatsJson(options, result);
     }
+    return result;
+}
+
+DenseLayerRangeSolveResult solveDenseLayerRange(
+    const DenseLayerRangeSolveOptions& options) {
+    validateRangeOptions(options);
+    std::filesystem::create_directories(options.outputDir);
+
+    DenseLayerRangeSolveResult result;
+    result.startLayer = options.startLayer;
+    result.endLayer = options.endLayer;
+    result.outputDir = options.outputDir;
+    result.manifestPath = rangeManifestPath(options.outputDir);
+
+    if (options.cleanTemp) {
+        for (int k = options.startLayer; k <= options.endLayer; ++k) {
+            const std::filesystem::path tmp = tempResultPath(rangeLayerResultPath(options.outputDir, k));
+            if (std::filesystem::exists(tmp)) {
+                std::filesystem::remove(tmp);
+            }
+        }
+    } else {
+        for (int k = options.startLayer; k <= options.endLayer; ++k) {
+            const std::filesystem::path tmp = tempResultPath(rangeLayerResultPath(options.outputDir, k));
+            if (std::filesystem::exists(tmp)) {
+                throw std::runtime_error("stale temporary .s15res exists; pass --clean-temp or remove it: " + tmp.string());
+            }
+        }
+    }
+
+    const auto rangeStart = std::chrono::steady_clock::now();
+    if (options.startLayer >= MinSoldiersForSoldierSurvival) {
+        validateLowerResultFile(rangeLayerResultPath(options.outputDir, options.startLayer - 1), options.startLayer - 1);
+    }
+
+    for (int k = options.startLayer; k <= options.endLayer; ++k) {
+        DenseLayerRangeEntry entry;
+        entry.soldierCount = k;
+        entry.resultPath = rangeLayerResultPath(options.outputDir, k);
+        entry.statsPath = rangeLayerStatsPath(options.outputDir, k);
+        entry.stateCount = denseStateCount(k);
+
+        try {
+            if (options.resume && std::filesystem::exists(entry.resultPath)) {
+                const DenseResultFileInfo info = validateDenseResultFile(entry.resultPath, StandardRulesetHash, k);
+                entry.status = "skipped";
+                entry.stateCount = info.stateCount;
+                entry.outputBytes = std::filesystem::file_size(entry.resultPath);
+                fillRangeEntryFromStatsJson(entry);
+                result.totalOutputBytes += entry.outputBytes;
+                result.layers.push_back(entry);
+                const auto now = std::chrono::steady_clock::now();
+                result.totalSeconds = std::chrono::duration<double>(now - rangeStart).count();
+                writeRangeManifest(result, options.encoding);
+                continue;
+            }
+
+            if (std::filesystem::exists(entry.resultPath) && !options.overwrite) {
+                throw std::runtime_error("range output layer already exists; pass --resume or --overwrite: " + entry.resultPath.string());
+            }
+
+            std::optional<std::filesystem::path> lowerPath;
+            if (k >= MinSoldiersForSoldierSurvival) {
+                lowerPath = rangeLayerResultPath(options.outputDir, k - 1);
+                validateLowerResultFile(*lowerPath, k - 1);
+            }
+
+            DenseLayerProductionSolveOptions layerOptions;
+            layerOptions.soldierCount = k;
+            layerOptions.lowerResultPath = lowerPath;
+            layerOptions.outputResultPath = entry.resultPath;
+            layerOptions.encoding = options.encoding;
+            layerOptions.overwrite = options.overwrite;
+            layerOptions.writeStatsJson = true;
+            const DenseLayerProductionSolveResult solved = solveDenseLayerProduction(layerOptions);
+
+            entry.status = "completed";
+            entry.stateCount = solved.solve.stateCount;
+            entry.outputBytes = solved.outputBytes;
+            entry.totalSeconds = solved.solve.seconds;
+            entry.cannonWin = solved.solve.cannonWin;
+            entry.soldierWin = solved.solve.soldierWin;
+            entry.draw = solved.solve.draw;
+            entry.unknown = solved.solve.unknown;
+            result.totalOutputBytes += entry.outputBytes;
+            result.layers.push_back(entry);
+            const auto now = std::chrono::steady_clock::now();
+            result.totalSeconds = std::chrono::duration<double>(now - rangeStart).count();
+            writeRangeManifest(result, options.encoding);
+        } catch (const std::exception& error) {
+            entry.status = "failed";
+            entry.error = error.what();
+            if (std::filesystem::exists(entry.resultPath)) {
+                std::error_code ec;
+                entry.outputBytes = std::filesystem::file_size(entry.resultPath, ec);
+            }
+            result.layers.push_back(entry);
+            const auto failedFinish = std::chrono::steady_clock::now();
+            result.totalSeconds = std::chrono::duration<double>(failedFinish - rangeStart).count();
+            writeRangeManifest(result, options.encoding);
+            throw;
+        }
+    }
+
+    const auto rangeFinish = std::chrono::steady_clock::now();
+    result.totalSeconds = std::chrono::duration<double>(rangeFinish - rangeStart).count();
+    writeRangeManifest(result, options.encoding);
     return result;
 }
 

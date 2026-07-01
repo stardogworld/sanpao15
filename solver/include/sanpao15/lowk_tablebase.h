@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <optional>
+#include <string>
 #include <vector>
 
 #include "sanpao15/dense_successor.h"
@@ -101,6 +102,42 @@ struct DenseLayerProductionSolveResult {
     DenseResultEncoding encoding = DenseResultEncoding::Packed2Bit;
 };
 
+struct DenseLayerRangeEntry {
+    int soldierCount = -1;
+    std::string status;
+    std::filesystem::path resultPath;
+    std::filesystem::path statsPath;
+    bool statsPathMissing = false;
+    uint64_t stateCount = 0;
+    uint64_t outputBytes = 0;
+    double totalSeconds = 0.0;
+    uint64_t cannonWin = 0;
+    uint64_t soldierWin = 0;
+    uint64_t draw = 0;
+    uint64_t unknown = 0;
+    std::string error;
+};
+
+struct DenseLayerRangeSolveOptions {
+    int startLayer = -1;
+    int endLayer = -1;
+    std::filesystem::path outputDir;
+    DenseResultEncoding encoding = DenseResultEncoding::Packed2Bit;
+    bool resume = false;
+    bool overwrite = false;
+    bool cleanTemp = false;
+};
+
+struct DenseLayerRangeSolveResult {
+    int startLayer = -1;
+    int endLayer = -1;
+    std::filesystem::path outputDir;
+    std::filesystem::path manifestPath;
+    std::vector<DenseLayerRangeEntry> layers;
+    double totalSeconds = 0.0;
+    uint64_t totalOutputBytes = 0;
+};
+
 struct DenseLayerVerifyOptions {
     std::filesystem::path resultPath;
     std::optional<std::filesystem::path> lowerResultPath;
@@ -143,6 +180,8 @@ std::vector<LowKTablebaseLayerResult> solveLowKTablebase(const LowKTablebaseSolv
 std::vector<LowKTablebaseLayerResult> solveLowKTablebaseStreaming(const LowKTablebaseSolveOptions& options);
 DenseLayerProductionSolveResult solveDenseLayerProduction(
     const DenseLayerProductionSolveOptions& options);
+DenseLayerRangeSolveResult solveDenseLayerRange(
+    const DenseLayerRangeSolveOptions& options);
 
 LowKTablebaseVerifyResult verifyLowKTablebase(
     const std::filesystem::path& dir,

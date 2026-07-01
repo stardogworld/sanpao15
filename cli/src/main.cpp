@@ -75,6 +75,7 @@ struct CliOptions {
     bool solveLowKStreaming = false;
     bool verifyLowK = false;
     bool solveLayer = false;
+    bool solveLayerRange = false;
     bool verifyLayer = false;
     bool allowK4 = false;
     bool outDirProvided = false;
@@ -83,6 +84,8 @@ struct CliOptions {
     bool maxKProvided = false;
     bool resEncodingProvided = false;
     bool overwrite = false;
+    bool rangeResume = false;
+    bool cleanTemp = false;
     uint64_t maxStates = MvpStateLimit;
     uint64_t maxStatesPerLayer = 0;
     uint64_t dedupChunkSize = 1000000;
@@ -104,6 +107,8 @@ struct CliOptions {
     int denseLayer = 0;
     int lowKMax = 0;
     int solveLayerK = 0;
+    int rangeStartLayer = 0;
+    int rangeEndLayer = 0;
     uint64_t denseIndexValue = 0;
     GraphBackend graphBackend = GraphBackend::Csr;
     PartitionMethod partitionMethod = PartitionMethod::Splitmix64Mod;
@@ -185,6 +190,8 @@ void printUsage() {
         << "  sanpao15_cli --verify-lowk DIR --max-k K [--sample N]\n"
         << "  sanpao15_cli --solve-layer K --out-res FILE [--lower-res FILE] [--encoding byte|2bit] [--overwrite]\n"
         << "  sanpao15_cli --verify-layer FILE [--lower-res FILE] [--sample N]\n"
+        << "  sanpao15_cli --solve-layer-range START END --out-dir DIR [--encoding byte|2bit]\n"
+        << "                  [--resume] [--overwrite] [--clean-temp]\n"
         << "  sanpao15_cli --analyze \"SSSSS/SSSSS/SSSSS/...../.CCC. c\" [--limit N|--full]\n"
         << "  sanpao15_cli --load-table FILE --analyze \"SSSSS/SSSSS/SSSSS/...../.CCC. c\"\n\n"
         << "Options:\n"
@@ -262,6 +269,9 @@ void printUsage() {
         << "  --lower-res FILE  Required lower layer K-1 result for --solve-layer/--verify-layer when K >= 4.\n"
         << "  --out-res FILE  Output .s15res path for --solve-layer.\n"
         << "  --verify-layer FILE  Verify one production .s15res layer file.\n"
+        << "  --solve-layer-range START END  Production range solve for dense layers START..END.\n"
+        << "  --resume       Skip existing valid range layers.\n"
+        << "  --clean-temp   Remove stale layer-NN.s15res.tmp files for the selected range before solving.\n"
         << "  --external-seed-dedup  Use external sorted runs for next-layer seed dedup.\n"
         << "  --dedup-chunk-size N  Keys per external dedup chunk. Default: 1000000.\n"
         << "  --temp-dir DIR  Temporary run-file directory for external dedup.\n"
@@ -414,6 +424,8 @@ CliOptions parseArgs(int argc, char** argv) {
             options.closurePartitionMethodProvided = true;
         } else if (arg == "--resume-closure") {
             options.resumeClosure = true;
+        } else if (arg == "--resume") {
+            options.rangeResume = true;
         } else if (arg == "--checkpoint-interval") {
             if (i + 1 >= argc) {
                 throw std::invalid_argument("--checkpoint-interval requires a value");
@@ -663,6 +675,13 @@ CliOptions parseArgs(int argc, char** argv) {
             }
             options.solveLayerK = parseLayerIndex(argv[++i]);
             options.solveLayer = true;
+        } else if (arg == "--solve-layer-range") {
+            if (i + 2 >= argc) {
+                throw std::invalid_argument("--solve-layer-range requires START and END layer indexes");
+            }
+            options.rangeStartLayer = parseLayerIndex(argv[++i]);
+            options.rangeEndLayer = parseLayerIndex(argv[++i]);
+            options.solveLayerRange = true;
         } else if (arg == "--out-dir") {
             if (i + 1 >= argc) {
                 throw std::invalid_argument("--out-dir requires a directory path");
@@ -716,6 +735,8 @@ CliOptions parseArgs(int argc, char** argv) {
             options.tempDir = std::filesystem::path(argv[++i]);
         } else if (arg == "--keep-temp") {
             options.keepTemp = true;
+        } else if (arg == "--clean-temp") {
+            options.cleanTemp = true;
         } else {
             throw std::invalid_argument("unknown argument: " + arg);
         }
@@ -770,19 +791,22 @@ CliOptions parseArgs(int argc, char** argv) {
         static_cast<int>(options.solveLowKStreaming) +
         static_cast<int>(options.verifyLowK) +
         static_cast<int>(options.solveLayer) +
+        static_cast<int>(options.solveLayerRange) +
         static_cast<int>(options.verifyLayer);
     if (validationModeCount + partitionModeCount + migrationModeCount + partitionedResumeModeCount + denseModeCount > 1) {
         throw std::invalid_argument("choose only one validate/inspect/partition/dense tablebase mode");
     }
     if (options.resEncodingProvided && !options.createEmptyRes && !options.solveLowK &&
-        !options.solveLowKStreaming && !options.solveLayer) {
-        throw std::invalid_argument("--encoding is only valid with --create-empty-res, --solve-lowk, --solve-lowk-streaming, or --solve-layer");
+        !options.solveLowKStreaming && !options.solveLayer && !options.solveLayerRange) {
+        throw std::invalid_argument("--encoding is only valid with --create-empty-res, --solve-lowk, --solve-lowk-streaming, --solve-layer, or --solve-layer-range");
     }
     if (denseModeCount != 0) {
         const bool disallowedFull = options.full && !options.denseMoveStats;
         const bool disallowedSample =
             options.benchmarkSampleProvided && !options.denseMoveStats && !options.verifyLowK && !options.verifyLayer;
-        const bool disallowedOverwrite = options.partitionOverwrite && !options.solveLayer;
+        const bool disallowedOverwrite = options.partitionOverwrite && !options.solveLayer && !options.solveLayerRange;
+        const bool disallowedCleanTemp = options.cleanTemp && !options.solveLayerRange;
+        const bool disallowedRangeResume = options.rangeResume && !options.solveLayerRange;
         if (options.buildLayersDir.has_value() || options.statsOnly || options.probe || options.analysisNotation.has_value() ||
             options.saveTablePath.has_value() || options.loadTablePath.has_value() || disallowedFull ||
             options.limitProvided || options.noPred || options.maxStatesPerLayerProvided ||
@@ -797,7 +821,8 @@ CliOptions parseArgs(int argc, char** argv) {
             options.partitionOutputDir.has_value() || options.partitionBucketsProvided || options.partitionMethodProvided ||
             options.partitionCacheBucketsProvided || options.benchmarkModeProvided || disallowedSample ||
             options.lookupKeyProvided || options.sampleStatesProvided || options.nextSeedPartitionDir.has_value() ||
-            disallowedOverwrite || options.migrateOutputProvided || options.cleanupStaleRuns) {
+            disallowedOverwrite || disallowedCleanTemp || disallowedRangeResume ||
+            options.migrateOutputProvided || options.cleanupStaleRuns) {
             throw std::invalid_argument("dense tablebase modes cannot be combined with build, solve, stats, probe, validate, partition, migration, or repair options");
         }
     }
@@ -822,8 +847,11 @@ CliOptions parseArgs(int argc, char** argv) {
     if ((options.solveLowK || options.solveLowKStreaming) && !options.outDir.has_value()) {
         throw std::invalid_argument("--solve-lowk and --solve-lowk-streaming require --out-dir DIR");
     }
-    if (options.outDirProvided && !options.solveLowK && !options.solveLowKStreaming) {
-        throw std::invalid_argument("--out-dir is only valid with --solve-lowk or --solve-lowk-streaming");
+    if (options.solveLayerRange && !options.outDir.has_value()) {
+        throw std::invalid_argument("--solve-layer-range requires --out-dir DIR");
+    }
+    if (options.outDirProvided && !options.solveLowK && !options.solveLowKStreaming && !options.solveLayerRange) {
+        throw std::invalid_argument("--out-dir is only valid with --solve-lowk, --solve-lowk-streaming, or --solve-layer-range");
     }
     if (options.solveLayer && !options.outResPath.has_value()) {
         throw std::invalid_argument("--solve-layer requires --out-res FILE");
@@ -840,8 +868,15 @@ CliOptions parseArgs(int argc, char** argv) {
     if (options.maxKProvided && !options.verifyLowK) {
         throw std::invalid_argument("--max-k is only valid with --verify-lowk");
     }
-    if ((options.solveLowK || options.solveLowKStreaming || options.solveLayer) && options.benchmarkSampleProvided) {
+    if ((options.solveLowK || options.solveLowKStreaming || options.solveLayer || options.solveLayerRange) &&
+        options.benchmarkSampleProvided) {
         throw std::invalid_argument("--sample is only valid with --benchmark-partition, --dense-move-stats, --verify-lowk, or --verify-layer");
+    }
+    if (options.solveLayerRange && options.rangeStartLayer > options.rangeEndLayer) {
+        throw std::invalid_argument("--solve-layer-range START must be less than or equal to END");
+    }
+    if (options.solveLayerRange && options.rangeResume && options.overwrite) {
+        throw std::invalid_argument("--resume and --overwrite cannot be used together");
     }
     if ((options.verifyLowK || options.verifyLayer) && options.resEncodingProvided) {
         throw std::invalid_argument("--encoding is not used by verify modes");
@@ -895,8 +930,8 @@ CliOptions parseArgs(int argc, char** argv) {
         throw std::invalid_argument("--dry-run and --layer are only valid with closure repair, migration, or partitioned resume");
     }
     if (options.partitionOverwrite && !options.partitionKeysetInput.has_value() &&
-        !options.migrateClosureCheckpoint && !options.solveLayer) {
-        throw std::invalid_argument("--overwrite is only valid with --partition-keyset, --migrate-closure-checkpoint, or --solve-layer");
+        !options.migrateClosureCheckpoint && !options.solveLayer && !options.solveLayerRange) {
+        throw std::invalid_argument("--overwrite is only valid with --partition-keyset, --migrate-closure-checkpoint, --solve-layer, or --solve-layer-range");
     }
     if (options.partitionKeysetInput.has_value() && !options.partitionOutputDir.has_value()) {
         throw std::invalid_argument("--partition-keyset requires --partition-output");
@@ -1049,6 +1084,8 @@ CliOptions parseArgs(int argc, char** argv) {
         throw std::invalid_argument("--start-layer and --stop-after-layer are only valid with --build-layers");
     } else if (options.externalSeedDedup || options.dedupChunkSizeProvided || options.tempDir.has_value() || options.keepTemp) {
         throw std::invalid_argument("external dedup/temp options are only valid with --build-layers or --build-layer-external");
+    } else if ((options.rangeResume || options.cleanTemp) && !options.solveLayerRange) {
+        throw std::invalid_argument("--resume and --clean-temp are only valid with --solve-layer-range");
     } else if (options.externalLayerClosure) {
         throw std::invalid_argument("--external-layer-closure is only valid with --build-layers");
     } else if (options.partitionedClosure || options.closurePartitionBucketsProvided || options.closurePartitionMethodProvided) {
@@ -1501,6 +1538,53 @@ void printVerifyLayer(const CliOptions& options) {
     std::cout << "Draw: " << formatInteger(result.draw) << "\n";
     std::cout << "Unknown: " << formatInteger(result.unknown) << "\n";
     std::cout << "Status: valid\n";
+}
+
+void printSolveLayerRange(const CliOptions& options) {
+    DenseLayerRangeSolveOptions rangeOptions;
+    rangeOptions.startLayer = options.rangeStartLayer;
+    rangeOptions.endLayer = options.rangeEndLayer;
+    rangeOptions.outputDir = *options.outDir;
+    rangeOptions.encoding =
+        options.resEncodingProvided ? options.resEncoding : DenseResultEncoding::Packed2Bit;
+    rangeOptions.resume = options.rangeResume;
+    rangeOptions.overwrite = options.overwrite;
+    rangeOptions.cleanTemp = options.cleanTemp;
+
+    const DenseLayerRangeSolveResult result = solveDenseLayerRange(rangeOptions);
+
+    std::cout << "Production dense layer range solve\n";
+    std::cout << "Output directory: " << result.outputDir.string() << "\n";
+    std::cout << "Start layer: " << result.startLayer << "\n";
+    std::cout << "End layer: " << result.endLayer << "\n";
+    std::cout << "Encoding: " << denseResultEncodingToString(rangeOptions.encoding) << "\n";
+    std::cout << "Resume: " << (rangeOptions.resume ? "yes" : "no") << "\n";
+    std::cout << "Overwrite: " << (rangeOptions.overwrite ? "yes" : "no") << "\n";
+    std::cout << "Clean temp: " << (rangeOptions.cleanTemp ? "yes" : "no") << "\n";
+    std::cout << "Manifest: " << result.manifestPath.string() << "\n\n";
+    for (const DenseLayerRangeEntry& layer : result.layers) {
+        std::cout << "Layer " << layer.soldierCount << "\n";
+        std::cout << "Status: " << layer.status << "\n";
+        std::cout << "State count: " << formatInteger(layer.stateCount) << "\n";
+        std::cout << "CannonWin: " << formatInteger(layer.cannonWin) << "\n";
+        std::cout << "SoldierWin: " << formatInteger(layer.soldierWin) << "\n";
+        std::cout << "Draw: " << formatInteger(layer.draw) << "\n";
+        std::cout << "Unknown: " << formatInteger(layer.unknown) << "\n";
+        std::cout << "Time: " << formatDuration(layer.totalSeconds) << "\n";
+        std::cout << "Output file: " << layer.resultPath.string() << "\n";
+        std::cout << "Stats JSON file: " << layer.statsPath.string() << "\n";
+        std::cout << "Stats missing: " << (layer.statsPathMissing ? "yes" : "no") << "\n";
+        std::cout << "Output bytes: " << formatInteger(layer.outputBytes)
+                  << " (" << formatBytes(layer.outputBytes) << ")\n";
+        if (!layer.error.empty()) {
+            std::cout << "Error: " << layer.error << "\n";
+        }
+        std::cout << "\n";
+    }
+    std::cout << "Total time: " << formatDuration(result.totalSeconds) << "\n";
+    std::cout << "Total output bytes: " << formatInteger(result.totalOutputBytes)
+              << " (" << formatBytes(result.totalOutputBytes) << ")\n";
+    std::cout << "Status: solved\n";
 }
 
 ProgressCallback makeProgressCallback(const CliOptions& options) {
@@ -2625,6 +2709,10 @@ int main(int argc, char** argv) {
         }
         if (options.solveLayer) {
             printSolveLayer(options);
+            return 0;
+        }
+        if (options.solveLayerRange) {
+            printSolveLayerRange(options);
             return 0;
         }
         if (options.verifyLayer) {

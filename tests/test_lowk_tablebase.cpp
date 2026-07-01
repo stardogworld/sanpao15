@@ -451,6 +451,148 @@ SANPAO15_TEST(productionDenseIndex32Safety) {
     }
 }
 
+SANPAO15_TEST(productionRangeSolvesMaterialLayersAndWritesManifest) {
+    const std::filesystem::path dir = tempDir("sanpao15-range-material");
+    DenseLayerRangeSolveOptions options;
+    options.startLayer = 0;
+    options.endLayer = 3;
+    options.outputDir = dir;
+    options.encoding = DenseResultEncoding::Packed2Bit;
+
+    const DenseLayerRangeSolveResult result = solveDenseLayerRange(options);
+    SANPAO15_REQUIRE(result.layers.size() == 4);
+    SANPAO15_REQUIRE(std::filesystem::exists(dir / "manifest.json"));
+    for (int k = 0; k <= 3; ++k) {
+        const DenseLayerRangeEntry& layer = result.layers[static_cast<size_t>(k)];
+        SANPAO15_REQUIRE(layer.soldierCount == k);
+        SANPAO15_REQUIRE(layer.status == "completed");
+        SANPAO15_REQUIRE(layer.stateCount == denseStateCount(k));
+        SANPAO15_REQUIRE(layer.cannonWin == denseStateCount(k));
+        SANPAO15_REQUIRE(layer.soldierWin == 0);
+        SANPAO15_REQUIRE(layer.draw == 0);
+        SANPAO15_REQUIRE(layer.unknown == 0);
+        SANPAO15_REQUIRE(std::filesystem::exists(lowKLayerResultPath(dir, k)));
+        std::filesystem::path statsPath = lowKLayerResultPath(dir, k);
+        statsPath.replace_extension(".solve.json");
+        SANPAO15_REQUIRE(std::filesystem::exists(statsPath));
+    }
+    const std::string manifest = readTextFile(dir / "manifest.json");
+    SANPAO15_REQUIRE(manifest.find("\"format\": \"sanpao15-layer-range-manifest\"") != std::string::npos);
+    SANPAO15_REQUIRE(manifest.find("\"startLayer\": 0") != std::string::npos);
+    SANPAO15_REQUIRE(manifest.find("\"endLayer\": 3") != std::string::npos);
+    SANPAO15_REQUIRE(manifest.find("\"status\": \"completed\"") != std::string::npos);
+    std::filesystem::remove_all(dir);
+}
+
+SANPAO15_TEST(productionRangeResumeSkipsValidExistingLayers) {
+    const std::filesystem::path dir = tempDir("sanpao15-range-resume");
+    DenseLayerRangeSolveOptions first;
+    first.startLayer = 0;
+    first.endLayer = 3;
+    first.outputDir = dir;
+    (void)solveDenseLayerRange(first);
+
+    DenseLayerRangeSolveOptions second = first;
+    second.resume = true;
+    const DenseLayerRangeSolveResult resumed = solveDenseLayerRange(second);
+    SANPAO15_REQUIRE(resumed.layers.size() == 4);
+    for (const DenseLayerRangeEntry& layer : resumed.layers) {
+        SANPAO15_REQUIRE(layer.status == "skipped");
+        SANPAO15_REQUIRE(!layer.statsPathMissing);
+        SANPAO15_REQUIRE(layer.cannonWin == denseStateCount(layer.soldierCount));
+    }
+    const std::string manifest = readTextFile(dir / "manifest.json");
+    SANPAO15_REQUIRE(manifest.find("\"status\": \"skipped\"") != std::string::npos);
+    std::filesystem::remove_all(dir);
+}
+
+SANPAO15_TEST(productionRangeRejectsInvalidOptionsAndMissingLower) {
+    sanpao15::test::requireThrows([] {
+        DenseLayerRangeSolveOptions options;
+        options.startLayer = 3;
+        options.endLayer = 2;
+        options.outputDir = std::filesystem::temp_directory_path() / "sanpao15-range-invalid";
+        (void)solveDenseLayerRange(options);
+    }, "range START > END should throw");
+
+    sanpao15::test::requireThrows([] {
+        DenseLayerRangeSolveOptions options;
+        options.startLayer = 0;
+        options.endLayer = 1;
+        options.outputDir = std::filesystem::temp_directory_path() / "sanpao15-range-conflict";
+        options.resume = true;
+        options.overwrite = true;
+        (void)solveDenseLayerRange(options);
+    }, "range resume and overwrite should conflict");
+
+    const std::filesystem::path dir = tempDir("sanpao15-range-missing-lower");
+    sanpao15::test::requireThrows([&] {
+        DenseLayerRangeSolveOptions options;
+        options.startLayer = 4;
+        options.endLayer = 4;
+        options.outputDir = dir;
+        (void)solveDenseLayerRange(options);
+    }, "range start >= 4 should require existing lower layer");
+    std::filesystem::remove_all(dir);
+}
+
+SANPAO15_TEST(productionRangeExistingOutputAndInvalidResumeErrors) {
+    const std::filesystem::path dir = tempDir("sanpao15-range-existing-output");
+    DenseLayerRangeSolveOptions options;
+    options.startLayer = 0;
+    options.endLayer = 0;
+    options.outputDir = dir;
+    (void)solveDenseLayerRange(options);
+
+    sanpao15::test::requireThrows([&] {
+        DenseLayerRangeSolveOptions again = options;
+        (void)solveDenseLayerRange(again);
+    }, "range should reject existing output without resume or overwrite");
+
+    std::ofstream corrupt(lowKLayerResultPath(dir, 1), std::ios::binary);
+    corrupt << "not a valid dense result";
+    corrupt.close();
+
+    sanpao15::test::requireThrows([&] {
+        DenseLayerRangeSolveOptions resume;
+        resume.startLayer = 1;
+        resume.endLayer = 1;
+        resume.outputDir = dir;
+        resume.resume = true;
+        (void)solveDenseLayerRange(resume);
+    }, "range resume should reject invalid existing layer");
+    std::filesystem::remove_all(dir);
+}
+
+SANPAO15_TEST(productionRangeTempHandling) {
+    const std::filesystem::path dir = tempDir("sanpao15-range-temp");
+    std::filesystem::create_directories(dir);
+    const std::filesystem::path tmp = lowKLayerResultPath(dir, 0).string() + ".tmp";
+    {
+        std::ofstream stale(tmp, std::ios::binary);
+        stale << "stale";
+    }
+
+    sanpao15::test::requireThrows([&] {
+        DenseLayerRangeSolveOptions options;
+        options.startLayer = 0;
+        options.endLayer = 0;
+        options.outputDir = dir;
+        (void)solveDenseLayerRange(options);
+    }, "range should reject stale temp files without cleanTemp");
+
+    DenseLayerRangeSolveOptions clean;
+    clean.startLayer = 0;
+    clean.endLayer = 0;
+    clean.outputDir = dir;
+    clean.cleanTemp = true;
+    const DenseLayerRangeSolveResult result = solveDenseLayerRange(clean);
+    SANPAO15_REQUIRE(result.layers.size() == 1);
+    SANPAO15_REQUIRE(result.layers[0].status == "completed");
+    SANPAO15_REQUIRE(!std::filesystem::exists(tmp));
+    std::filesystem::remove_all(dir);
+}
+
 SANPAO15_TEST(lowKResultUsesUpdatedRulesetHash) {
     constexpr uint64_t OldRulesetHash = 0x5331355F76315F01ull;
     SANPAO15_REQUIRE(StandardRulesetHash != OldRulesetHash);

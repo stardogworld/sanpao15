@@ -132,6 +132,17 @@ rejected because the material rule resolves the whole layer. For `k>=4`, the
 lower result is required and must be a valid current-ruleset `.s15res` for
 exactly `k-1`.
 
+For repeated production runs, prefer the range runner:
+
+```powershell
+.\build\sanpao15_cli.exe --solve-layer-range 0 4 --out-dir build\range-k0-k4 --encoding 2bit --overwrite --clean-temp
+.\build\sanpao15_cli.exe --solve-layer-range 0 4 --out-dir build\range-k0-k4 --encoding 2bit --resume
+```
+
+It writes `manifest.json`, skips existing valid layers with `--resume`, rejects
+`--resume` plus `--overwrite`, and automatically uses `layer-(k-1).s15res` as
+the lower layer for `k>=4`.
+
 Generated names:
 
 ```text
@@ -188,9 +199,9 @@ total: 01:06
 
 ## Next Direction
 
-The next full tablebase work should cautiously benchmark `k=5` through
-`--solve-layer`. Larger layers will still need the scalable `0..15`
-architecture:
+The next full tablebase work should use `--solve-layer-range` for `0..5`
+resume testing, then decide whether to benchmark `k=6`. Larger layers will
+still need the scalable `0..15` architecture:
 
 ```text
 CSR or flat predecessor storage

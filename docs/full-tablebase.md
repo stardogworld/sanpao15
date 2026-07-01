@@ -258,6 +258,42 @@ but uses a `uint32_t` queue and `uint32_t` predecessor-index scratch buffer
 internally after checking that the layer is uint32-addressable. It supports
 `k=0..15`; larger-layer feasibility still depends on measured memory and time.
 
+## Production Range Solver
+
+`--solve-layer-range START END` runs the production single-layer solver in
+order and chains lower layers automatically:
+
+```powershell
+.\build\sanpao15_cli.exe --solve-layer-range 0 4 --out-dir build\range-k0-k4 --encoding 2bit --overwrite --clean-temp
+.\build\sanpao15_cli.exe --solve-layer-range 0 4 --out-dir build\range-k0-k4 --encoding 2bit --resume
+```
+
+Output names are fixed:
+
+```text
+layer-00.s15res
+layer-00.solve.json
+...
+manifest.json
+```
+
+For `k>=4`, the runner validates and loads `outputDir/layer-(k-1).s15res`.
+If `START >= 4`, that lower file must already exist and validate before the
+range starts. `--resume` skips existing valid target layers; if an existing
+target layer fails validation, the run stops and records a failed manifest
+entry. `--overwrite` allows replacing existing targets and is rejected together
+with `--resume`. `--clean-temp` removes stale `layer-NN.s15res.tmp` files for
+the selected range before solving; without it, stale temp files stop the run so
+a half-written table is not mistaken for state.
+
+Every range run writes `manifest.json` with format
+`sanpao15-layer-range-manifest`, version, ruleset name/hash, encoding,
+start/end layers, per-layer status (`completed`, `skipped`, or `failed`),
+result/stats paths, state count, output bytes, total seconds, and outcome
+counts. The recommended validation path is range `0..4`, then range `0..5`
+using resume. A direct full `0..15` run is still not recommended without more
+scale data.
+
 ## Solver Direction
 
 The full tablebase solver should proceed from low soldier counts upward:

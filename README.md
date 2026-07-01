@@ -122,6 +122,8 @@ Useful CLI modes:
 .\build\sanpao15_cli.exe --verify-lowk build\lowk-smoke --max-k 2 --sample 10000
 .\build\sanpao15_cli.exe --solve-layer 4 --lower-res build\stream-min4\layer-03.s15res --out-res build\prod-layers\layer-04.s15res --encoding 2bit
 .\build\sanpao15_cli.exe --verify-layer build\prod-layers\layer-04.s15res --lower-res build\stream-min4\layer-03.s15res --sample 10000
+.\build\sanpao15_cli.exe --solve-layer-range 0 4 --out-dir build\range-k0-k4 --encoding 2bit --overwrite --clean-temp
+.\build\sanpao15_cli.exe --solve-layer-range 0 4 --out-dir build\range-k0-k4 --encoding 2bit --resume
 .\build\sanpao15_cli.exe --limit 50000
 .\build\sanpao15_cli.exe --full
 .\build\sanpao15_cli.exe --analyze "SSSSS/SSSSS/SSSSS/...../.CCC. c" --limit 10000
@@ -236,6 +238,16 @@ omitted because the material rule resolves the whole layer. `--verify-layer`
 validates one layer file plus its required lower layer without requiring a
 directory of `0..K` results. The production API accepts `K=0..15`; this does
 not mean a full `0..15` batch should be run without more scale checks.
+`--solve-layer-range START END --out-dir DIR` automates the same production
+solve one layer at a time, naming files `layer-NN.s15res` and
+`layer-NN.solve.json`. For `K>=4`, it automatically uses `layer-(K-1).s15res`
+from the same directory, so partial ranges such as `5..5` require a valid
+`layer-04.s15res` already present. `--resume` skips existing valid layers,
+`--overwrite` replaces completed layers, and `--clean-temp` removes stale
+`layer-NN.s15res.tmp` files before starting. Each run writes `manifest.json`
+with per-layer `completed`, `skipped`, or `failed` status. Recommended smoke
+flow is range `0..4`, then range `0..5` with resume; do not jump straight to
+full `0..15` without more timing and memory checks.
 `.s15res --validate-res` scans payload bytes instead of checking only headers.
 
 Layer-local edge probe:

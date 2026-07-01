@@ -147,9 +147,8 @@ Default streaming low-k solve:
 .\build\sanpao15_cli.exe --verify-lowk build\stream-k4 --max-k 4 --sample 10000
 ```
 
-Do not run `k=5` as a default smoke test. The `k=4` result is now fast enough
-that the next step after the production per-layer entry point is a cautious
-`k=5` benchmark.
+Do not run `k=6` as a default smoke test. The `k=4` and `k=5` results are fast
+enough that the next step is range/resume validation before considering `k=6`.
 
 Production single-layer solve:
 
@@ -165,6 +164,19 @@ validated against the current ruleset hash, `k-1`, dense state count, encoding,
 and payload shape. The output `.s15res` is written through a temporary file,
 validated, then renamed into place; a matching `.solve.json` stats file is
 written next to it.
+
+Production range solve:
+
+```powershell
+.\build\sanpao15_cli.exe --solve-layer-range 0 4 --out-dir build\range-k0-k4 --encoding 2bit --overwrite --clean-temp
+.\build\sanpao15_cli.exe --solve-layer-range 0 4 --out-dir build\range-k0-k4 --encoding 2bit --resume
+```
+
+The range runner solves `START..END` in order, uses `layer-(k-1).s15res`
+automatically for `k>=4`, writes `manifest.json`, and supports layer-level
+resume by skipping existing valid target layers. It does not checkpoint
+mid-propagation. `--overwrite` is rejected together with `--resume`; stale
+`.s15res.tmp` files require `--clean-temp` or manual cleanup.
 
 Inspect same-layer predecessors for one dense state:
 
@@ -216,9 +228,8 @@ payloads are checked for valid size and unused-bit cleanliness when applicable.
 
 ## Next Direction
 
-Because optimized Release `k=4` completes in 01:06 with exact baseline counts
-and the production per-layer CLI now exists, the recommended next step is a
-measured `k=5` benchmark using `--solve-layer`. File-backed or mmap outcome
-tables are still likely needed for much larger layers, but they should follow
-the measured `k=5` result. Distance and best move data should remain optional
-side data until outcome solving is stable.
+Because optimized Release `k=4` and `k=5` complete with stable counts and the
+range runner now exists, the recommended next step is range `0..5` using
+resume. File-backed or mmap outcome tables are still likely needed for much
+larger layers, but they should follow measured range behavior. Distance and
+best move data should remain optional side data until outcome solving is stable.
