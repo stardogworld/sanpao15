@@ -11,6 +11,8 @@
 #include <vector>
 
 #include "sanpao15/bitboard.h"
+#include "sanpao15/dense_index.h"
+#include "sanpao15/dense_table.h"
 #include "sanpao15/edge_probe.h"
 #include "sanpao15/external_closure.h"
 #include "sanpao15/layered.h"
@@ -61,6 +63,9 @@ struct CliOptions {
     bool partitionOverwrite = false;
     bool benchmarkSampleProvided = false;
     bool lookupKeyProvided = false;
+    bool tablebaseSizes = false;
+    bool createEmptyRes = false;
+    bool resEncodingProvided = false;
     uint64_t maxStates = MvpStateLimit;
     uint64_t maxStatesPerLayer = 0;
     uint64_t dedupChunkSize = 1000000;
@@ -78,10 +83,12 @@ struct CliOptions {
     int stopAfterLayer = 0;
     int buildLayerExternal = 0;
     int repairLayer = 15;
+    int createEmptyResLayer = 0;
     GraphBackend graphBackend = GraphBackend::Csr;
     PartitionMethod partitionMethod = PartitionMethod::Splitmix64Mod;
     PartitionMethod closurePartitionMethod = PartitionMethod::Splitmix64Mod;
     PartitionBenchmarkMode benchmarkMode = PartitionBenchmarkMode::Existing;
+    DenseResultEncoding resEncoding = DenseResultEncoding::Byte;
     uint64_t progressInterval = 0;
     std::optional<std::filesystem::path> buildLayersDir;
     std::optional<std::filesystem::path> layerWorkDir;
@@ -106,6 +113,9 @@ struct CliOptions {
     std::optional<std::filesystem::path> migrateClosureCheckpointDir;
     std::optional<std::filesystem::path> migrateOutputDir;
     std::optional<std::filesystem::path> resumePartitionedClosureDir;
+    std::optional<std::filesystem::path> createEmptyResPath;
+    std::optional<std::filesystem::path> inspectResPath;
+    std::optional<std::filesystem::path> validateResPath;
     std::optional<std::string> analysisNotation;
     std::optional<std::filesystem::path> saveTablePath;
     std::optional<std::filesystem::path> loadTablePath;
@@ -138,6 +148,9 @@ void printUsage() {
         << "  sanpao15_cli --lookup-partition DIR --key KEY\n"
         << "  sanpao15_cli --benchmark-partition DIR [--sample N] [--benchmark-mode MODE]\n"
         << "  sanpao15_cli --probe-layer-edges PARTITION_DIR --next-seed-partition DIR [--sample-states N]\n"
+        << "  sanpao15_cli --tablebase-sizes\n"
+        << "  sanpao15_cli --create-empty-res K FILE [--encoding byte|2bit]\n"
+        << "  sanpao15_cli --inspect-res FILE | --validate-res FILE\n"
         << "  sanpao15_cli --analyze \"SSSSS/SSSSS/SSSSS/...../.CCC. c\" [--limit N|--full]\n"
         << "  sanpao15_cli --load-table FILE --analyze \"SSSSS/SSSSS/SSSSS/...../.CCC. c\"\n\n"
         << "Options:\n"
@@ -197,6 +210,11 @@ void printUsage() {
         << "  --probe-layer-edges DIR  Probe generated edge membership from a layer partition.\n"
         << "  --next-seed-partition DIR  Next lower seed partition for capture edge membership.\n"
         << "  --sample-states N  Sample count for --probe-layer-edges. Default: 100000.\n"
+        << "  --tablebase-sizes  Print full dense tablebase layer sizes.\n"
+        << "  --create-empty-res K FILE  Create an empty full-tablebase .s15res layer file.\n"
+        << "  --encoding MODE  Encoding for --create-empty-res: byte or 2bit. Default: byte.\n"
+        << "  --inspect-res FILE  Show .s15res header information.\n"
+        << "  --validate-res FILE  Validate .s15res header and payload size.\n"
         << "  --external-seed-dedup  Use external sorted runs for next-layer seed dedup.\n"
         << "  --dedup-chunk-size N  Keys per external dedup chunk. Default: 1000000.\n"
         << "  --temp-dir DIR  Temporary run-file directory for external dedup.\n"
@@ -233,6 +251,26 @@ GraphBackend parseGraphBackend(const std::string& text) {
 
 const char* graphBackendToString(GraphBackend backend) {
     return backend == GraphBackend::Csr ? "csr" : "vector";
+}
+
+DenseResultEncoding parseDenseResultEncoding(const std::string& text) {
+    if (text == "byte") {
+        return DenseResultEncoding::Byte;
+    }
+    if (text == "2bit") {
+        return DenseResultEncoding::Packed2Bit;
+    }
+    throw std::invalid_argument("--encoding must be either byte or 2bit");
+}
+
+const char* denseResultEncodingToString(DenseResultEncoding encoding) {
+    switch (encoding) {
+        case DenseResultEncoding::Byte:
+            return "byte";
+        case DenseResultEncoding::Packed2Bit:
+            return "2bit";
+    }
+    return "unknown";
 }
 
 CliOptions parseArgs(int argc, char** argv) {
@@ -514,6 +552,31 @@ CliOptions parseArgs(int argc, char** argv) {
             }
             options.sampleStates = parseLimit(argv[++i]);
             options.sampleStatesProvided = true;
+        } else if (arg == "--tablebase-sizes") {
+            options.tablebaseSizes = true;
+        } else if (arg == "--create-empty-res") {
+            if (i + 2 >= argc) {
+                throw std::invalid_argument("--create-empty-res requires a layer and a file path");
+            }
+            options.createEmptyResLayer = parseLayerIndex(argv[++i]);
+            options.createEmptyResPath = std::filesystem::path(argv[++i]);
+            options.createEmptyRes = true;
+        } else if (arg == "--encoding") {
+            if (i + 1 >= argc) {
+                throw std::invalid_argument("--encoding requires a value");
+            }
+            options.resEncoding = parseDenseResultEncoding(argv[++i]);
+            options.resEncodingProvided = true;
+        } else if (arg == "--inspect-res") {
+            if (i + 1 >= argc) {
+                throw std::invalid_argument("--inspect-res requires a file path");
+            }
+            options.inspectResPath = std::filesystem::path(argv[++i]);
+        } else if (arg == "--validate-res") {
+            if (i + 1 >= argc) {
+                throw std::invalid_argument("--validate-res requires a file path");
+            }
+            options.validateResPath = std::filesystem::path(argv[++i]);
         } else if (arg == "--external-seed-dedup") {
             options.externalSeedDedup = true;
         } else if (arg == "--dedup-chunk-size") {
@@ -571,8 +634,35 @@ CliOptions parseArgs(int argc, char** argv) {
         static_cast<int>(options.lookupPartitionDir.has_value()) +
         static_cast<int>(options.benchmarkPartitionDir.has_value()) +
         static_cast<int>(options.probeLayerEdgesDir.has_value());
-    if (validationModeCount + partitionModeCount + migrationModeCount + partitionedResumeModeCount > 1) {
-        throw std::invalid_argument("choose only one validate/inspect/partition mode");
+    const int denseModeCount =
+        static_cast<int>(options.tablebaseSizes) +
+        static_cast<int>(options.createEmptyRes) +
+        static_cast<int>(options.inspectResPath.has_value()) +
+        static_cast<int>(options.validateResPath.has_value());
+    if (validationModeCount + partitionModeCount + migrationModeCount + partitionedResumeModeCount + denseModeCount > 1) {
+        throw std::invalid_argument("choose only one validate/inspect/partition/dense tablebase mode");
+    }
+    if (options.resEncodingProvided && !options.createEmptyRes) {
+        throw std::invalid_argument("--encoding is only valid with --create-empty-res");
+    }
+    if (denseModeCount != 0) {
+        if (options.buildLayersDir.has_value() || options.statsOnly || options.probe || options.analysisNotation.has_value() ||
+            options.saveTablePath.has_value() || options.loadTablePath.has_value() || options.full ||
+            options.limitProvided || options.noPred || options.maxStatesPerLayerProvided ||
+            options.startLayerProvided || options.stopAfterLayerProvided || options.externalLayerClosure || options.externalSeedDedup ||
+            options.partitionedClosure || options.closurePartitionBucketsProvided || options.closurePartitionMethodProvided ||
+            options.dedupChunkSizeProvided || options.tempDir.has_value() || options.keepTemp ||
+            options.resumeClosure || options.checkpointIntervalProvided ||
+            options.buildLayerExternalProvided || options.layerWorkDir.has_value() || options.seedFile.has_value() ||
+            options.outputLayerFile.has_value() || options.outputNextSeedFile.has_value() ||
+            options.maxIterations != 0 || options.maxExpandedStates != 0 ||
+            options.repairLayerProvided || options.repairDryRun || options.expandedBudgetProvided ||
+            options.partitionOutputDir.has_value() || options.partitionBucketsProvided || options.partitionMethodProvided ||
+            options.partitionCacheBucketsProvided || options.benchmarkModeProvided || options.benchmarkSampleProvided ||
+            options.lookupKeyProvided || options.sampleStatesProvided || options.nextSeedPartitionDir.has_value() ||
+            options.partitionOverwrite || options.migrateOutputProvided || options.cleanupStaleRuns) {
+            throw std::invalid_argument("dense tablebase modes cannot be combined with build, solve, stats, probe, validate, partition, migration, or repair options");
+        }
     }
     if (options.partitionBucketsProvided) {
         if (!options.partitionKeysetInput.has_value() && !options.migrateClosureCheckpoint) {
@@ -877,6 +967,66 @@ void printMemoryEstimate(const MemoryEstimate& estimate) {
     std::cout << "vector<vector<int>> overhead pred: " << formatBytes(estimate.vectorVectorOverheadPred) << "\n";
     std::cout << "Vector total graph estimate: " << formatBytes(estimate.vectorTotalGraphEstimateBytes) << "\n";
     std::cout << "Rough current graph estimate: " << formatBytes(estimate.roughTotalCurrentGraphBytes) << "\n";
+}
+
+void printTablebaseSizes() {
+    std::cout << "Full tablebase dense layer sizes\n";
+    std::cout << "Rank order: cannon combination, soldier combination in non-cannon squares, side\n\n";
+    std::cout << std::setw(8) << "Layer"
+              << std::setw(18) << "States"
+              << std::setw(18) << "2-bit bytes"
+              << std::setw(18) << "1-byte bytes"
+              << std::setw(16) << "2-bit size"
+              << std::setw(16) << "1-byte size"
+              << "\n";
+    for (const DenseLayerSize& size : denseLayerSizes()) {
+        std::cout << std::setw(8) << size.soldierCount
+                  << std::setw(18) << formatInteger(size.states)
+                  << std::setw(18) << formatInteger(size.bytes2BitOutcome)
+                  << std::setw(18) << formatInteger(size.bytes1ByteOutcome)
+                  << std::setw(16) << formatBytes(size.bytes2BitOutcome)
+                  << std::setw(16) << formatBytes(size.bytes1ByteOutcome)
+                  << "\n";
+    }
+    std::cout << "\nTotal states: " << formatInteger(totalDenseStateCount()) << "\n";
+    std::cout << "Total 2-bit outcome bytes: " << formatInteger(totalDenseOutcomeBytes2Bit())
+              << " (" << formatBytes(totalDenseOutcomeBytes2Bit()) << ")\n";
+    std::cout << "Total 1-byte outcome bytes: " << formatInteger(totalDenseOutcomeBytes1Byte())
+              << " (" << formatBytes(totalDenseOutcomeBytes1Byte()) << ")\n";
+}
+
+void printDenseResultInfo(const DenseResultFileInfo& info) {
+    std::cout << "Dense result file\n";
+    std::cout << "Version: " << info.version << "\n";
+    std::cout << "Ruleset hash: " << info.rulesetHash << "\n";
+    std::cout << "Soldier count: " << info.soldierCount << "\n";
+    std::cout << "State count: " << formatInteger(info.stateCount) << "\n";
+    std::cout << "Encoding: " << denseResultEncodingToString(info.encoding) << "\n";
+    std::cout << "Payload bytes: " << formatInteger(info.payloadBytes)
+              << " (" << formatBytes(info.payloadBytes) << ")\n";
+}
+
+void printCreateEmptyRes(const CliOptions& options) {
+    createEmptyDenseResultFile(
+        options.createEmptyResLayer,
+        *options.createEmptyResPath,
+        options.resEncoding,
+        StandardRulesetHash);
+    const DenseResultFileInfo info =
+        validateDenseResultFile(*options.createEmptyResPath, StandardRulesetHash, options.createEmptyResLayer);
+    std::cout << "Created empty .s15res: " << options.createEmptyResPath->string() << "\n";
+    printDenseResultInfo(info);
+    std::cout << "Status: valid\n";
+}
+
+void printInspectRes(const std::filesystem::path& path) {
+    printDenseResultInfo(inspectDenseResultFile(path));
+    std::cout << "Status: inspected\n";
+}
+
+void printValidateRes(const std::filesystem::path& path) {
+    printDenseResultInfo(validateDenseResultFile(path, StandardRulesetHash));
+    std::cout << "Status: valid\n";
 }
 
 ProgressCallback makeProgressCallback(const CliOptions& options) {
@@ -1957,6 +2107,22 @@ int main(int argc, char** argv) {
         }
         if (options.probeLayerEdgesDir.has_value()) {
             printLayerEdgeProbe(options);
+            return 0;
+        }
+        if (options.tablebaseSizes) {
+            printTablebaseSizes();
+            return 0;
+        }
+        if (options.createEmptyRes) {
+            printCreateEmptyRes(options);
+            return 0;
+        }
+        if (options.inspectResPath.has_value()) {
+            printInspectRes(*options.inspectResPath);
+            return 0;
+        }
+        if (options.validateResPath.has_value()) {
+            printValidateRes(*options.validateResPath);
             return 0;
         }
         if (options.buildLayerExternalProvided) {

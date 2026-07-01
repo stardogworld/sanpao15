@@ -33,10 +33,24 @@
 - Write and validate partitioned closure checkpoint snapshots with `--partitioned-closure`.
 - Migrate flat closure checkpoints with `--migrate-closure-checkpoint`.
 - Resume closure from partitioned checkpoints with `--resume-partitioned-closure`.
+- Rank and unrank combinations with combinadic colex order.
+- Map every legal full-tablebase layer position to and from a dense index.
+- Store dense outcomes in 1-byte and packed 2-bit arrays.
+- Write, inspect, and validate `.s15res` dense result files.
+- Print full tablebase theoretical sizes with `--tablebase-sizes`.
+
+## Solver Lines
+
+- Reachability line: starts from `SSSSS/SSSSS/SSSSS/...../.CCC. c` and explores the reachable subset with external closure and partitioned checkpoints.
+- Full tablebase line: covers every legal position in each soldier-count layer with dense combinadic indexing. This is the current foundation route.
 
 ## Next Steps
 
-- Run the existing 90M layer-15 partitioned checkpoint in controlled small slices.
+- Prototype low-k full tablebase solving for `k=0..2`.
+- Add dense successor indexing so moves can be generated as dense target ids.
+- Add outcome-only retrograde for low layers before scaling.
+- Evaluate D4 symmetry reduction for dense layers.
+- Keep the partitioned reachability line available for standard-initial-position experiments.
 - Improve partitioned closure performance with a direct per-bucket candidate collector if needed.
 - Design layer-local CSR edge files.
 - Canonicalize the 8 board symmetries.

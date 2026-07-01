@@ -2,6 +2,13 @@
 
 `sanpao15` is a first-stage implementation of the 5x5 "三炮十五兵" game. It contains a C++20 rules core, a retrograde-analysis solver, a command-line table generator/analyzer, focused C++ tests, and a minimal TypeScript UI.
 
+Current solver work has two lines:
+
+- Reachability from the standard initial position, using external closure and partitioned checkpoints.
+- Full tablebase dense indexing, covering every legal position in each soldier-count layer.
+
+The active foundation work is moving toward the full tablebase route: combinadic dense indexes plus dense outcome arrays.
+
 ## Current Rule Set
 
 The board has 25 squares numbered left-to-right and top-to-bottom:
@@ -95,6 +102,10 @@ On Windows with the generated Ninja build, run:
 Useful CLI modes:
 
 ```powershell
+.\build\sanpao15_cli.exe --tablebase-sizes
+.\build\sanpao15_cli.exe --create-empty-res 0 build\empty-k0.s15res --encoding 2bit
+.\build\sanpao15_cli.exe --inspect-res build\empty-k0.s15res
+.\build\sanpao15_cli.exe --validate-res build\empty-k0.s15res
 .\build\sanpao15_cli.exe --limit 50000
 .\build\sanpao15_cli.exe --full
 .\build\sanpao15_cli.exe --analyze "SSSSS/SSSSS/SSSSS/...../.CCC. c" --limit 10000
@@ -164,6 +175,23 @@ Partition large key lists into bucketed membership indexes:
 New partitioned indexes default to stable `splitmix64_mod` buckets because real packed keys distributed poorly under direct `key_mod`; old `key_mod` manifests remain readable. Reader benchmarks support `--benchmark-mode existing|missing|mixed` and `--partition-cache-buckets N`.
 
 The C++ partitioned keyset API also supports exact bucket-wise `partitionedDifference` and `partitionedUnion` for compatible partitioned inputs. These are storage building blocks for the next partitioned/block closure step.
+
+Full tablebase dense-index foundation:
+
+```powershell
+.\build\sanpao15_cli.exe --tablebase-sizes
+```
+
+For each layer `k`, all legal positions are assigned a dense index:
+
+```text
+index = ((rank(cannonMask) * C(22,k) + rank(compressedSoldierMask)) * 2 + side)
+```
+
+This covers all positions, not just states reachable from the standard initial
+position. The total full tablebase space is `18,787,540,800` states; outcome-only
+storage is about `4.37 GiB` at 2 bits/state or `17.50 GiB` at 1 byte/state.
+See `docs/full-tablebase.md` for the `.s15res` format and rank/unrank details.
 
 Layer-local edge probe:
 

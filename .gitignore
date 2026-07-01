@@ -29,6 +29,7 @@ Makefile
 *.s15keys
 *.s15run
 *.s15bucket
+*.s15res
 partition.json
 closure-state.json
 partitioned-closure-state.json

@@ -21,6 +21,9 @@ target_include_directories(sanpao15_core
 )
 
 add_library(sanpao15_solver
+    solver/src/combinadic.cpp
+    solver/src/dense_index.cpp
+    solver/src/dense_table.cpp
     solver/src/edge_probe.cpp
     solver/src/external_closure.cpp
     solver/src/external_keyset.cpp
@@ -45,7 +48,10 @@ enable_testing()
 
 add_executable(sanpao15_tests
     tests/test_bitboard.cpp
+    tests/test_combinadic.cpp
     tests/test_csr.cpp
+    tests/test_dense_index.cpp
+    tests/test_dense_table.cpp
     tests/test_external_closure.cpp
     tests/test_external_keyset.cpp
     tests/test_edge_probe.cpp

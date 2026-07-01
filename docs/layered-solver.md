@@ -2,6 +2,12 @@
 
 The full reachable graph is too large to keep as one in-memory graph. A 100M CSR no-predecessor probe was still truncated, only reached the 7-soldier layer, and had not reached layers 6..0. The solver route is therefore moving toward layered reachability, layered retrograde, and compressed or externalized tables.
 
+This document describes the reachability line from the standard initial
+position. The full tablebase line is separate: it uses dense combinadic indexing
+to cover every legal position in a layer, independent of whether that position
+is reachable from `SSSSS/SSSSS/SSSSS/...../.CCC. c`. See
+`docs/full-tablebase.md` for the current dense-index foundation.
+
 ## Soldier-Count Monotonicity
 
 The game has a useful monotone structure:
