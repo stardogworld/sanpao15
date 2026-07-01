@@ -55,6 +55,46 @@ the expensive successor roundtrip.
 Capture-to-lower-layer edges are not regenerated during propagation. They are
 handled during initialization by looking up the already-solved lower layer.
 
+## Dense Layer Performance Pass
+
+The `dense-layer-solver-performance-pass` optimized the streaming hot path
+without changing outcomes or move semantics:
+
+- initialization unranks each dense state once, then uses position-aware
+  successor and terminal helpers;
+- successor generation reuses a scratch vector and avoids per-state temporary
+  move vectors;
+- propagation no longer unranks every predecessor parent, deriving the parent
+  side from the child side instead;
+- predecessor generation has a scratch-buffer API, so streaming propagation
+  reuses one `std::vector<DensePredecessor>`;
+- the propagation queue is a vector-backed worklist with `queuePeak` reported
+  as maximum pending queue length;
+- the remaining-successor counter array is `uint8_t` with a runtime overflow
+  guard.
+
+The `k=4` benchmark is unchanged in result counts:
+
+```text
+states: 33,649,000
+CannonWin: 33,398,108
+SoldierWin: 736
+Draw: 250,156
+Unknown: 0
+terminalStates: 184
+sameLayerEdges: 282,650,840
+captureEdges: 15,800,400
+```
+
+Timing improved from the previous 17:31 baseline to 04:48:
+
+```text
+initialization: 10:20 -> 01:56
+propagation:    07:11 -> 02:52
+finalize:       0.25s -> 0.13s
+total:          17:31 -> 04:48
+```
+
 ## CLI
 
 Default streaming low-k solve:
@@ -71,7 +111,9 @@ Default streaming low-k solve:
 .\build\sanpao15_cli.exe --verify-lowk build\stream-k4 --max-k 4 --sample 10000
 ```
 
-Do not run `k=5` with this prototype.
+Do not run `k=5` as a default smoke test. The `k=4` result is now fast enough
+that the next step can add a per-layer production CLI, then run a cautious
+`k=5` benchmark.
 
 Inspect same-layer predecessors for one dense state:
 
@@ -119,7 +161,9 @@ payloads are checked for valid size and unused-bit cleanliness when applicable.
 
 ## Next Direction
 
-The recommended next step is file-backed or mmap outcome tables. The in-memory
-2-bit output array is compact, but production `0..15` solving should avoid
-keeping every large layer resident in ordinary heap vectors. Distance and best
-move data should remain optional side data until outcome solving is stable.
+Because optimized `k=4` completes in under five minutes with exact baseline
+counts, the recommended next step is a per-layer production CLI for the dense
+streaming solver. File-backed or mmap outcome tables are still likely needed
+for much larger layers, but they should follow a production per-layer solve
+path and another measured `k=5` benchmark. Distance and best move data should
+remain optional side data until outcome solving is stable.

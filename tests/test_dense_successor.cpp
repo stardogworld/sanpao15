@@ -63,12 +63,41 @@ void requireSuccessorsMatchCore(int soldierCount, uint64_t index) {
 
 SANPAO15_TEST(denseSuccessorsMatchCoreForSampledLayers) {
     uint64_t rng = 0x51554343ull;
-    for (int soldierCount : {0, 1, 2, 3, 15}) {
+    for (int soldierCount : {0, 1, 2, 3, 4, 15}) {
         const uint64_t count = denseStateCount(soldierCount);
         requireSuccessorsMatchCore(soldierCount, 0);
         requireSuccessorsMatchCore(soldierCount, count - 1);
         for (int sample = 0; sample < 40; ++sample) {
             requireSuccessorsMatchCore(soldierCount, nextRandom(rng) % count);
+        }
+    }
+}
+
+SANPAO15_TEST(denseSuccessorsFromPositionMatchesIndexApi) {
+    uint64_t rng = 0x504F5343554343ull;
+    for (int soldierCount : {0, 1, 2, 3, 4, 15}) {
+        const uint64_t count = denseStateCount(soldierCount);
+        std::vector<uint64_t> indexes{0, count / 2, count - 1};
+        for (int sample = 0; sample < 16; ++sample) {
+            indexes.push_back(nextRandom(rng) % count);
+        }
+        for (uint64_t index : indexes) {
+            const Position pos = positionFromDenseIndex(soldierCount, index);
+            const std::vector<DenseSuccessor> expected = generateDenseSuccessors(soldierCount, index);
+            const std::vector<DenseSuccessor> actual =
+                generateDenseSuccessorsFromPosition(soldierCount, index, pos);
+            SANPAO15_REQUIRE(actual == expected);
+
+            std::vector<DenseSuccessor> scratch;
+            scratch.push_back(DenseSuccessor{});
+            generateDenseSuccessorsFromPosition(soldierCount, index, pos, scratch);
+            SANPAO15_REQUIRE(scratch == expected);
+
+            const DenseTerminalInfo terminalByIndex = terminalOutcomeForDenseState(soldierCount, index);
+            const DenseTerminalInfo terminalBySuccessors =
+                terminalOutcomeForPositionWithSuccessors(pos, scratch);
+            SANPAO15_REQUIRE(terminalBySuccessors.terminal == terminalByIndex.terminal);
+            SANPAO15_REQUIRE(terminalBySuccessors.outcome == terminalByIndex.outcome);
         }
     }
 }

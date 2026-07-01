@@ -43,9 +43,10 @@
 - Generate dense successor ids for legal moves with same-layer and capture-to-lower-layer classification.
 - Generate same-layer dense predecessors on demand for streaming retrograde propagation.
 - Use fast dense predecessor generation in streaming propagation while retaining checked predecessor mode for tests and inspection.
+- Optimize the dense streaming hot path with position-aware successor helpers, scratch predecessor buffers, a vector-backed worklist, `uint8_t` remaining counters, and no per-predecessor parent unrank.
 - Inspect dense successors and sample dense layer move statistics from the CLI.
 - Solve low full-tablebase layers `k=0..3` with outcome-only retrograde and write `.s15res` results.
-- Solve low full-tablebase layers with a streaming/on-the-fly predecessor backend via `--solve-lowk-streaming`.
+- Solve low full-tablebase layers with a streaming/on-the-fly predecessor backend via `--solve-lowk-streaming`; optimized `k=4` completes in 04:48 with exact baseline counts.
 - Verify low-k `.s15res` headers and sampled successor consistency.
 - Centralize the current ruleset as `sanpao15-min-four-soldiers`, where `soldierCount < 4` is immediate `CannonWin`.
 
@@ -56,10 +57,10 @@
 
 ## Next Steps
 
+- Add a per-layer production CLI for the dense streaming solver.
+- Run a cautious `k=5` benchmark after the per-layer CLI is available.
+- Evaluate file-backed or mmap dense outcome tables for larger layers.
 - Design a scalable full `0..15` tablebase architecture.
-- Benchmark the first non-material layer, `k=4`, with `--solve-lowk-streaming 4 --allow-k4`.
-- Evaluate file-backed or mmap dense outcome tables.
-- Optimize on-the-fly predecessor generation if `k=4` exposes it as the bottleneck.
 - Keep CSR or flat layer-local edge storage as a fallback if streaming regeneration is too slow.
 - Evaluate D4 symmetry reduction for dense layers.
 - Keep the partitioned reachability line available for standard-initial-position experiments.

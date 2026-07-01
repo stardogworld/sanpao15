@@ -136,6 +136,55 @@ SANPAO15_TEST(densePredecessorFastMatchesCheckedForSampledLayers) {
     }
 }
 
+SANPAO15_TEST(densePredecessorScratchMatchesVectorApiForSampledLayers) {
+    std::vector<DensePredecessor> scratch;
+    scratch.reserve(32);
+    for (int soldierCount : {0, 1, 2, 3, 4, 15}) {
+        for (uint64_t childIndex : largerSampleIndexes(soldierCount)) {
+            const auto expected = predecessorSignature(generateDensePredecessors(
+                soldierCount,
+                childIndex,
+                DensePredecessorValidation::None));
+
+            generateDensePredecessors(
+                soldierCount,
+                childIndex,
+                DensePredecessorValidation::None,
+                scratch);
+            SANPAO15_REQUIRE(predecessorSignature(scratch) == expected);
+
+            const Position child = positionFromDenseIndex(soldierCount, childIndex);
+            generateDensePredecessorsFromPosition(
+                soldierCount,
+                childIndex,
+                child,
+                DensePredecessorValidation::None,
+                scratch);
+            SANPAO15_REQUIRE(predecessorSignature(scratch) == expected);
+        }
+    }
+}
+
+SANPAO15_TEST(densePredecessorScratchClearsOldContents) {
+    std::vector<DensePredecessor> scratch{
+        DensePredecessor{15, denseStateCount(15) - 1, Move{24, 0, true, 0}},
+        DensePredecessor{7, 123, Move{1, 2, false, -1}},
+    };
+    const int soldierCount = 4;
+    const uint64_t childIndex = denseStateCount(soldierCount) / 2;
+    const auto expected = predecessorSignature(generateDensePredecessors(
+        soldierCount,
+        childIndex,
+        DensePredecessorValidation::None));
+
+    generateDensePredecessors(
+        soldierCount,
+        childIndex,
+        DensePredecessorValidation::None,
+        scratch);
+    SANPAO15_REQUIRE(predecessorSignature(scratch) == expected);
+}
+
 SANPAO15_TEST(densePredecessorsRejectInvalidIndex) {
     sanpao15::test::requireThrows([] {
         (void)generateDensePredecessors(1, denseStateCount(1));

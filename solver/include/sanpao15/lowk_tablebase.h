@@ -80,6 +80,7 @@ DenseLayerSolveResult solveDenseLayerOutcomeStreaming(
     int soldierCount,
     const PackedOutcomeTable2Bit* lowerLayer,
     PackedOutcomeTable2Bit& output);
+uint8_t checkedStreamingRemainingCount(uint64_t remainingCount);
 
 std::filesystem::path lowKLayerResultPath(const std::filesystem::path& dir, int soldierCount);
 

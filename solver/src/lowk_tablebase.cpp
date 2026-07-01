@@ -55,7 +55,7 @@ struct SolveGraph {
 };
 
 uint64_t remainingArrayBytes(uint64_t stateCount) {
-    return stateCount * static_cast<uint64_t>(sizeof(uint16_t));
+    return stateCount * static_cast<uint64_t>(sizeof(uint8_t));
 }
 
 void validateLayerSolveInputs(
@@ -264,6 +264,13 @@ void verifySolvedState(
 
 }  // namespace
 
+uint8_t checkedStreamingRemainingCount(uint64_t remainingCount) {
+    if (remainingCount > std::numeric_limits<uint8_t>::max()) {
+        throw std::overflow_error("streaming remaining counter exceeds uint8_t");
+    }
+    return static_cast<uint8_t>(remainingCount);
+}
+
 DenseLayerSolveResult solveDenseLayerOutcome(
     int soldierCount,
     const PackedOutcomeTable2Bit* lowerLayer,
@@ -428,24 +435,29 @@ DenseLayerSolveResult solveDenseLayerOutcomeStreaming(
         return result;
     }
 
-    std::vector<uint16_t> remaining(static_cast<size_t>(stateCount), 0);
-    std::deque<uint64_t> queue;
+    std::vector<uint8_t> remaining(static_cast<size_t>(stateCount), 0);
+    std::vector<uint64_t> queue;
+    size_t queueHead = 0;
+    std::vector<DenseSuccessor> successors;
+    successors.reserve(32);
+    std::vector<DensePredecessor> predecessors;
+    predecessors.reserve(32);
 
     const auto initStart = std::chrono::steady_clock::now();
     for (uint64_t index = 0; index < stateCount; ++index) {
-        const DenseTerminalInfo terminal = terminalOutcomeForDenseState(soldierCount, index);
+        const Position pos = positionFromDenseIndex(soldierCount, index);
+        generateDenseSuccessorsFromPosition(soldierCount, index, pos, successors);
+        result.maxSuccessors = std::max<uint64_t>(result.maxSuccessors, successors.size());
+
+        const DenseTerminalInfo terminal = terminalOutcomeForPositionWithSuccessors(pos, successors);
         if (terminal.terminal) {
             output.set(index, terminal.outcome);
             ++result.terminalStates;
             ++result.resolvedByTerminal;
             queue.push_back(index);
-            noteQueueSize(result, queue.size());
+            noteQueueSize(result, static_cast<uint64_t>(queue.size() - queueHead));
             continue;
         }
-
-        const Position pos = positionFromDenseIndex(soldierCount, index);
-        const std::vector<DenseSuccessor> successors = generateDenseSuccessors(soldierCount, index);
-        result.maxSuccessors = std::max<uint64_t>(result.maxSuccessors, successors.size());
 
         bool resolved = false;
         uint64_t remainingCount = 0;
@@ -464,7 +476,7 @@ DenseLayerSolveResult solveDenseLayerOutcomeStreaming(
                 output.set(index, child);
                 ++result.resolvedByLowerLayer;
                 queue.push_back(index);
-                noteQueueSize(result, queue.size());
+                noteQueueSize(result, static_cast<uint64_t>(queue.size() - queueHead));
                 resolved = true;
             } else if (child == Outcome::Draw && !resolved) {
                 ++remainingCount;
@@ -472,16 +484,13 @@ DenseLayerSolveResult solveDenseLayerOutcomeStreaming(
         }
 
         if (!resolved) {
-            if (remainingCount > std::numeric_limits<uint16_t>::max()) {
-                throw std::overflow_error("streaming remaining counter exceeds uint16_t");
-            }
-            remaining[static_cast<size_t>(index)] = static_cast<uint16_t>(remainingCount);
+            remaining[static_cast<size_t>(index)] = checkedStreamingRemainingCount(remainingCount);
             result.maxRemaining = std::max(result.maxRemaining, remainingCount);
             if (remainingCount == 0) {
                 output.set(index, opponentWinFor(pos.side));
                 ++result.resolvedByLowerLayer;
                 queue.push_back(index);
-                noteQueueSize(result, queue.size());
+                noteQueueSize(result, static_cast<uint64_t>(queue.size() - queueHead));
             }
         }
     }
@@ -491,19 +500,23 @@ DenseLayerSolveResult solveDenseLayerOutcomeStreaming(
     const auto propagationStart = std::chrono::steady_clock::now();
     if (result.terminalStates == stateCount) {
         queue.clear();
+        queueHead = 0;
     }
-    while (!queue.empty()) {
-        const uint64_t childIndex = queue.front();
-        queue.pop_front();
+    while (queueHead < queue.size()) {
+        const uint64_t childIndex = queue[queueHead++];
         const Outcome childOutcome = output.get(childIndex);
         if (childOutcome == Outcome::Unknown || childOutcome == Outcome::Draw) {
             continue;
         }
 
-        const std::vector<DensePredecessor> predecessors = generateDensePredecessors(
+        const Position child = positionFromDenseIndex(soldierCount, childIndex);
+        const Side parentSide = opposite(child.side);
+        generateDensePredecessorsFromPosition(
             soldierCount,
             childIndex,
-            DensePredecessorValidation::None);
+            child,
+            DensePredecessorValidation::None,
+            predecessors);
         ++result.predecessorCalls;
         result.generatedPredecessors += static_cast<uint64_t>(predecessors.size());
         result.maxPredecessors = std::max<uint64_t>(result.maxPredecessors, predecessors.size());
@@ -513,27 +526,26 @@ DenseLayerSolveResult solveDenseLayerOutcomeStreaming(
             if (output.get(parentIndex) != Outcome::Unknown) {
                 continue;
             }
-            const Position parent = positionFromDenseIndex(soldierCount, parentIndex);
-            if (isWinForSide(childOutcome, parent.side)) {
+            if (isWinForSide(childOutcome, parentSide)) {
                 output.set(parentIndex, childOutcome);
                 ++result.retrogradeResolved;
                 ++result.resolvedByPropagation;
                 queue.push_back(parentIndex);
-                noteQueueSize(result, queue.size());
+                noteQueueSize(result, static_cast<uint64_t>(queue.size() - queueHead));
                 continue;
             }
-            if (isOpponentWinForSide(childOutcome, parent.side)) {
-                uint16_t& remainingCount = remaining[static_cast<size_t>(parentIndex)];
+            if (isOpponentWinForSide(childOutcome, parentSide)) {
+                uint8_t& remainingCount = remaining[static_cast<size_t>(parentIndex)];
                 if (remainingCount == 0) {
                     throw std::logic_error("streaming remaining counter underflow");
                 }
                 --remainingCount;
                 if (remainingCount == 0) {
-                    output.set(parentIndex, opponentWinFor(parent.side));
+                    output.set(parentIndex, opponentWinFor(parentSide));
                     ++result.retrogradeResolved;
                     ++result.resolvedByPropagation;
                     queue.push_back(parentIndex);
-                    noteQueueSize(result, queue.size());
+                    noteQueueSize(result, static_cast<uint64_t>(queue.size() - queueHead));
                 }
             }
         }

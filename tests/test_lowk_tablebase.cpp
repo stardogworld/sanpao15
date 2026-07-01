@@ -131,6 +131,14 @@ SANPAO15_TEST(streamingLowKSolverResetsPrefilledOutputTable) {
     SANPAO15_REQUIRE(table.get(table.size() - 1) == Outcome::CannonWin);
 }
 
+SANPAO15_TEST(streamingRemainingCountUsesUint8Guard) {
+    SANPAO15_REQUIRE(checkedStreamingRemainingCount(0) == 0);
+    SANPAO15_REQUIRE(checkedStreamingRemainingCount(255) == 255);
+    sanpao15::test::requireThrows([] {
+        (void)checkedStreamingRemainingCount(256);
+    }, "streaming remaining counter rejects values above uint8_t");
+}
+
 SANPAO15_TEST(lowKTerminalPriorityKeepsK0CannonWinDespiteLegalMoves) {
     const Position pos = parsePositionNotation("CCC../...../...../...../..... c");
     const uint64_t index = denseIndex(pos);

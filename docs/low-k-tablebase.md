@@ -80,6 +80,12 @@ path remains available for CLI inspection and tests.
 Capture-to-lower-layer successors are handled during initialization by looking
 up the lower layer table.
 
+The optimized streaming backend keeps initialization to one dense unrank per
+state, generates successors from the already-decoded position, reuses successor
+and predecessor scratch buffers, and uses a vector-backed worklist. The
+remaining counter is `uint8_t` with a runtime guard, and propagation avoids
+per-predecessor parent unrank by deriving the parent side from the child side.
+
 Both solver entry points reset their output table to `Unknown` before solving,
 so reusing a previously-filled `PackedOutcomeTable2Bit` cannot contaminate
 retrograde propagation.
@@ -147,9 +153,27 @@ are intercepted by the material rule and become `CannonWin`. The first layer
 where SoldierWin or Draw can appear is `k=4`; it should be treated as a
 benchmark for the streaming solver rather than a default unit-test workload.
 
+Optimized `k=4` benchmark:
+
+```text
+states: 33,649,000
+CannonWin: 33,398,108
+SoldierWin: 736
+Draw: 250,156
+Unknown: 0
+terminalStates: 184
+sameLayerEdges: 282,650,840
+captureEdges: 15,800,400
+initialization: 01:56
+propagation: 02:52
+total: 04:48
+```
+
 ## Next Direction
 
-The next full tablebase work should design the scalable `0..15` architecture:
+The next full tablebase work should add a production per-layer streaming CLI,
+then cautiously benchmark `k=5`. Larger layers will still need the scalable
+`0..15` architecture:
 
 ```text
 CSR or flat predecessor storage
