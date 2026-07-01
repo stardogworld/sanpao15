@@ -54,6 +54,8 @@ struct CliOptions {
     bool repairClosureCheckpoint = false;
     bool repairDryRun = false;
     bool repairLayerProvided = false;
+    bool migrateClosureCheckpoint = false;
+    bool migrateOutputProvided = false;
     bool partitionOverwrite = false;
     bool benchmarkSampleProvided = false;
     bool lookupKeyProvided = false;
@@ -98,6 +100,8 @@ struct CliOptions {
     std::optional<std::filesystem::path> probeLayerEdgesDir;
     std::optional<std::filesystem::path> nextSeedPartitionDir;
     std::optional<std::filesystem::path> repairClosureCheckpointDir;
+    std::optional<std::filesystem::path> migrateClosureCheckpointDir;
+    std::optional<std::filesystem::path> migrateOutputDir;
     std::optional<std::string> analysisNotation;
     std::optional<std::filesystem::path> saveTablePath;
     std::optional<std::filesystem::path> loadTablePath;
@@ -117,6 +121,9 @@ void printUsage() {
         << "                  --output-layer FILE [--output-next-seed FILE]\n"
         << "  sanpao15_cli --validate-layers DIR\n"
         << "  sanpao15_cli --repair-closure-checkpoint DIR --layer K [--dry-run]\n"
+        << "  sanpao15_cli --migrate-closure-checkpoint DIR --layer K [--dry-run]\n"
+        << "                  [--migrate-output DIR] [--partition-buckets N]\n"
+        << "                  [--partition-method splitmix64_mod|key_mod] [--overwrite]\n"
         << "  sanpao15_cli --validate-layer FILE | --validate-seed FILE\n"
         << "  sanpao15_cli --inspect-layer FILE | --inspect-seed FILE\n"
         << "  sanpao15_cli --partition-keyset INPUT --partition-output DIR [--partition-buckets N]\n"
@@ -160,8 +167,10 @@ void printUsage() {
         << "  --validate-layers DIR  Validate present layer/seed files in DIR.\n"
         << "  --repair-closure-checkpoint DIR  Validate and rewrite closure checkpoint metadata for DIR/work/layer-K.\n"
         << "  --cleanup-stale-runs  Remove stale transient runs during closure checkpoint repair.\n"
-        << "  --layer K       Layer index for --repair-closure-checkpoint.\n"
-        << "  --dry-run       Validate repair target without writing changes.\n"
+        << "  --migrate-closure-checkpoint DIR  Convert a flat closure checkpoint to partitioned snapshots.\n"
+        << "  --migrate-output DIR  Output dir for --migrate-closure-checkpoint. Default: DIR/work/layer-K/partitioned.\n"
+        << "  --layer K       Layer index for closure repair or migration.\n"
+        << "  --dry-run       Validate repair/migration target without writing changes.\n"
         << "  --inspect-layer FILE  Show summary for one .s15layer file.\n"
         << "  --inspect-seed FILE  Show summary for one .s15seed file.\n"
         << "  --partition-keyset FILE  Build partitioned index from .s15layer/.s15seed/.s15keys.\n"
@@ -369,6 +378,12 @@ CliOptions parseArgs(int argc, char** argv) {
             }
             options.repairClosureCheckpointDir = std::filesystem::path(argv[++i]);
             options.repairClosureCheckpoint = true;
+        } else if (arg == "--migrate-closure-checkpoint") {
+            if (i + 1 >= argc) {
+                throw std::invalid_argument("--migrate-closure-checkpoint requires a directory path");
+            }
+            options.migrateClosureCheckpointDir = std::filesystem::path(argv[++i]);
+            options.migrateClosureCheckpoint = true;
         } else if (arg == "--cleanup-stale-runs") {
             options.cleanupStaleRuns = true;
         } else if (arg == "--dry-run") {
@@ -399,6 +414,12 @@ CliOptions parseArgs(int argc, char** argv) {
                 throw std::invalid_argument("--partition-output requires a directory path");
             }
             options.partitionOutputDir = std::filesystem::path(argv[++i]);
+        } else if (arg == "--migrate-output") {
+            if (i + 1 >= argc) {
+                throw std::invalid_argument("--migrate-output requires a directory path");
+            }
+            options.migrateOutputDir = std::filesystem::path(argv[++i]);
+            options.migrateOutputProvided = true;
         } else if (arg == "--partition-buckets") {
             if (i + 1 >= argc) {
                 throw std::invalid_argument("--partition-buckets requires a value");
@@ -521,6 +542,7 @@ CliOptions parseArgs(int argc, char** argv) {
         static_cast<int>(options.repairClosureCheckpoint) +
         static_cast<int>(options.inspectLayerPath.has_value()) +
         static_cast<int>(options.inspectSeedPath.has_value());
+    const int migrationModeCount = static_cast<int>(options.migrateClosureCheckpoint);
     const int partitionModeCount =
         static_cast<int>(options.partitionKeysetInput.has_value()) +
         static_cast<int>(options.validatePartitionDir.has_value()) +
@@ -528,19 +550,19 @@ CliOptions parseArgs(int argc, char** argv) {
         static_cast<int>(options.lookupPartitionDir.has_value()) +
         static_cast<int>(options.benchmarkPartitionDir.has_value()) +
         static_cast<int>(options.probeLayerEdgesDir.has_value());
-    if (validationModeCount + partitionModeCount > 1) {
+    if (validationModeCount + partitionModeCount + migrationModeCount > 1) {
         throw std::invalid_argument("choose only one validate/inspect/partition mode");
     }
     if (options.partitionBucketsProvided) {
-        if (!options.partitionKeysetInput.has_value()) {
-            throw std::invalid_argument("--partition-buckets is only valid with --partition-keyset");
+        if (!options.partitionKeysetInput.has_value() && !options.migrateClosureCheckpoint) {
+            throw std::invalid_argument("--partition-buckets is only valid with --partition-keyset or --migrate-closure-checkpoint");
         }
         if (options.partitionBuckets == 0 || options.partitionBuckets > std::numeric_limits<uint32_t>::max()) {
             throw std::invalid_argument("--partition-buckets must be in 1..4294967295");
         }
     }
-    if (options.partitionMethodProvided && !options.partitionKeysetInput.has_value()) {
-        throw std::invalid_argument("--partition-method is only valid with --partition-keyset");
+    if (options.partitionMethodProvided && !options.partitionKeysetInput.has_value() && !options.migrateClosureCheckpoint) {
+        throw std::invalid_argument("--partition-method is only valid with --partition-keyset or --migrate-closure-checkpoint");
     }
     if (options.partitionCacheBucketsProvided) {
         if (!options.lookupPartitionDir.has_value() && !options.benchmarkPartitionDir.has_value() &&
@@ -563,17 +585,27 @@ CliOptions parseArgs(int argc, char** argv) {
     if (options.probeLayerEdgesDir.has_value() && !options.nextSeedPartitionDir.has_value()) {
         throw std::invalid_argument("--probe-layer-edges requires --next-seed-partition for non-zero layers");
     }
-    if ((options.cleanupStaleRuns || options.repairDryRun || options.repairLayerProvided) && !options.repairClosureCheckpoint) {
-        throw std::invalid_argument("--cleanup-stale-runs, --dry-run, and --layer are only valid with --repair-closure-checkpoint");
+    if (options.cleanupStaleRuns && !options.repairClosureCheckpoint) {
+        throw std::invalid_argument("--cleanup-stale-runs is only valid with --repair-closure-checkpoint");
     }
-    if (options.partitionOverwrite && !options.partitionKeysetInput.has_value()) {
-        throw std::invalid_argument("--overwrite is only valid with --partition-keyset");
+    if ((options.repairDryRun || options.repairLayerProvided) &&
+        !options.repairClosureCheckpoint && !options.migrateClosureCheckpoint) {
+        throw std::invalid_argument("--dry-run and --layer are only valid with closure repair or migration");
+    }
+    if (options.partitionOverwrite && !options.partitionKeysetInput.has_value() && !options.migrateClosureCheckpoint) {
+        throw std::invalid_argument("--overwrite is only valid with --partition-keyset or --migrate-closure-checkpoint");
     }
     if (options.partitionKeysetInput.has_value() && !options.partitionOutputDir.has_value()) {
         throw std::invalid_argument("--partition-keyset requires --partition-output");
     }
     if (options.partitionOutputDir.has_value() && !options.partitionKeysetInput.has_value()) {
         throw std::invalid_argument("--partition-output is only valid with --partition-keyset");
+    }
+    if (options.migrateOutputProvided && !options.migrateClosureCheckpoint) {
+        throw std::invalid_argument("--migrate-output is only valid with --migrate-closure-checkpoint");
+    }
+    if (options.migrateClosureCheckpoint && !options.repairLayerProvided) {
+        throw std::invalid_argument("--migrate-closure-checkpoint requires --layer K");
     }
     if (options.lookupKeyProvided && !options.lookupPartitionDir.has_value()) {
         throw std::invalid_argument("--key is only valid with --lookup-partition");
@@ -590,6 +622,21 @@ CliOptions parseArgs(int argc, char** argv) {
         options.maxIterations != 0 || options.maxExpandedStates != 0 ||
         options.resumeClosure || options.checkpointIntervalProvided ||
         options.partitionedClosure || options.closurePartitionBucketsProvided || options.closurePartitionMethodProvided;
+    if (migrationModeCount != 0) {
+        if (options.buildLayersDir.has_value() || options.statsOnly || options.probe || options.analysisNotation.has_value() ||
+            options.saveTablePath.has_value() || options.loadTablePath.has_value() || options.full ||
+            options.limitProvided || options.noPred || options.maxStatesPerLayerProvided ||
+            options.startLayerProvided || options.stopAfterLayerProvided || options.externalLayerClosure || options.externalSeedDedup ||
+            options.partitionedClosure || options.closurePartitionBucketsProvided || options.closurePartitionMethodProvided ||
+            options.dedupChunkSizeProvided || options.tempDir.has_value() || options.keepTemp ||
+            options.resumeClosure || options.checkpointIntervalProvided ||
+            externalLayerOptionProvided || validationModeCount != 0 || partitionModeCount != 0 ||
+            options.partitionOutputDir.has_value() || options.partitionCacheBucketsProvided ||
+            options.benchmarkModeProvided || options.benchmarkSampleProvided || options.lookupKeyProvided ||
+            options.sampleStatesProvided || options.nextSeedPartitionDir.has_value()) {
+            throw std::invalid_argument("migration mode cannot be combined with build, solve, stats, probe, validate, partition, or table modes");
+        }
+    }
     if (partitionModeCount != 0) {
         if (options.buildLayersDir.has_value() || options.statsOnly || options.probe || options.analysisNotation.has_value() ||
             options.saveTablePath.has_value() || options.loadTablePath.has_value() || options.full ||
@@ -598,7 +645,7 @@ CliOptions parseArgs(int argc, char** argv) {
             options.partitionedClosure || options.closurePartitionBucketsProvided || options.closurePartitionMethodProvided ||
             options.dedupChunkSizeProvided || options.tempDir.has_value() || options.keepTemp ||
             options.resumeClosure || options.checkpointIntervalProvided ||
-            externalLayerOptionProvided || validationModeCount != 0) {
+            externalLayerOptionProvided || validationModeCount != 0 || migrationModeCount != 0) {
             throw std::invalid_argument("partition modes cannot be combined with build, solve, stats, probe, validate, or table modes");
         }
     }
@@ -1000,6 +1047,83 @@ void printPartitionBuild(const CliOptions& options) {
     std::cout << "Empty buckets: " << formatInteger(stats.emptyBuckets) << "\n";
     std::cout << "Build time: " << formatDuration(stats.buildSeconds) << "\n";
     std::cout << "Manifest: " << partitionManifestPath(*options.partitionOutputDir).string() << "\n";
+}
+
+ClosureCheckpointMigrationOptions makeMigrationOptions(const CliOptions& options) {
+    ClosureCheckpointMigrationOptions migration;
+    migration.checkpointDir = *options.migrateClosureCheckpointDir;
+    if (options.migrateOutputDir.has_value()) {
+        migration.outputDir = *options.migrateOutputDir;
+    }
+    migration.expectedSoldierCount = options.repairLayer;
+    migration.bucketCount = static_cast<uint32_t>(options.partitionBuckets);
+    migration.partitionMethod = partitionMethodToString(options.partitionMethod);
+    migration.progressInterval = options.progressInterval;
+    migration.dryRun = options.repairDryRun;
+    migration.overwrite = options.partitionOverwrite;
+    if (options.progressInterval != 0) {
+        migration.progress = [](const std::string& snapshotName, uint64_t scanned) {
+            std::cout << "[migrate:" << snapshotName << "] scanned=" << formatInteger(scanned) << "\n";
+        };
+    }
+    return migration;
+}
+
+void printMigrationSnapshots(const std::vector<PartitionedClosureSnapshotInfo>& snapshots, bool dryRun) {
+    for (const PartitionedClosureSnapshotInfo& snapshot : snapshots) {
+        std::cout << "  " << snapshot.name
+                  << " active=" << (snapshot.activeCheckpointInput ? "yes" : "no")
+                  << " soldiers=" << snapshot.soldierCount
+                  << " keys=" << formatInteger(snapshot.keyCount);
+        if (!dryRun) {
+            std::cout << " buckets=" << formatInteger(snapshot.bucketCount)
+                      << " method=" << snapshot.partitionMethod
+                      << " min=" << formatInteger(snapshot.minBucketSize)
+                      << " max=" << formatInteger(snapshot.maxBucketSize)
+                      << " avg=" << std::fixed << std::setprecision(2) << snapshot.averageBucketSize
+                      << " empty=" << formatInteger(snapshot.emptyBuckets)
+                      << " size=" << formatBytes(snapshot.totalBucketFileBytes)
+                      << " build=" << formatDuration(snapshot.buildSeconds);
+        } else {
+            std::cout << " sourceSize=" << formatBytes(snapshot.totalBucketFileBytes);
+        }
+        std::cout << " path=" << snapshot.path.string() << "\n";
+    }
+}
+
+void printMigrateClosureCheckpoint(const CliOptions& options) {
+    std::cout << "Migrate closure checkpoint\n";
+    std::cout << "Input: " << options.migrateClosureCheckpointDir->string() << "\n";
+    std::cout << "Layer: " << options.repairLayer << "\n";
+    std::cout << "Dry run: " << (options.repairDryRun ? "yes" : "no") << "\n";
+    std::cout << "Buckets: " << formatInteger(options.partitionBuckets) << "\n";
+    std::cout << "Method: " << partitionMethodToString(options.partitionMethod) << "\n";
+    std::cout << "Overwrite: " << (options.partitionOverwrite ? "yes" : "no") << "\n\n";
+
+    const ClosureCheckpointMigrationResult result =
+        migrateClosureCheckpointToPartitioned(makeMigrationOptions(options));
+
+    std::cout << "Checkpoint dir: " << result.checkpointDir.string() << "\n";
+    std::cout << "Output dir: " << result.outputDir.string() << "\n";
+    std::cout << "Output existed: " << (result.outputExists ? "yes" : "no") << "\n";
+    std::cout << "Checkpoint kind: " << result.checkpointKind << "\n";
+    std::cout << "Expanded states: " << formatInteger(result.expandedStates) << "\n";
+    std::cout << "Complete: " << (result.complete ? "yes" : "no") << "\n";
+    std::cout << "Truncated: " << (result.truncated ? "yes" : "no") << "\n";
+    std::cout << "Snapshot plan:\n";
+    printMigrationSnapshots(result.snapshots, result.dryRun);
+    if (result.dryRun) {
+        if (result.outputExists && !result.overwrite) {
+            std::cout << "Overwrite required: yes\n";
+        }
+        std::cout << "Estimated source key file size: " << formatBytes(result.totalBucketFileBytes) << "\n";
+        std::cout << "Status: dry-run valid\n";
+        return;
+    }
+    std::cout << "Total bucket file size: " << formatBytes(result.totalBucketFileBytes) << "\n";
+    std::cout << "Total migration time: " << formatDuration(result.totalSeconds) << "\n";
+    std::cout << "Manifest: " << partitionedClosureCheckpointManifestPath(result.outputDir).string() << "\n";
+    std::cout << "Status: migrated\n";
 }
 
 void printValidatePartition(const std::filesystem::path& dir) {
@@ -1499,6 +1623,30 @@ void printValidateLayers(const std::filesystem::path& dir) {
             if (!std::filesystem::exists(closureCheckpointManifestPath(checkpointDir))) {
                 ++missingCheckpoints;
                 std::cout << "missing checkpoint layer-" << layer << " closure-state.json\n";
+                const auto partitionedDir = checkpointDir / "partitioned";
+                if (std::filesystem::exists(partitionedClosureCheckpointManifestPath(partitionedDir))) {
+                    const auto partitioned = inspectPartitionedClosureCheckpoint(partitionedDir, layer);
+                    std::cout << "valid partitioned checkpoint layer-" << layer
+                              << " expanded=" << formatInteger(partitioned.expandedStates)
+                              << " buckets=" << formatInteger(partitioned.bucketCount)
+                              << " method=" << partitioned.partitionMethod
+                              << " complete=" << (partitioned.complete ? "yes" : "no")
+                              << " truncated=" << (partitioned.truncated ? "yes" : "no")
+                              << "\n";
+                    for (const auto& snapshot : partitioned.snapshots) {
+                        std::cout << "  " << snapshot.name
+                                  << "=" << formatInteger(snapshot.keyCount)
+                                  << " buckets=" << formatInteger(snapshot.bucketCount)
+                                  << " method=" << snapshot.partitionMethod
+                                  << " active=" << (snapshot.activeCheckpointInput ? "yes" : "no")
+                                  << " min=" << formatInteger(snapshot.minBucketSize)
+                                  << " max=" << formatInteger(snapshot.maxBucketSize)
+                                  << " avg=" << std::fixed << std::setprecision(2) << snapshot.averageBucketSize
+                                  << " empty=" << formatInteger(snapshot.emptyBuckets)
+                                  << " size=" << formatBytes(snapshot.totalBucketFileBytes)
+                                  << "\n";
+                    }
+                }
                 continue;
             }
             const auto checkpoint = inspectClosureCheckpoint(checkpointDir, layer);
@@ -1516,6 +1664,30 @@ void printValidateLayers(const std::filesystem::path& dir) {
             if (!checkpoint.requiresTransientRuns) {
                 std::cout << "checkpoint note layer-" << layer
                           << ": stable checkpoint is valid; stale transient runs can be ignored\n";
+            }
+            const auto partitionedDir = checkpointDir / "partitioned";
+            if (std::filesystem::exists(partitionedClosureCheckpointManifestPath(partitionedDir))) {
+                const auto partitioned = inspectPartitionedClosureCheckpoint(partitionedDir, layer);
+                std::cout << "valid partitioned checkpoint layer-" << layer
+                          << " expanded=" << formatInteger(partitioned.expandedStates)
+                          << " buckets=" << formatInteger(partitioned.bucketCount)
+                          << " method=" << partitioned.partitionMethod
+                          << " complete=" << (partitioned.complete ? "yes" : "no")
+                          << " truncated=" << (partitioned.truncated ? "yes" : "no")
+                          << "\n";
+                for (const auto& snapshot : partitioned.snapshots) {
+                    std::cout << "  " << snapshot.name
+                              << "=" << formatInteger(snapshot.keyCount)
+                              << " buckets=" << formatInteger(snapshot.bucketCount)
+                              << " method=" << snapshot.partitionMethod
+                              << " active=" << (snapshot.activeCheckpointInput ? "yes" : "no")
+                              << " min=" << formatInteger(snapshot.minBucketSize)
+                              << " max=" << formatInteger(snapshot.maxBucketSize)
+                              << " avg=" << std::fixed << std::setprecision(2) << snapshot.averageBucketSize
+                              << " empty=" << formatInteger(snapshot.emptyBuckets)
+                              << " size=" << formatBytes(snapshot.totalBucketFileBytes)
+                              << "\n";
+                }
             }
         }
     }
@@ -1641,6 +1813,10 @@ int main(int argc, char** argv) {
         }
         if (options.repairClosureCheckpoint) {
             printRepairClosureCheckpoint(options);
+            return 0;
+        }
+        if (options.migrateClosureCheckpoint) {
+            printMigrateClosureCheckpoint(options);
             return 0;
         }
         if (options.inspectLayerPath.has_value()) {

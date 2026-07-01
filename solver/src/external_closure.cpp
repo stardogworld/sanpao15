@@ -6,6 +6,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <iterator>
@@ -27,6 +28,8 @@ namespace {
 
 constexpr std::array<char, 8> KeysMagic{'S', '1', '5', 'K', 'E', 'Y', '1', '\0'};
 constexpr uint32_t KeysFileVersion = 1;
+constexpr const char* PartitionedClosureCheckpointType = "partitioned-closure-checkpoint";
+constexpr uint32_t PartitionedClosureCheckpointVersion = 1;
 using Clock = std::chrono::steady_clock;
 
 struct ClosureCheckpointState {
@@ -62,6 +65,15 @@ struct ClosureCheckpointState {
     std::string pendingCandidateFile = "pending-candidates.s15keys";
     uint64_t pendingCandidateStates = 0;
     bool pendingIteration = false;
+};
+
+struct ClosureMigrationSnapshotPlan {
+    std::string name;
+    std::filesystem::path sourcePath;
+    std::filesystem::path outputPath;
+    bool activeCheckpointInput = false;
+    int soldierCount = 0;
+    uint64_t expectedKeyCount = 0;
 };
 
 void requireSoldierCountRange(int soldierCount) {
@@ -428,6 +440,111 @@ std::optional<bool> jsonBoolValue(const std::string& text, const std::string& ke
     return std::nullopt;
 }
 
+size_t skipJsonWhitespace(const std::string& text, size_t pos) {
+    while (pos < text.size() && isJsonWhitespace(text[pos])) {
+        ++pos;
+    }
+    return pos;
+}
+
+std::string parseJsonStringToken(const std::string& text, size_t& pos) {
+    pos = skipJsonWhitespace(text, pos);
+    if (pos >= text.size() || text[pos] != '"') {
+        throw std::runtime_error("expected JSON string");
+    }
+    ++pos;
+    std::string value;
+    bool escaping = false;
+    for (; pos < text.size(); ++pos) {
+        const char ch = text[pos];
+        if (escaping) {
+            switch (ch) {
+                case '"':
+                    value += '"';
+                    break;
+                case '\\':
+                    value += '\\';
+                    break;
+                case 'n':
+                    value += '\n';
+                    break;
+                case 'r':
+                    value += '\r';
+                    break;
+                case 't':
+                    value += '\t';
+                    break;
+                default:
+                    value += ch;
+                    break;
+            }
+            escaping = false;
+            continue;
+        }
+        if (ch == '\\') {
+            escaping = true;
+            continue;
+        }
+        if (ch == '"') {
+            ++pos;
+            return value;
+        }
+        value += ch;
+    }
+    throw std::runtime_error("unterminated JSON string");
+}
+
+size_t jsonObjectEnd(const std::string& text, size_t openBrace) {
+    if (openBrace >= text.size() || text[openBrace] != '{') {
+        throw std::runtime_error("expected JSON object");
+    }
+    int depth = 0;
+    bool inString = false;
+    bool escaping = false;
+    for (size_t pos = openBrace; pos < text.size(); ++pos) {
+        const char ch = text[pos];
+        if (inString) {
+            if (escaping) {
+                escaping = false;
+            } else if (ch == '\\') {
+                escaping = true;
+            } else if (ch == '"') {
+                inString = false;
+            }
+            continue;
+        }
+        if (ch == '"') {
+            inString = true;
+            continue;
+        }
+        if (ch == '{') {
+            ++depth;
+        } else if (ch == '}') {
+            --depth;
+            if (depth == 0) {
+                return pos;
+            }
+            if (depth < 0) {
+                break;
+            }
+        }
+    }
+    throw std::runtime_error("unterminated JSON object");
+}
+
+std::string requireJsonObject(const std::string& text, const std::string& key) {
+    const auto colonValue = jsonKeyColon(text, key);
+    if (!colonValue.has_value()) {
+        throw std::runtime_error("partitioned closure manifest missing object field: " + key);
+    }
+    size_t pos = skipJsonWhitespace(text, *colonValue + 1);
+    if (pos >= text.size() || text[pos] != '{') {
+        throw std::runtime_error("partitioned closure manifest field is not an object: " + key);
+    }
+    const size_t end = jsonObjectEnd(text, pos);
+    return text.substr(pos, end - pos + 1);
+}
+
 uint64_t requireJsonUint(const std::string& text, const std::string& key) {
     const auto value = jsonUintValue(text, key);
     if (!value.has_value()) {
@@ -484,6 +601,29 @@ std::filesystem::path checkpointPartitionDir(const std::filesystem::path& dir, c
     return dir / "partitioned" / name;
 }
 
+uint64_t fileSizeOrZero(const std::filesystem::path& path) {
+    std::error_code error;
+    const uintmax_t size = std::filesystem::file_size(path, error);
+    if (error || size > std::numeric_limits<uint64_t>::max()) {
+        return 0;
+    }
+    return static_cast<uint64_t>(size);
+}
+
+std::string relativePathString(const std::filesystem::path& base, const std::filesystem::path& path) {
+    std::error_code error;
+    const auto relative = std::filesystem::relative(path, base, error);
+    return error ? path.string() : relative.string();
+}
+
+std::filesystem::path manifestPathFromString(const std::filesystem::path& base, const std::string& text) {
+    std::filesystem::path path(text);
+    if (path.is_absolute()) {
+        return path;
+    }
+    return base / path;
+}
+
 PartitionMethod closurePartitionMethodFromString(const std::string& text) {
     return partitionMethodFromString(text);
 }
@@ -500,6 +640,222 @@ void writeCheckpointPartition(
     options.method = method;
     options.overwrite = true;
     (void)buildPartitionedKeySet(options);
+}
+
+std::filesystem::path resolveMigrationCheckpointDir(
+    const std::filesystem::path& root,
+    std::optional<int> expectedSoldierCount) {
+    if (expectedSoldierCount.has_value()) {
+        const std::filesystem::path layered =
+            root / "work" / ("layer-" + std::to_string(*expectedSoldierCount));
+        if (std::filesystem::exists(closureCheckpointManifestPath(layered))) {
+            return layered;
+        }
+    }
+    return root;
+}
+
+std::filesystem::path defaultMigrationOutputDir(
+    const std::filesystem::path& root,
+    const std::filesystem::path& checkpointDir,
+    std::optional<int> expectedSoldierCount) {
+    if (expectedSoldierCount.has_value()) {
+        const std::filesystem::path layered =
+            root / "work" / ("layer-" + std::to_string(*expectedSoldierCount));
+        if (layered == checkpointDir || std::filesystem::exists(closureCheckpointManifestPath(layered))) {
+            return layered / "partitioned";
+        }
+    }
+    return checkpointDir / "partitioned";
+}
+
+std::string manifestSnapshotKey(const std::string& name) {
+    return name;
+}
+
+std::vector<ClosureMigrationSnapshotPlan> makeMigrationSnapshotPlans(
+    const std::filesystem::path& checkpointDir,
+    const std::filesystem::path& outputDir,
+    const ClosureCheckpointState& state) {
+    std::vector<ClosureMigrationSnapshotPlan> plans;
+    auto add = [&](std::string name, const std::string& sourceFile, int soldierCount, uint64_t keyCount, bool active) {
+        ClosureMigrationSnapshotPlan plan;
+        plan.name = std::move(name);
+        plan.sourcePath = checkpointDir / sourceFile;
+        plan.outputPath = outputDir / plan.name;
+        plan.activeCheckpointInput = active;
+        plan.soldierCount = soldierCount;
+        plan.expectedKeyCount = keyCount;
+        plans.push_back(std::move(plan));
+    };
+
+    const bool midIteration = state.pendingIteration || state.pendingCandidateStates != 0;
+    add("visited", state.visitedFile, state.soldierCount, state.visitedStates, !midIteration);
+    add("frontier", state.frontierFile, state.soldierCount, state.frontierStates, !midIteration);
+    if (midIteration) {
+        add("remaining-frontier", state.remainingFrontierFile, state.soldierCount, state.frontierStates, true);
+        add("base-visited", state.baseVisitedFile, state.soldierCount, state.baseVisitedStates, true);
+        add("pending-candidates", state.pendingCandidateFile, state.soldierCount, state.pendingCandidateStates, true);
+    }
+    add("next-seeds", state.nextSeedFile, state.soldierCount > 0 ? state.soldierCount - 1 : 0, state.nextSeedStates, true);
+    return plans;
+}
+
+PartitionedClosureSnapshotInfo makeDryRunSnapshotInfo(const ClosureMigrationSnapshotPlan& plan) {
+    const KeySetFileInfo source = inspectKeysFile(plan.sourcePath, plan.soldierCount);
+    if (source.keyCount != plan.expectedKeyCount) {
+        throw std::runtime_error("migration source key count does not match checkpoint manifest: " + plan.sourcePath.string());
+    }
+    PartitionedClosureSnapshotInfo info;
+    info.name = plan.name;
+    info.path = plan.outputPath;
+    info.activeCheckpointInput = plan.activeCheckpointInput;
+    info.soldierCount = plan.soldierCount;
+    info.keyCount = source.keyCount;
+    info.totalBucketFileBytes = fileSizeOrZero(plan.sourcePath);
+    return info;
+}
+
+PartitionedClosureSnapshotInfo makeSnapshotInfo(
+    const std::string& name,
+    const std::filesystem::path& path,
+    bool active,
+    const PartitionInspection& inspection,
+    double buildSeconds = 0.0) {
+    PartitionedClosureSnapshotInfo info;
+    info.name = name;
+    info.path = path;
+    info.activeCheckpointInput = active;
+    info.soldierCount = inspection.soldierCount;
+    info.keyCount = inspection.totalKeys;
+    info.bucketCount = inspection.bucketCount;
+    info.partitionMethod = inspection.partitionMethod;
+    info.minBucketSize = inspection.minBucketSize;
+    info.maxBucketSize = inspection.maxBucketSize;
+    info.averageBucketSize = inspection.averageBucketSize;
+    info.emptyBuckets = inspection.emptyBuckets;
+    info.totalBucketFileBytes = inspection.totalBucketFileBytes;
+    info.buildSeconds = buildSeconds;
+    return info;
+}
+
+void writePartitionedClosureManifest(
+    const std::filesystem::path& outputDir,
+    const std::filesystem::path& sourceCheckpoint,
+    const ClosureCheckpointState& state,
+    uint32_t bucketCount,
+    PartitionMethod method,
+    const std::vector<PartitionedClosureSnapshotInfo>& snapshots) {
+    std::filesystem::create_directories(outputDir);
+    const std::filesystem::path finalPath = partitionedClosureCheckpointManifestPath(outputDir);
+    const std::filesystem::path tmpPath = finalPath.string() + ".tmp";
+    {
+        std::ofstream output(tmpPath);
+        if (!output) {
+            throw std::runtime_error("failed to open partitioned closure manifest for writing: " + tmpPath.string());
+        }
+        output << "{\n";
+        output << "  \"version\": " << PartitionedClosureCheckpointVersion << ",\n";
+        output << "  \"type\": \"" << PartitionedClosureCheckpointType << "\",\n";
+        output << "  \"rulesetHash\": " << StandardRulesetHash << ",\n";
+        output << "  \"sourceCheckpoint\": \"" << jsonEscape(relativePathString(outputDir, closureCheckpointManifestPath(sourceCheckpoint))) << "\",\n";
+        output << "  \"sourceLayerDir\": \"" << jsonEscape(relativePathString(outputDir, sourceCheckpoint)) << "\",\n";
+        output << "  \"soldierCount\": " << state.soldierCount << ",\n";
+        output << "  \"checkpointKind\": \"" << jsonEscape(state.checkpointKind) << "\",\n";
+        output << "  \"expandedStates\": " << state.expandedStates << ",\n";
+        output << "  \"complete\": " << (state.complete ? "true" : "false") << ",\n";
+        output << "  \"truncated\": " << (state.truncated ? "true" : "false") << ",\n";
+        output << "  \"requiresTransientRuns\": false,\n";
+        output << "  \"partitionMethod\": \"" << partitionMethodToString(method) << "\",\n";
+        output << "  \"bucketCount\": " << bucketCount << ",\n";
+        output << "  \"snapshots\": {\n";
+        for (size_t i = 0; i < snapshots.size(); ++i) {
+            const PartitionedClosureSnapshotInfo& snapshot = snapshots[i];
+            output << "    \"" << jsonEscape(manifestSnapshotKey(snapshot.name)) << "\": {\n";
+            output << "      \"path\": \"" << jsonEscape(relativePathString(outputDir, snapshot.path)) << "\",\n";
+            output << "      \"activeCheckpointInput\": " << (snapshot.activeCheckpointInput ? "true" : "false") << ",\n";
+            output << "      \"soldierCount\": " << snapshot.soldierCount << ",\n";
+            output << "      \"keyCount\": " << snapshot.keyCount << ",\n";
+            output << "      \"bucketCount\": " << snapshot.bucketCount << ",\n";
+            output << "      \"partitionMethod\": \"" << jsonEscape(snapshot.partitionMethod) << "\"\n";
+            output << "    }" << (i + 1 == snapshots.size() ? "\n" : ",\n");
+        }
+        output << "  }\n";
+        output << "}\n";
+    }
+
+    std::error_code error;
+    std::filesystem::rename(tmpPath, finalPath, error);
+    if (error) {
+        std::filesystem::remove(finalPath, error);
+        error.clear();
+        std::filesystem::rename(tmpPath, finalPath, error);
+    }
+    if (error) {
+        std::filesystem::remove(tmpPath);
+        throw std::runtime_error("failed to finalize partitioned closure manifest: " + finalPath.string());
+    }
+}
+
+std::vector<PartitionedClosureSnapshotInfo> readPartitionedClosureSnapshots(
+    const std::filesystem::path& outputDir,
+    const std::string& manifestText,
+    uint32_t expectedBucketCount,
+    const std::string& expectedMethod) {
+    const std::string snapshotsObject = requireJsonObject(manifestText, "snapshots");
+    std::vector<PartitionedClosureSnapshotInfo> snapshots;
+    size_t pos = 1;
+    while (pos < snapshotsObject.size()) {
+        pos = skipJsonWhitespace(snapshotsObject, pos);
+        if (pos >= snapshotsObject.size() || snapshotsObject[pos] == '}') {
+            break;
+        }
+        if (snapshotsObject[pos] == ',') {
+            ++pos;
+            continue;
+        }
+        const std::string name = parseJsonStringToken(snapshotsObject, pos);
+        pos = skipJsonWhitespace(snapshotsObject, pos);
+        if (pos >= snapshotsObject.size() || snapshotsObject[pos] != ':') {
+            throw std::runtime_error("partitioned closure snapshot entry is missing ':'");
+        }
+        ++pos;
+        pos = skipJsonWhitespace(snapshotsObject, pos);
+        if (pos >= snapshotsObject.size() || snapshotsObject[pos] != '{') {
+            throw std::runtime_error("partitioned closure snapshot entry is not an object");
+        }
+        const size_t objectEnd = jsonObjectEnd(snapshotsObject, pos);
+        const std::string snapshotObject = snapshotsObject.substr(pos, objectEnd - pos + 1);
+        pos = objectEnd + 1;
+
+        const std::filesystem::path snapshotPath =
+            manifestPathFromString(outputDir, requireJsonString(snapshotObject, "path"));
+        const uint64_t manifestKeyCount = requireJsonUint(snapshotObject, "keyCount");
+        const uint32_t snapshotBucketCount =
+            static_cast<uint32_t>(requireJsonUint(snapshotObject, "bucketCount"));
+        const int snapshotSoldiers = static_cast<int>(requireJsonUint(snapshotObject, "soldierCount"));
+        const bool active = requireJsonBool(snapshotObject, "activeCheckpointInput");
+        const std::string snapshotMethod = requireJsonString(snapshotObject, "partitionMethod");
+        if (snapshotBucketCount != expectedBucketCount) {
+            throw std::runtime_error("partitioned closure snapshot bucket count does not match manifest");
+        }
+        if (snapshotMethod != expectedMethod) {
+            throw std::runtime_error("partitioned closure snapshot method does not match manifest");
+        }
+        const PartitionValidationResult validation = validatePartitionedKeySet(snapshotPath);
+        if (!validation.valid ||
+            validation.totalKeys != manifestKeyCount ||
+            validation.bucketCount != snapshotBucketCount ||
+            validation.soldierCount != snapshotSoldiers) {
+            throw std::runtime_error("partitioned closure snapshot does not match manifest: " + name);
+        }
+        const PartitionInspection inspection = inspectPartitionedKeySet(snapshotPath);
+        snapshots.push_back(makeSnapshotInfo(name, snapshotPath, active, inspection));
+    }
+    if (snapshots.empty()) {
+        throw std::runtime_error("partitioned closure manifest contains no snapshots");
+    }
+    return snapshots;
 }
 
 std::string truncationReasonString(const ExternalClosureStats& stats) {
@@ -1048,6 +1404,10 @@ std::filesystem::path closureCheckpointManifestPath(const std::filesystem::path&
     return checkpointDir / "closure-state.json";
 }
 
+std::filesystem::path partitionedClosureCheckpointManifestPath(const std::filesystem::path& outputDir) {
+    return outputDir / "partitioned-closure-state.json";
+}
+
 ExternalClosureCheckpointInfo inspectClosureCheckpoint(
     const std::filesystem::path& checkpointDir,
     std::optional<int> expectedSoldierCount) {
@@ -1069,6 +1429,57 @@ ExternalClosureCheckpointInfo inspectClosureCheckpoint(
     info.complete = state.complete;
     info.truncated = state.truncated;
     info.stableCheckpoint = !state.requiresTransientRuns;
+    return info;
+}
+
+PartitionedClosureCheckpointInfo inspectPartitionedClosureCheckpoint(
+    const std::filesystem::path& outputDir,
+    std::optional<int> expectedSoldierCount) {
+    const std::string text = readTextFile(partitionedClosureCheckpointManifestPath(outputDir));
+    const std::string type = requireJsonString(text, "type");
+    if (type != PartitionedClosureCheckpointType) {
+        throw std::runtime_error("partitioned closure manifest has unsupported type");
+    }
+    const uint64_t version = requireJsonUint(text, "version");
+    if (version != PartitionedClosureCheckpointVersion) {
+        throw std::runtime_error("partitioned closure manifest has unsupported version");
+    }
+    const uint64_t rulesetHash = requireJsonUint(text, "rulesetHash");
+    if (rulesetHash != StandardRulesetHash) {
+        throw std::runtime_error("partitioned closure manifest ruleset hash does not match current rules");
+    }
+
+    PartitionedClosureCheckpointInfo info;
+    info.outputDir = outputDir;
+    info.sourceCheckpoint = manifestPathFromString(outputDir, requireJsonString(text, "sourceCheckpoint"));
+    info.sourceLayerDir = manifestPathFromString(outputDir, requireJsonString(text, "sourceLayerDir"));
+    info.soldierCount = static_cast<int>(requireJsonUint(text, "soldierCount"));
+    requireSoldierCountRange(info.soldierCount);
+    if (expectedSoldierCount.has_value() && info.soldierCount != *expectedSoldierCount) {
+        throw std::runtime_error("partitioned closure checkpoint soldier count does not match expected layer");
+    }
+    info.checkpointKind = requireJsonString(text, "checkpointKind");
+    if (info.checkpointKind != "iteration-boundary" && info.checkpointKind != "mid-iteration") {
+        throw std::runtime_error("partitioned closure checkpointKind is unsupported");
+    }
+    info.expandedStates = requireJsonUint(text, "expandedStates");
+    info.complete = requireJsonBool(text, "complete");
+    info.truncated = requireJsonBool(text, "truncated");
+    info.requiresTransientRuns = requireJsonBool(text, "requiresTransientRuns");
+    if (info.requiresTransientRuns) {
+        throw std::runtime_error("partitioned closure checkpoint must not require transient runs");
+    }
+    info.partitionMethod = requireJsonString(text, "partitionMethod");
+    (void)partitionMethodFromString(info.partitionMethod);
+    info.bucketCount = static_cast<uint32_t>(requireJsonUint(text, "bucketCount"));
+    if (info.bucketCount == 0) {
+        throw std::runtime_error("partitioned closure checkpoint bucket count must be greater than zero");
+    }
+    info.snapshots = readPartitionedClosureSnapshots(outputDir, text, info.bucketCount, info.partitionMethod);
+
+    if (std::filesystem::exists(info.sourceCheckpoint)) {
+        (void)inspectClosureCheckpoint(info.sourceCheckpoint.parent_path(), info.soldierCount);
+    }
     return info;
 }
 
@@ -1124,6 +1535,107 @@ ClosureCheckpointRepairResult repairClosureCheckpoint(
     if (!dryRun) {
         writeCheckpointManifest(checkpointDir, state);
     }
+    return result;
+}
+
+ClosureCheckpointMigrationResult migrateClosureCheckpointToPartitioned(
+    const ClosureCheckpointMigrationOptions& options) {
+    if (options.checkpointDir.empty()) {
+        throw std::invalid_argument("migration checkpoint dir is required");
+    }
+    if (options.bucketCount == 0) {
+        throw std::invalid_argument("migration partition bucket count must be greater than zero");
+    }
+    const PartitionMethod method = partitionMethodFromString(options.partitionMethod);
+    const auto totalStarted = Clock::now();
+
+    const std::filesystem::path checkpointDir =
+        resolveMigrationCheckpointDir(options.checkpointDir, options.expectedSoldierCount);
+    const ClosureCheckpointState state = readCheckpointManifest(checkpointDir, options.expectedSoldierCount);
+    validateCheckpointFiles(checkpointDir, state);
+    const std::filesystem::path outputDir = options.outputDir.empty()
+        ? defaultMigrationOutputDir(options.checkpointDir, checkpointDir, options.expectedSoldierCount)
+        : options.outputDir;
+
+    ClosureCheckpointMigrationResult result;
+    result.checkpointDir = checkpointDir;
+    result.outputDir = outputDir;
+    result.dryRun = options.dryRun;
+    result.outputExists = std::filesystem::exists(outputDir);
+    result.overwrite = options.overwrite;
+    result.soldierCount = state.soldierCount;
+    result.checkpointKind = state.checkpointKind;
+    result.expandedStates = state.expandedStates;
+    result.complete = state.complete;
+    result.truncated = state.truncated;
+    result.bucketCount = options.bucketCount;
+    result.partitionMethod = partitionMethodToString(method);
+
+    const std::vector<ClosureMigrationSnapshotPlan> plans =
+        makeMigrationSnapshotPlans(checkpointDir, outputDir, state);
+    for (const ClosureMigrationSnapshotPlan& plan : plans) {
+        PartitionedClosureSnapshotInfo sourceInfo = makeDryRunSnapshotInfo(plan);
+        sourceInfo.bucketCount = options.bucketCount;
+        sourceInfo.partitionMethod = partitionMethodToString(method);
+        result.snapshots.push_back(sourceInfo);
+        result.totalBucketFileBytes += sourceInfo.totalBucketFileBytes;
+    }
+
+    if (options.dryRun) {
+        result.totalSeconds = std::chrono::duration<double>(Clock::now() - totalStarted).count();
+        return result;
+    }
+    if (std::filesystem::exists(outputDir) && !options.overwrite) {
+        throw std::runtime_error("partitioned checkpoint output dir already exists; pass --overwrite to replace it: " + outputDir.string());
+    }
+    if (options.overwrite) {
+        std::error_code error;
+        std::filesystem::remove_all(outputDir, error);
+        if (error) {
+            throw std::runtime_error("failed to remove existing migration output dir: " + outputDir.string());
+        }
+    }
+    std::filesystem::create_directories(outputDir);
+
+    result.snapshots.clear();
+    result.totalBucketFileBytes = 0;
+    for (const ClosureMigrationSnapshotPlan& plan : plans) {
+        PartitionedKeySetOptions partitionOptions;
+        partitionOptions.inputFile = plan.sourcePath;
+        partitionOptions.outputDir = plan.outputPath;
+        partitionOptions.bucketCount = options.bucketCount;
+        partitionOptions.method = method;
+        partitionOptions.progressInterval = options.progressInterval;
+        partitionOptions.overwrite = true;
+        if (options.progress) {
+            partitionOptions.progress = [&](uint64_t scanned) {
+                options.progress(plan.name, scanned);
+            };
+        }
+        const PartitionedKeySetStats stats = buildPartitionedKeySet(partitionOptions);
+        if (stats.outputKeys != plan.expectedKeyCount || stats.soldierCount != plan.soldierCount) {
+            throw std::runtime_error("migration partition result does not match source checkpoint manifest: " + plan.name);
+        }
+        const PartitionValidationResult validation = validatePartitionedKeySet(plan.outputPath);
+        if (!validation.valid ||
+            validation.totalKeys != plan.expectedKeyCount ||
+            validation.soldierCount != plan.soldierCount ||
+            validation.bucketCount != options.bucketCount) {
+            throw std::runtime_error("migration partition validation failed: " + plan.name);
+        }
+        const PartitionInspection inspection = inspectPartitionedKeySet(plan.outputPath);
+        if (inspection.partitionMethod != partitionMethodToString(method)) {
+            throw std::runtime_error("migration partition method does not match requested method: " + plan.name);
+        }
+        PartitionedClosureSnapshotInfo snapshot =
+            makeSnapshotInfo(plan.name, plan.outputPath, plan.activeCheckpointInput, inspection, stats.buildSeconds);
+        result.totalBucketFileBytes += snapshot.totalBucketFileBytes;
+        result.snapshots.push_back(std::move(snapshot));
+    }
+
+    writePartitionedClosureManifest(outputDir, checkpointDir, state, options.bucketCount, method, result.snapshots);
+    (void)inspectPartitionedClosureCheckpoint(outputDir, state.soldierCount);
+    result.totalSeconds = std::chrono::duration<double>(Clock::now() - totalStarted).count();
     return result;
 }
 
