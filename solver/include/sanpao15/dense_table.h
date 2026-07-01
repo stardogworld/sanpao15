@@ -38,6 +38,7 @@ public:
     uint64_t size() const;
     uint64_t bytes() const;
     const std::vector<uint8_t>& payload() const;
+    std::vector<uint8_t>& mutablePayload();
 
 private:
     uint64_t stateCount_ = 0;
@@ -89,5 +90,7 @@ void createEmptyDenseResultFile(
     const std::filesystem::path& path,
     DenseResultEncoding encoding,
     uint64_t rulesetHash);
+
+void resetOutcomeTable(PackedOutcomeTable2Bit& table, Outcome value = Outcome::Unknown);
 
 }  // namespace sanpao15

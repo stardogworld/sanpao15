@@ -111,6 +111,26 @@ SANPAO15_TEST(streamingAndGraphLowKCountsMatchForMaterialLayers) {
     }
 }
 
+SANPAO15_TEST(lowKSolverResetsPrefilledOutputTable) {
+    PackedOutcomeTable2Bit table(denseStateCount(0), Outcome::SoldierWin);
+    const DenseLayerSolveResult result = solveDenseLayerOutcome(0, nullptr, table);
+
+    SANPAO15_REQUIRE(result.cannonWin == denseStateCount(0));
+    SANPAO15_REQUIRE(result.soldierWin == 0);
+    SANPAO15_REQUIRE(table.get(0) == Outcome::CannonWin);
+    SANPAO15_REQUIRE(table.get(table.size() - 1) == Outcome::CannonWin);
+}
+
+SANPAO15_TEST(streamingLowKSolverResetsPrefilledOutputTable) {
+    PackedOutcomeTable2Bit table(denseStateCount(0), Outcome::SoldierWin);
+    const DenseLayerSolveResult result = solveDenseLayerOutcomeStreaming(0, nullptr, table);
+
+    SANPAO15_REQUIRE(result.cannonWin == denseStateCount(0));
+    SANPAO15_REQUIRE(result.soldierWin == 0);
+    SANPAO15_REQUIRE(table.get(0) == Outcome::CannonWin);
+    SANPAO15_REQUIRE(table.get(table.size() - 1) == Outcome::CannonWin);
+}
+
 SANPAO15_TEST(lowKTerminalPriorityKeepsK0CannonWinDespiteLegalMoves) {
     const Position pos = parsePositionNotation("CCC../...../...../...../..... c");
     const uint64_t index = denseIndex(pos);

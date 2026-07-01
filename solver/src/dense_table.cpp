@@ -163,6 +163,28 @@ void rejectTrailingBytes(std::istream& input) {
     }
 }
 
+void validatePayloadBytes(const DenseResultFileInfo& info, const std::vector<uint8_t>& payload) {
+    if (payload.size() != info.payloadBytes) {
+        throw std::runtime_error(".s15res payload size does not match header");
+    }
+
+    if (info.encoding == DenseResultEncoding::Byte) {
+        for (uint8_t value : payload) {
+            (void)decodeOutcome(value);
+        }
+        return;
+    }
+
+    if (info.encoding == DenseResultEncoding::Packed2Bit && info.stateCount % 4u != 0 && !payload.empty()) {
+        const uint64_t usedSlots = info.stateCount % 4u;
+        const int usedBits = static_cast<int>(usedSlots * 2u);
+        const uint8_t unusedMask = static_cast<uint8_t>(0xffu << usedBits);
+        if ((payload.back() & unusedMask) != 0) {
+            throw std::runtime_error(".s15res packed payload has non-zero unused bits");
+        }
+    }
+}
+
 }  // namespace
 
 uint8_t encodeOutcome(Outcome outcome) {
@@ -268,6 +290,10 @@ uint64_t PackedOutcomeTable2Bit::bytes() const {
 }
 
 const std::vector<uint8_t>& PackedOutcomeTable2Bit::payload() const {
+    return packed_;
+}
+
+std::vector<uint8_t>& PackedOutcomeTable2Bit::mutablePayload() {
     return packed_;
 }
 
@@ -396,8 +422,21 @@ DenseResultFileInfo validateDenseResultFile(
     const std::filesystem::path& path,
     uint64_t expectedRulesetHash,
     int expectedSoldierCount) {
-    const DenseResultFileInfo info = inspectDenseResultFile(path);
+    std::ifstream input(path, std::ios::binary | std::ios::ate);
+    if (!input) {
+        throw std::runtime_error("failed to open .s15res for validation: " + path.string());
+    }
+    const std::streamoff fileSize = input.tellg();
+    input.seekg(0);
+    const DenseResultFileInfo info = readDenseResultHeader(input);
+    const uint64_t headerBytes = 8u + 4u + 8u + 4u + 8u + 4u + 8u;
+    if (fileSize < 0 || static_cast<uint64_t>(fileSize) != headerBytes + info.payloadBytes) {
+        throw std::runtime_error(".s15res file size does not match header");
+    }
     validateHeaderExpectations(info, expectedRulesetHash, expectedSoldierCount);
+    const std::vector<uint8_t> payload = readPayload(input, info.payloadBytes);
+    rejectTrailingBytes(input);
+    validatePayloadBytes(info, payload);
     return info;
 }
 
@@ -431,6 +470,16 @@ void createEmptyDenseResultFile(
             throw std::runtime_error("failed to write empty .s15res payload");
         }
         remaining -= chunk;
+    }
+}
+
+void resetOutcomeTable(PackedOutcomeTable2Bit& table, Outcome value) {
+    std::vector<uint8_t>& payload = table.mutablePayload();
+    std::fill(payload.begin(), payload.end(), 0);
+    if (value != Outcome::Unknown) {
+        for (uint64_t index = 0; index < table.size(); ++index) {
+            table.set(index, value);
+        }
     }
 }
 

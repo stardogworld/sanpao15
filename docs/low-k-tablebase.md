@@ -75,9 +75,14 @@ the intended storage shape for larger full layers.
 
 The streaming solver keeps only the output table, a remaining-successor counter
 array, and the resolved queue. During propagation it regenerates same-layer
-predecessors on demand with `generateDensePredecessors(k, childIndex)`.
+predecessors on demand with the fast predecessor path. The checked predecessor
+path remains available for CLI inspection and tests.
 Capture-to-lower-layer successors are handled during initialization by looking
 up the lower layer table.
+
+Both solver entry points reset their output table to `Unknown` before solving,
+so reusing a previously-filled `PackedOutcomeTable2Bit` cannot contaminate
+retrograde propagation.
 
 ## CLI
 
@@ -121,7 +126,8 @@ Verify headers and sampled outcome consistency:
 ```
 
 `--sample 0` verifies every state. For `k=3`, sampled verification is usually
-enough for a smoke run.
+enough for a smoke run. Full verification streams indexes directly instead of
+allocating a full `vector<uint64_t>` sample list.
 
 ## Observed Prototype Scale
 

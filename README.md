@@ -80,6 +80,10 @@ The solver stores `outcome`, `distance`, and `bestMove` for each table entry. Fo
 
 The default graph backend is CSR (`--graph csr`). The older `vector<vector<int>>` backend remains available with `--graph vector` for regression comparisons.
 
+`.s15tbl` loading is tied to the current ruleset hash and rejects incompatible
+tables, trailing bytes, duplicate keys, unknown flags, and invalid stored best
+moves. `Unknown` remains distinct from `Draw`.
+
 Scale statistics distinguish three edge counts:
 
 - `generatedEdges`: legal successors generated from expanded states.
@@ -206,6 +210,8 @@ target dense ids, with same-layer and capture-to-lower-layer classification; see
 `docs/dense-successor.md`.
 Dense same-layer predecessor generation supports on-the-fly retrograde
 propagation without storing a `vector<vector<uint32_t>>` predecessor graph.
+The CLI/test path uses checked predecessors; streaming propagation uses the
+fast predecessor path.
 The low-k full tablebase prototype solves complete dense layers `k=0..3` into
 outcome-only `.s15res` files and verifies sampled successor consistency; see
 `docs/low-k-tablebase.md`.
@@ -213,6 +219,7 @@ Under the current ruleset all `k=0..3` dense states are immediate
 `CannonWin`; the first layer where SoldierWin or Draw can appear is `k=4`.
 The streaming low-k solver can solve `k=0..3` by default and allows an explicit
 `k=4` benchmark with `--allow-k4`; see `docs/scalable-tablebase-solver.md`.
+`.s15res --validate-res` scans payload bytes instead of checking only headers.
 
 Layer-local edge probe:
 

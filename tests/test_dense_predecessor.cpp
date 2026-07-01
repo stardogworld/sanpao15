@@ -1,6 +1,7 @@
 #include "test_common.h"
 
 #include <algorithm>
+#include <tuple>
 #include <vector>
 
 #include "sanpao15/bitboard.h"
@@ -27,6 +28,34 @@ std::vector<uint64_t> sampleIndexes(int soldierCount) {
     std::sort(indexes.begin(), indexes.end());
     indexes.erase(std::unique(indexes.begin(), indexes.end()), indexes.end());
     return indexes;
+}
+
+std::vector<uint64_t> largerSampleIndexes(int soldierCount) {
+    const uint64_t count = denseStateCount(soldierCount);
+    std::vector<uint64_t> indexes{0, count / 3, count / 2, count - 1};
+    uint64_t rng = 0x4641535450524544ull ^ static_cast<uint64_t>(soldierCount);
+    for (int sample = 0; sample < 64; ++sample) {
+        indexes.push_back(nextRandom(rng) % count);
+    }
+    std::sort(indexes.begin(), indexes.end());
+    indexes.erase(std::unique(indexes.begin(), indexes.end()), indexes.end());
+    return indexes;
+}
+
+std::vector<std::tuple<uint64_t, int, int, bool, int>> predecessorSignature(std::vector<DensePredecessor> predecessors) {
+    std::vector<std::tuple<uint64_t, int, int, bool, int>> signature;
+    signature.reserve(predecessors.size());
+    for (const DensePredecessor& predecessor : predecessors) {
+        signature.emplace_back(
+            predecessor.index,
+            predecessor.move.from,
+            predecessor.move.to,
+            predecessor.move.capture,
+            predecessor.move.capturedSquare);
+    }
+    std::sort(signature.begin(), signature.end());
+    signature.erase(std::unique(signature.begin(), signature.end()), signature.end());
+    return signature;
 }
 
 bool successorContainsSameLayerTarget(int soldierCount, uint64_t parentIndex, uint64_t childIndex, Move move) {
@@ -87,6 +116,22 @@ SANPAO15_TEST(denseSuccessorPredecessorSymmetryForSameLayerMoves) {
                     successor.toIndex,
                     parentIndex));
             }
+        }
+    }
+}
+
+SANPAO15_TEST(densePredecessorFastMatchesCheckedForSampledLayers) {
+    for (int soldierCount : {0, 1, 2, 3, 4, 15}) {
+        for (uint64_t childIndex : largerSampleIndexes(soldierCount)) {
+            const auto checked = predecessorSignature(generateDensePredecessors(
+                soldierCount,
+                childIndex,
+                DensePredecessorValidation::Checked));
+            const auto fast = predecessorSignature(generateDensePredecessors(
+                soldierCount,
+                childIndex,
+                DensePredecessorValidation::None));
+            SANPAO15_REQUIRE(fast == checked);
         }
     }
 }

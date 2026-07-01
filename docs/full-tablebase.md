@@ -141,6 +141,11 @@ Useful CLI commands:
 
 Do not commit generated `.s15res` files.
 
+`inspect-res` reads only the header and file size. `validate-res` additionally
+scans the payload and rejects invalid byte-encoded outcomes. Packed 2-bit
+layers naturally encode only values `0..3`; validation also checks packed
+unused bits when a file shape can contain them.
+
 ## Dense Successor Indexing
 
 Dense successor indexing is available for the full tablebase route. Given a
@@ -193,6 +198,14 @@ retrograde propagation no longer needs a resident
 ```powershell
 .\build\sanpao15_cli.exe --solve-lowk-streaming 3 --out-dir build\stream-min4 --encoding 2bit
 .\build\sanpao15_cli.exe --dense-predecessors 4 0
+```
+
+The predecessor API keeps a checked mode for CLI/tests and a fast mode for
+streaming propagation:
+
+```cpp
+generateDensePredecessors(k, childIndex, DensePredecessorValidation::Checked)
+generateDensePredecessors(k, childIndex, DensePredecessorValidation::None)
 ```
 
 `k=4` is available only as an explicit benchmark:

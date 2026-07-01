@@ -1290,6 +1290,9 @@ void printLowKLayerResult(const LowKTablebaseLayerResult& layer) {
     std::cout << "Max successors: " << formatInteger(solve.maxSuccessors) << "\n";
     std::cout << "Max remaining: " << formatInteger(solve.maxRemaining) << "\n";
     std::cout << "Queue peak: " << formatInteger(solve.queuePeak) << "\n";
+    std::cout << "Predecessor calls: " << formatInteger(solve.predecessorCalls) << "\n";
+    std::cout << "Generated predecessors: " << formatInteger(solve.generatedPredecessors) << "\n";
+    std::cout << "Max predecessors: " << formatInteger(solve.maxPredecessors) << "\n";
     std::cout << "Estimated memory: " << formatInteger(solve.estimatedMemoryBytes)
               << " (" << formatBytes(solve.estimatedMemoryBytes) << ")\n";
     std::cout << "Initialization time: " << formatDuration(solve.initializationSeconds) << "\n";

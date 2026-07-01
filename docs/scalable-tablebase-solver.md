@@ -40,7 +40,17 @@ resolved queue
 ```
 
 When a child is resolved, same-layer predecessors are regenerated directly from
-the child position with `generateDensePredecessors(k, childIndex)`.
+the child position. The predecessor generator has two modes:
+
+```cpp
+DensePredecessorValidation::Checked
+DensePredecessorValidation::None
+```
+
+The default CLI/test path keeps checked validation and verifies each parent by
+calling the successor generator. The streaming solver uses the fast `None`
+path during propagation, which only performs local legality checks and avoids
+the expensive successor roundtrip.
 
 Capture-to-lower-layer edges are not regenerated during propagation. They are
 handled during initialization by looking up the already-solved lower layer.
@@ -91,7 +101,21 @@ estimatedMemoryBytes
 initializationSeconds
 propagationSeconds
 finalizeSeconds
+predecessorCalls
+generatedPredecessors
+maxPredecessors
 ```
+
+## Format Hardening
+
+`.s15tbl` and `.s15res` files carry the active ruleset hash. Default `.s15tbl`
+loading rejects incompatible hashes, and table analysis checks the hash again
+before using an in-memory `ResultTable`.
+
+`.s15tbl` loading also rejects trailing bytes, duplicate keys, unknown flags,
+and invalid best-move square fields. `.s15res --validate-res` scans payload
+bytes: byte encoding must contain only valid outcome values, and packed 2-bit
+payloads are checked for valid size and unused-bit cleanliness when applicable.
 
 ## Next Direction
 

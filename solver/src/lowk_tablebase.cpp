@@ -196,26 +196,6 @@ PackedOutcomeTable2Bit loadDenseResultAnyEncoding(
     return packed;
 }
 
-std::vector<uint64_t> sampleIndexes(uint64_t stateCount, uint64_t sampleLimit) {
-    if (sampleLimit == 0 || sampleLimit >= stateCount) {
-        std::vector<uint64_t> indexes;
-        indexes.reserve(static_cast<size_t>(stateCount));
-        for (uint64_t index = 0; index < stateCount; ++index) {
-            indexes.push_back(index);
-        }
-        return indexes;
-    }
-
-    std::vector<uint64_t> indexes;
-    indexes.reserve(static_cast<size_t>(sampleLimit));
-    uint64_t rng = 0x6C6F776B74626C75ull ^ stateCount;
-    for (uint64_t i = 0; i < sampleLimit; ++i) {
-        rng = rng * 6364136223846793005ull + 1442695040888963407ull;
-        indexes.push_back(rng % stateCount);
-    }
-    return indexes;
-}
-
 Outcome successorOutcome(
     const DenseSuccessor& successor,
     const PackedOutcomeTable2Bit& sameLayer,
@@ -291,6 +271,7 @@ DenseLayerSolveResult solveDenseLayerOutcome(
     requireLayer(soldierCount);
     const uint64_t stateCount = denseStateCount(soldierCount);
     validateLayerSolveInputs(soldierCount, lowerLayer, output);
+    resetOutcomeTable(output);
     if (stateCount > static_cast<uint64_t>(std::numeric_limits<uint32_t>::max())) {
         throw std::overflow_error("low-k prototype predecessor graph requires 32-bit state ids");
     }
@@ -429,6 +410,7 @@ DenseLayerSolveResult solveDenseLayerOutcomeStreaming(
     PackedOutcomeTable2Bit& output) {
     requireStreamingLayer(soldierCount);
     validateLayerSolveInputs(soldierCount, lowerLayer, output);
+    resetOutcomeTable(output);
     const uint64_t stateCount = denseStateCount(soldierCount);
     if (stateCount > static_cast<uint64_t>(std::numeric_limits<size_t>::max())) {
         throw std::overflow_error("streaming low-k prototype requires size_t-addressable layers");
@@ -518,7 +500,15 @@ DenseLayerSolveResult solveDenseLayerOutcomeStreaming(
             continue;
         }
 
-        for (const DensePredecessor& predecessor : generateDensePredecessors(soldierCount, childIndex)) {
+        const std::vector<DensePredecessor> predecessors = generateDensePredecessors(
+            soldierCount,
+            childIndex,
+            DensePredecessorValidation::None);
+        ++result.predecessorCalls;
+        result.generatedPredecessors += static_cast<uint64_t>(predecessors.size());
+        result.maxPredecessors = std::max<uint64_t>(result.maxPredecessors, predecessors.size());
+
+        for (const DensePredecessor& predecessor : predecessors) {
             const uint64_t parentIndex = predecessor.index;
             if (output.get(parentIndex) != Outcome::Unknown) {
                 continue;
@@ -654,10 +644,18 @@ LowKTablebaseVerifyResult verifyLowKTablebase(
         }
 
         const PackedOutcomeTable2Bit* lower = k == 0 ? nullptr : &tables[static_cast<size_t>(k - 1)];
-        const std::vector<uint64_t> indexes = sampleIndexes(table.size(), sampleLimit);
-        layer.sampledStates = static_cast<uint64_t>(indexes.size());
-        for (uint64_t index : indexes) {
-            verifySolvedState(k, index, table, lower);
+        if (sampleLimit == 0 || sampleLimit >= table.size()) {
+            layer.sampledStates = table.size();
+            for (uint64_t index = 0; index < table.size(); ++index) {
+                verifySolvedState(k, index, table, lower);
+            }
+        } else {
+            layer.sampledStates = sampleLimit;
+            uint64_t rng = 0x6C6F776B74626C75ull ^ table.size();
+            for (uint64_t i = 0; i < sampleLimit; ++i) {
+                rng = rng * 6364136223846793005ull + 1442695040888963407ull;
+                verifySolvedState(k, rng % table.size(), table, lower);
+            }
         }
 
         result.layers.push_back(layer);

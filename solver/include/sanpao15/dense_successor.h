@@ -27,6 +27,11 @@ struct DensePredecessor {
     Move move;
 };
 
+enum class DensePredecessorValidation {
+    None,
+    Checked,
+};
+
 struct DenseTerminalInfo {
     bool terminal = false;
     Outcome outcome = Outcome::Unknown;
@@ -44,6 +49,10 @@ struct DenseLayerMoveStats {
 
 std::vector<DenseSuccessor> generateDenseSuccessors(int soldierCount, uint64_t denseIndex);
 std::vector<DensePredecessor> generateDensePredecessors(int soldierCount, uint64_t childIndex);
+std::vector<DensePredecessor> generateDensePredecessors(
+    int soldierCount,
+    uint64_t childIndex,
+    DensePredecessorValidation validation);
 DenseTerminalInfo terminalOutcomeForDenseState(int soldierCount, uint64_t denseIndex);
 DenseLayerMoveStats analyzeDenseLayerMoves(int soldierCount, uint64_t sampleLimit = 0);
 

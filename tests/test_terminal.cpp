@@ -25,6 +25,18 @@ SANPAO15_TEST(materialRuleForcesCannonWinBelowFourSoldiers) {
     SANPAO15_REQUIRE(!forcedOutcomeByMaterialRule(4).has_value());
 }
 
+SANPAO15_TEST(materialRuleRejectsInvalidSoldierCounts) {
+    sanpao15::test::requireThrows([] {
+        (void)forcedOutcomeByMaterialRule(-1);
+    }, "negative soldier count should be rejected");
+    sanpao15::test::requireThrows([] {
+        (void)forcedOutcomeByMaterialRule(16);
+    }, "too-large soldier count should be rejected");
+    sanpao15::test::requireThrows([] {
+        (void)soldiersAreBelowSurvivalLimit(-1);
+    }, "negative soldier count should be rejected by helper");
+}
+
 SANPAO15_TEST(materialRuleTakesPriorityOverCannonStuck) {
     Position pos;
     pos.cannons = setBit(setBit(0, 0), 1);

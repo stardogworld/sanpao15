@@ -107,5 +107,7 @@ void saveResultTable(
     uint64_t progressInterval = 0,
     const ProgressCallback& progress = {});
 ResultTable loadResultTable(const std::filesystem::path& path);
+ResultTable loadResultTable(const std::filesystem::path& path, uint64_t expectedRulesetHash);
+ResultTable loadResultTableUnchecked(const std::filesystem::path& path);
 
 }  // namespace sanpao15

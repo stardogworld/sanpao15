@@ -1,6 +1,7 @@
 #include "sanpao15/dense_successor.h"
 
 #include <algorithm>
+#include <tuple>
 #include <stdexcept>
 
 #include "sanpao15/bitboard.h"
@@ -47,9 +48,12 @@ void addPredecessorIfValid(
     std::vector<DensePredecessor>& predecessors,
     int soldierCount,
     uint64_t childIndex,
-    const Position& parent) {
+    Side childSide,
+    const Position& parent,
+    Move move,
+    DensePredecessorValidation validation) {
     if (popcount25(parent.cannons) != 3 || popcount25(parent.soldiers) != soldierCount ||
-        (parent.cannons & parent.soldiers) != 0) {
+        (parent.cannons & parent.soldiers) != 0 || parent.side != opposite(childSide)) {
         return;
     }
 
@@ -58,15 +62,30 @@ void addPredecessorIfValid(
         throw std::logic_error("generated dense predecessor index is outside source layer");
     }
 
-    Move move;
-    if (!hasSameLayerSuccessorTo(soldierCount, parentIndex, childIndex, &move)) {
-        return;
+    if (validation == DensePredecessorValidation::Checked) {
+        Move checkedMove;
+        if (!hasSameLayerSuccessorTo(soldierCount, parentIndex, childIndex, &checkedMove)) {
+            return;
+        }
+        move = checkedMove;
     }
     predecessors.push_back(DensePredecessor{
         soldierCount,
         parentIndex,
         move,
     });
+}
+
+void deduplicatePredecessors(std::vector<DensePredecessor>& predecessors) {
+    std::sort(predecessors.begin(), predecessors.end(), [](const DensePredecessor& lhs, const DensePredecessor& rhs) {
+        return std::tie(lhs.index, lhs.move.from, lhs.move.to, lhs.move.capture, lhs.move.capturedSquare) <
+               std::tie(rhs.index, rhs.move.from, rhs.move.to, rhs.move.capture, rhs.move.capturedSquare);
+    });
+    predecessors.erase(
+        std::unique(predecessors.begin(), predecessors.end(), [](const DensePredecessor& lhs, const DensePredecessor& rhs) {
+            return lhs.index == rhs.index && lhs.move == rhs.move;
+        }),
+        predecessors.end());
 }
 
 }  // namespace
@@ -101,7 +120,10 @@ std::vector<DenseSuccessor> generateDenseSuccessors(int soldierCount, uint64_t d
     return successors;
 }
 
-std::vector<DensePredecessor> generateDensePredecessors(int soldierCount, uint64_t childIndex) {
+std::vector<DensePredecessor> generateDensePredecessors(
+    int soldierCount,
+    uint64_t childIndex,
+    DensePredecessorValidation validation) {
     requireSoldierCount(soldierCount);
     if (childIndex >= denseStateCount(soldierCount)) {
         throw std::out_of_range("dense predecessor child index is outside the layer state count");
@@ -121,9 +143,17 @@ std::vector<DensePredecessor> generateDensePredecessors(int soldierCount, uint64
                 parent.side = Side::Cannon;
                 parent.cannons = clearBit(parent.cannons, to);
                 parent.cannons = setBit(parent.cannons, from);
-                addPredecessorIfValid(predecessors, soldierCount, childIndex, parent);
+                addPredecessorIfValid(
+                    predecessors,
+                    soldierCount,
+                    childIndex,
+                    child.side,
+                    parent,
+                    Move{from, to, false, -1},
+                    validation);
             }
         }
+        deduplicatePredecessors(predecessors);
         return predecessors;
     }
 
@@ -136,10 +166,22 @@ std::vector<DensePredecessor> generateDensePredecessors(int soldierCount, uint64
             parent.side = Side::Soldier;
             parent.soldiers = clearBit(parent.soldiers, to);
             parent.soldiers = setBit(parent.soldiers, from);
-            addPredecessorIfValid(predecessors, soldierCount, childIndex, parent);
+            addPredecessorIfValid(
+                predecessors,
+                soldierCount,
+                childIndex,
+                child.side,
+                parent,
+                Move{from, to, false, -1},
+                validation);
         }
     }
+    deduplicatePredecessors(predecessors);
     return predecessors;
+}
+
+std::vector<DensePredecessor> generateDensePredecessors(int soldierCount, uint64_t childIndex) {
+    return generateDensePredecessors(soldierCount, childIndex, DensePredecessorValidation::Checked);
 }
 
 DenseTerminalInfo terminalOutcomeForDenseState(int soldierCount, uint64_t denseIndexValue) {

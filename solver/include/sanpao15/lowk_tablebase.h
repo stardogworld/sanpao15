@@ -32,6 +32,9 @@ struct DenseLayerSolveResult {
     uint64_t maxRemaining = 0;
     uint64_t queuePeak = 0;
     uint64_t estimatedMemoryBytes = 0;
+    uint64_t predecessorCalls = 0;
+    uint64_t generatedPredecessors = 0;
+    uint64_t maxPredecessors = 0;
     double initializationSeconds = 0.0;
     double propagationSeconds = 0.0;
     double finalizeSeconds = 0.0;

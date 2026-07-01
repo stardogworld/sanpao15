@@ -3,6 +3,7 @@
 ## Implemented In The Current MVP
 
 - Save and load `.s15tbl` result tables.
+- Reject incompatible `.s15tbl` ruleset hashes and malformed table entries during load.
 - Support table lookup for arbitrary positions present in a table.
 - Show win/loss/draw/unknown for every legal move in CLI and UI table analysis.
 - Recommend best moves from table data.
@@ -37,9 +38,11 @@
 - Map every legal full-tablebase layer position to and from a dense index.
 - Store dense outcomes in 1-byte and packed 2-bit arrays.
 - Write, inspect, and validate `.s15res` dense result files.
+- Scan `.s15res` payloads during validation.
 - Print full tablebase theoretical sizes with `--tablebase-sizes`.
 - Generate dense successor ids for legal moves with same-layer and capture-to-lower-layer classification.
 - Generate same-layer dense predecessors on demand for streaming retrograde propagation.
+- Use fast dense predecessor generation in streaming propagation while retaining checked predecessor mode for tests and inspection.
 - Inspect dense successors and sample dense layer move statistics from the CLI.
 - Solve low full-tablebase layers `k=0..3` with outcome-only retrograde and write `.s15res` results.
 - Solve low full-tablebase layers with a streaming/on-the-fly predecessor backend via `--solve-lowk-streaming`.

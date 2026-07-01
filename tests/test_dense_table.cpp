@@ -15,9 +15,17 @@ std::filesystem::path tempResPath(const char* name) {
     return std::filesystem::temp_directory_path() / name;
 }
 
+constexpr std::streamoff DenseResultHeaderBytes = 44;
+
 void corruptFirstByte(const std::filesystem::path& path) {
     std::fstream file(path, std::ios::binary | std::ios::in | std::ios::out);
     file.put('X');
+}
+
+void writeByteAt(const std::filesystem::path& path, std::streamoff offset, uint8_t value) {
+    std::fstream file(path, std::ios::binary | std::ios::in | std::ios::out);
+    file.seekp(offset);
+    file.put(static_cast<char>(value));
 }
 
 }  // namespace
@@ -112,4 +120,24 @@ SANPAO15_TEST(denseResultRejectsBadMagicAndWrongExpectations) {
         (void)inspectDenseResultFile(path);
     }, "bad magic rejected");
     std::filesystem::remove(path);
+}
+
+SANPAO15_TEST(denseResultValidateRejectsInvalidBytePayload) {
+    const int soldiers = 0;
+    const std::filesystem::path path = tempResPath("sanpao15-invalid-byte-payload.s15res");
+    createEmptyDenseResultFile(soldiers, path, DenseResultEncoding::Byte, StandardRulesetHash);
+    writeByteAt(path, DenseResultHeaderBytes, 4);
+
+    const DenseResultFileInfo inspected = inspectDenseResultFile(path);
+    SANPAO15_REQUIRE(inspected.encoding == DenseResultEncoding::Byte);
+    sanpao15::test::requireThrows([&] {
+        (void)validateDenseResultFile(path, StandardRulesetHash, soldiers);
+    }, "invalid byte outcome payload should be rejected by validate");
+    std::filesystem::remove(path);
+}
+
+SANPAO15_TEST(denseResultPackedLayersHaveNoUnusedBits) {
+    for (int soldiers = 0; soldiers <= 15; ++soldiers) {
+        SANPAO15_REQUIRE(denseStateCount(soldiers) % 4u == 0);
+    }
 }
