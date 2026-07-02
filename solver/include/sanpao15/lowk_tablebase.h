@@ -242,6 +242,44 @@ struct DenseTablebaseLookupResult {
     std::vector<DenseTablebaseMoveInfo> moves;
 };
 
+struct WdlLineExplorerOptions {
+    std::filesystem::path tablebaseDir;
+    Position start;
+    int maxPlies = 100;
+    bool includeAlternatives = true;
+};
+
+struct WdlAlternativeMove {
+    Move move;
+    Outcome successorOutcome = Outcome::Unknown;
+    std::string classification;
+};
+
+struct WdlLinePly {
+    int ply = 0;
+    Position position;
+    int soldierCount = 0;
+    uint64_t denseIndex = 0;
+    Outcome outcome = Outcome::Unknown;
+    Side sideToMove = Side::Cannon;
+
+    Move chosenMove;
+    Position successor;
+    Outcome successorOutcome = Outcome::Unknown;
+    std::string chosenClassification;
+
+    std::vector<WdlAlternativeMove> alternatives;
+};
+
+struct WdlLineExplorerResult {
+    Position start;
+    Outcome startOutcome = Outcome::Unknown;
+    std::vector<WdlLinePly> plies;
+    std::string stopReason;
+    std::optional<int> cycleStartPly;
+    std::optional<std::string> error;
+};
+
 DenseLayerSolveResult solveDenseLayerOutcome(
     int soldierCount,
     const PackedOutcomeTable2Bit* lowerLayer,
@@ -284,5 +322,7 @@ Outcome lookupDenseTablebaseOutcomeAt(
     const Position& position);
 DenseTablebaseLookupResult lookupDenseTablebasePosition(
     const DenseTablebaseLookupOptions& options);
+WdlLineExplorerResult exploreDenseTablebaseWdlLine(
+    const WdlLineExplorerOptions& options);
 
 }  // namespace sanpao15

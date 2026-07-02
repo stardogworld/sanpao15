@@ -2,9 +2,11 @@ import { renderBoard } from "./board";
 import { analyzePositionWithTable, loadResultTable, type ResultTable } from "./analysis/table";
 import {
   applyMove,
+  clonePosition,
   generateLegalMoves,
   initialPosition,
   outcomeLabel,
+  parsePositionNotation,
   positionToNotation,
   sideLabel,
   terminalOutcome,
@@ -23,16 +25,25 @@ import {
   type RecommendedMove,
   type TablebaseRecommendationResult,
 } from "./tablebase/recommend";
+import {
+  exploreWdlLine,
+  linePlyMoveText,
+  type WdlLineExplorerResult,
+} from "./tablebase/lineExplorer";
 
 interface HistoryEntry {
   position: Position;
+  lastMove: Move | null;
 }
 
 export class Sanpao15App {
   private position: Position = initialPosition();
   private selectedSquare: number | null = null;
   private selectedMoves: Move[] = [];
-  private history: HistoryEntry[] = [];
+  private undoStack: HistoryEntry[] = [];
+  private redoStack: HistoryEntry[] = [];
+  private lastMove: Move | null = null;
+  private recommendedMoves: Move[] = [];
 
   private readonly root: HTMLElement;
   private readonly boardEl = document.createElement("section");
@@ -40,12 +51,21 @@ export class Sanpao15App {
   private readonly soldierCountEl = document.createElement("strong");
   private readonly resultEl = document.createElement("strong");
   private readonly notationEl = document.createElement("code");
+  private readonly pasteInputEl = document.createElement("input");
   private readonly analysisEl = document.createElement("div");
   private readonly tablebaseStatusEl = document.createElement("div");
   private readonly tablebaseResultEl = document.createElement("div");
+  private readonly lineResultEl = document.createElement("div");
+  private readonly maxPliesInputEl = document.createElement("input");
+  private readonly playbackStatusEl = document.createElement("div");
+
   private resultTable: ResultTable | null = null;
   private tableLoadError: string | null = null;
   private tablebase: TablebaseDirectory | null = null;
+  private tablebaseResult: TablebaseRecommendationResult | null = null;
+  private lineResult: WdlLineExplorerResult | null = null;
+  private activeLinePly = 0;
+  private autoplayTimer: number | null = null;
 
   constructor(root: HTMLElement) {
     this.root = root;
@@ -57,52 +77,62 @@ export class Sanpao15App {
       <header class="topbar">
         <div>
           <h1>Sanpao15</h1>
+          <p>Outcome-only tablebase explorer</p>
         </div>
       </header>
-      <div class="game-layout">
-        <div class="board-wrap"></div>
-        <aside class="status-panel">
-          <div class="metric"><span>Turn</span></div>
-          <div class="metric"><span>Soldiers</span></div>
-          <div class="metric"><span>Terminal</span></div>
-        </aside>
-      </div>
-      <nav class="toolbar" aria-label="Game actions"></nav>
-      <section class="notation-panel">
-        <span>Position notation</span>
-      </section>
-      <section class="tablebase-panel">
-        <div class="panel-heading">
-          <h2>Tablebase</h2>
-          <div class="tablebase-actions"></div>
+      <main class="game-layout">
+        <div class="board-column">
+          <div class="board-wrap"></div>
+          <nav class="toolbar" aria-label="Game actions"></nav>
+          <section class="notation-panel">
+            <div class="panel-heading compact">
+              <h2>Position</h2>
+              <div class="notation-actions"></div>
+            </div>
+          </section>
         </div>
-        <div class="tablebase-status"></div>
-        <div class="tablebase-result"></div>
-      </section>
-      <section class="analysis-panel"></section>
+        <aside class="side-column">
+          <section class="status-panel">
+            <div class="metric"><span>Turn</span></div>
+            <div class="metric"><span>Soldiers</span></div>
+            <div class="metric"><span>Terminal</span></div>
+          </section>
+          <section class="tablebase-panel">
+            <div class="panel-heading">
+              <h2>Tablebase</h2>
+              <div class="tablebase-actions"></div>
+            </div>
+            <div class="tablebase-status"></div>
+            <div class="tablebase-result"></div>
+          </section>
+          <section class="line-panel">
+            <div class="panel-heading">
+              <h2>Line Explorer</h2>
+              <div class="line-actions"></div>
+            </div>
+            <p class="panel-note">WDL-only: no shortest win, fastest draw, DTW, or DTC is encoded.</p>
+            <div class="playback-actions"></div>
+            <div class="playback-status"></div>
+            <div class="line-result"></div>
+          </section>
+          <section class="analysis-panel"></section>
+        </aside>
+      </main>
     `;
 
-    const boardWrap = this.root.querySelector(".board-wrap");
-    const statusPanel = this.root.querySelector(".status-panel");
-    const toolbar = this.root.querySelector(".toolbar");
-    const notationPanel = this.root.querySelector(".notation-panel");
-    const analysisPanel = this.root.querySelector(".analysis-panel");
-    const tablebaseActions = this.root.querySelector(".tablebase-actions");
-    const tablebaseStatus = this.root.querySelector(".tablebase-status");
-    const tablebaseResult = this.root.querySelector(".tablebase-result");
-
-    if (
-      !boardWrap ||
-      !statusPanel ||
-      !toolbar ||
-      !notationPanel ||
-      !analysisPanel ||
-      !tablebaseActions ||
-      !tablebaseStatus ||
-      !tablebaseResult
-    ) {
-      throw new Error("UI mount failed");
-    }
+    const boardWrap = this.requireElement(".board-wrap");
+    const toolbar = this.requireElement(".toolbar");
+    const notationPanel = this.requireElement(".notation-panel");
+    const notationActions = this.requireElement(".notation-actions");
+    const statusPanel = this.requireElement(".status-panel");
+    const analysisPanel = this.requireElement(".analysis-panel");
+    const tablebaseActions = this.requireElement(".tablebase-actions");
+    const tablebaseStatus = this.requireElement(".tablebase-status");
+    const tablebaseResult = this.requireElement(".tablebase-result");
+    const lineActions = this.requireElement(".line-actions");
+    const playbackActions = this.requireElement(".playback-actions");
+    const playbackStatus = this.requireElement(".playback-status");
+    const lineResult = this.requireElement(".line-result");
 
     this.boardEl.className = "board";
     this.boardEl.setAttribute("aria-label", "5x5 board");
@@ -114,16 +144,31 @@ export class Sanpao15App {
     metrics[2].append(this.resultEl);
 
     toolbar.append(
-      this.makeButton("New game", () => this.reset()),
+      this.makeButton("Reset", () => this.reset()),
       this.makeButton("Undo", () => this.undo()),
-      this.makeButton("Analyze current", () => this.analyze()),
+      this.makeButton("Redo", () => this.redo()),
+      this.makeButton("Analyze current", () => {
+        void this.analyze();
+      }),
     );
 
+    this.notationEl.className = "notation-code";
+    this.pasteInputEl.type = "text";
+    this.pasteInputEl.className = "notation-input";
+    this.pasteInputEl.placeholder = "Paste notation";
+    notationActions.append(
+      this.makeButton("Copy", () => {
+        void this.copyNotation();
+      }),
+      this.makeButton("Paste", () => this.pasteNotationFromInput()),
+    );
+    notationPanel.append(this.notationEl, this.pasteInputEl);
+
     tablebaseActions.append(
-      this.makeButton("Select directory", () => {
+      this.makeButton("Directory", () => {
         void this.selectTablebase();
       }),
-      this.makeButton("Select layer files", () => {
+      this.makeButton("Layer files", () => {
         void this.selectTablebaseFiles();
       }),
       this.makeButton("Query", () => {
@@ -135,11 +180,41 @@ export class Sanpao15App {
     tablebaseStatus.append(this.tablebaseStatusEl);
     tablebaseResult.append(this.tablebaseResultEl);
 
-    notationPanel.append(this.notationEl);
+    this.maxPliesInputEl.type = "number";
+    this.maxPliesInputEl.className = "max-plies-input";
+    this.maxPliesInputEl.min = "1";
+    this.maxPliesInputEl.max = "1000";
+    this.maxPliesInputEl.step = "1";
+    this.maxPliesInputEl.value = "100";
+    this.maxPliesInputEl.setAttribute("aria-label", "Max plies");
+    lineActions.append(
+      this.maxPliesInputEl,
+      this.makeButton("Explore WDL line", () => {
+        void this.exploreLine();
+      }),
+    );
+    playbackActions.append(
+      this.makeButton("Previous", () => this.previousLinePly()),
+      this.makeButton("Next", () => this.nextLinePly()),
+      this.makeButton("Auto", () => this.toggleAutoplay()),
+    );
+    this.playbackStatusEl.className = "playback-copy";
+    this.lineResultEl.className = "line-result-copy";
+    playbackStatus.append(this.playbackStatusEl);
+    lineResult.append(this.lineResultEl);
+
     this.analysisEl.className = "analysis-copy";
     analysisPanel.append(this.analysisEl);
 
     this.render();
+  }
+
+  private requireElement(selector: string): HTMLElement {
+    const element = this.root.querySelector(selector);
+    if (!(element instanceof HTMLElement)) {
+      throw new Error(`UI mount failed: ${selector}`);
+    }
+    return element;
   }
 
   private makeButton(label: string, onClick: () => void): HTMLButtonElement {
@@ -152,30 +227,70 @@ export class Sanpao15App {
   }
 
   private reset(): void {
+    this.stopAutoplay();
     this.position = initialPosition();
-    this.history = [];
+    this.undoStack = [];
+    this.redoStack = [];
+    this.lastMove = null;
     this.clearSelection();
-    this.analysisEl.textContent = "";
-    this.tablebaseResultEl.textContent = "";
+    this.clearPositionDerivedOutput();
     this.render();
+    void this.queryTablebaseIfLoaded();
+  }
+
+  private pushUndo(): void {
+    this.undoStack.push({ position: clonePosition(this.position), lastMove: this.lastMove });
+    this.redoStack = [];
   }
 
   private undo(): void {
-    const previous = this.history.pop();
-    if (!previous) {
-      return;
-    }
-    this.position = previous.position;
+    const previous = this.undoStack.pop();
+    if (!previous) return;
+    this.redoStack.push({ position: clonePosition(this.position), lastMove: this.lastMove });
+    this.position = clonePosition(previous.position);
+    this.lastMove = previous.lastMove;
     this.clearSelection();
-    this.analysisEl.textContent = "";
-    this.tablebaseResultEl.textContent = "";
+    this.clearPositionDerivedOutput();
     this.render();
+    void this.queryTablebaseIfLoaded();
+  }
+
+  private redo(): void {
+    const next = this.redoStack.pop();
+    if (!next) return;
+    this.undoStack.push({ position: clonePosition(this.position), lastMove: this.lastMove });
+    this.position = clonePosition(next.position);
+    this.lastMove = next.lastMove;
+    this.clearSelection();
+    this.clearPositionDerivedOutput();
+    this.render();
+    void this.queryTablebaseIfLoaded();
+  }
+
+  private setPosition(position: Position, lastMove: Move | null, pushHistory: boolean): void {
+    this.stopAutoplay();
+    if (pushHistory) {
+      this.pushUndo();
+    }
+    this.position = clonePosition(position);
+    this.lastMove = lastMove;
+    this.clearSelection();
+    this.clearPositionDerivedOutput();
+    this.render();
+    void this.queryTablebaseIfLoaded();
+  }
+
+  private clearPositionDerivedOutput(): void {
+    this.analysisEl.textContent = "";
+    this.tablebaseResult = null;
+    this.tablebaseResultEl.textContent = "";
+    this.recommendedMoves = [];
   }
 
   private async analyze(): Promise<void> {
     const outcome = terminalOutcome(this.position);
     const legalMoves = generateLegalMoves(this.position);
-    this.analysisEl.textContent = "Loading result table...";
+    this.analysisEl.textContent = "Loading reachable result table...";
 
     if (!this.resultTable && !this.tableLoadError) {
       try {
@@ -251,6 +366,12 @@ export class Sanpao15App {
     ].join("\n");
   }
 
+  private async queryTablebaseIfLoaded(): Promise<void> {
+    if (this.tablebase) {
+      await this.queryTablebase();
+    }
+  }
+
   private async queryTablebase(): Promise<void> {
     if (!this.tablebase) {
       this.tablebaseResultEl.textContent = "Select a tablebase directory or layer files first.";
@@ -260,9 +381,15 @@ export class Sanpao15App {
     this.tablebaseResultEl.textContent = "Reading tablebase bytes...";
     try {
       const result = await recommendMoves(this.tablebase, this.position);
+      this.tablebaseResult = result;
+      this.recommendedMoves = result.recommendedMoves.map((move) => move.move);
       this.tablebaseResultEl.replaceChildren(this.renderTablebaseResult(result));
+      this.render();
     } catch (error) {
+      this.tablebaseResult = null;
+      this.recommendedMoves = [];
       this.tablebaseResultEl.textContent = error instanceof Error ? error.message : String(error);
+      this.render();
     }
   }
 
@@ -313,15 +440,146 @@ export class Sanpao15App {
     return container;
   }
 
+  private async exploreLine(): Promise<void> {
+    this.stopAutoplay();
+    const maxPlies = Number(this.maxPliesInputEl.value);
+    this.lineResultEl.textContent = "Exploring WDL line...";
+    const result = await exploreWdlLine(this.tablebase, this.position, maxPlies);
+    this.lineResult = result;
+    this.activeLinePly = 0;
+    this.lineResultEl.replaceChildren(this.renderLineResult(result));
+    this.renderPlaybackStatus();
+  }
+
+  private renderLineResult(result: WdlLineExplorerResult): HTMLElement {
+    const container = document.createElement("div");
+    container.className = "line-result-grid";
+
+    const summary = document.createElement("div");
+    summary.className = "line-summary";
+    summary.textContent = [
+      `Start outcome: ${outcomeLabel(result.startOutcome)}`,
+      `Stop reason: ${result.stopReason}`,
+      result.cycleStartPly !== null ? `Cycle start ply: ${result.cycleStartPly}` : "Cycle start ply: none",
+      result.error ? `Error: ${result.error}` : `Plies: ${result.plies.length}`,
+    ].join("\n");
+    container.append(summary);
+
+    const list = document.createElement("ol");
+    list.className = "line-list";
+    for (const ply of result.plies) {
+      const item = document.createElement("li");
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "line-ply-button";
+      button.textContent = `${ply.ply}. ${sideLabel(ply.sideToMove)} ${outcomeLabel(ply.outcome)} ${linePlyMoveText(ply)}`;
+      button.addEventListener("click", () => this.jumpToLinePly(ply.ply));
+      item.append(button);
+      list.append(item);
+    }
+    container.append(list);
+    return container;
+  }
+
+  private jumpToLinePly(plyIndex: number): void {
+    this.showLinePly(plyIndex, true);
+  }
+
+  private showLinePly(plyIndex: number, stopPlayback: boolean): void {
+    if (!this.lineResult) return;
+    const ply = this.lineResult.plies[plyIndex];
+    if (!ply) return;
+    if (stopPlayback) {
+      this.stopAutoplay();
+    }
+    this.activeLinePly = plyIndex;
+    this.position = clonePosition(ply.position);
+    this.lastMove = plyIndex === 0 ? null : this.lineResult.plies[plyIndex - 1]?.chosenMove ?? null;
+    this.clearSelection();
+    this.render();
+    this.renderPlaybackStatus();
+    void this.queryTablebaseIfLoaded();
+  }
+
+  private previousLinePly(): void {
+    if (!this.lineResult || this.lineResult.plies.length === 0) return;
+    this.jumpToLinePly(Math.max(0, this.activeLinePly - 1));
+  }
+
+  private nextLinePly(): void {
+    if (!this.lineResult || this.lineResult.plies.length === 0) return;
+    this.jumpToLinePly(Math.min(this.lineResult.plies.length - 1, this.activeLinePly + 1));
+  }
+
+  private toggleAutoplay(): void {
+    if (this.autoplayTimer !== null) {
+      this.stopAutoplay();
+      return;
+    }
+    if (!this.lineResult || this.lineResult.plies.length === 0) return;
+    this.autoplayTimer = window.setInterval(() => {
+      if (!this.lineResult) {
+        this.stopAutoplay();
+        return;
+      }
+      if (this.activeLinePly + 1 >= this.lineResult.plies.length) {
+        this.stopAutoplay();
+        return;
+      }
+      this.showLinePly(this.activeLinePly + 1, false);
+    }, 700);
+    this.renderPlaybackStatus();
+  }
+
+  private stopAutoplay(): void {
+    if (this.autoplayTimer !== null) {
+      window.clearInterval(this.autoplayTimer);
+      this.autoplayTimer = null;
+    }
+    this.renderPlaybackStatus();
+  }
+
+  private renderPlaybackStatus(): void {
+    if (!this.lineResult) {
+      this.playbackStatusEl.textContent = "No line explored.";
+      return;
+    }
+    this.playbackStatusEl.textContent = [
+      `Active ply: ${this.activeLinePly}`,
+      `Stop reason: ${this.lineResult.stopReason}`,
+      this.autoplayTimer === null ? "Autoplay: off" : "Autoplay: on",
+    ].join("\n");
+  }
+
+  private async copyNotation(): Promise<void> {
+    const notation = positionToNotation(this.position);
+    this.pasteInputEl.value = notation;
+    try {
+      await navigator.clipboard.writeText(notation);
+    } catch {
+      // Keeping the input populated is a sufficient fallback for non-secure origins.
+    }
+  }
+
+  private pasteNotationFromInput(): void {
+    try {
+      const next = parsePositionNotation(this.pasteInputEl.value);
+      this.setPosition(next, null, true);
+    } catch (error) {
+      this.analysisEl.textContent = error instanceof Error ? error.message : String(error);
+    }
+  }
+
   private onSquareClick(square: number): void {
     const move = this.selectedMoves.find((candidate) => candidate.to === square);
     if (move) {
-      this.history.push({ position: this.position });
+      this.pushUndo();
       this.position = applyMove(this.position, move);
+      this.lastMove = move;
       this.clearSelection();
-      this.analysisEl.textContent = "";
-      this.tablebaseResultEl.textContent = "";
+      this.clearPositionDerivedOutput();
       this.render();
+      void this.queryTablebaseIfLoaded();
       return;
     }
 
@@ -350,6 +608,8 @@ export class Sanpao15App {
       position: this.position,
       selectedSquare: this.selectedSquare,
       legalMoves: this.selectedMoves,
+      recommendedMoves: this.recommendedMoves,
+      lastMove: this.lastMove,
       onSquareClick: (square) => this.onSquareClick(square),
     });
 

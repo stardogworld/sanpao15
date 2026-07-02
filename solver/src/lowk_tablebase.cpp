@@ -15,6 +15,7 @@
 #include <string>
 #include <system_error>
 #include <tuple>
+#include <unordered_map>
 
 #include "sanpao15/bitboard.h"
 #include "sanpao15/dense_index.h"
@@ -1618,6 +1619,43 @@ std::string classifyDenseTablebaseMove(Side sideToMove, Outcome successorOutcome
     return "losing";
 }
 
+int wdlLineMoveTier(Side sideToMove, Outcome currentOutcome, Outcome successorOutcome) {
+    if (currentOutcome == winFor(sideToMove)) {
+        if (successorOutcome == winFor(sideToMove)) {
+            return 0;
+        }
+        if (successorOutcome == Outcome::Draw) {
+            return 1;
+        }
+        return 2;
+    }
+    if (currentOutcome == Outcome::Draw) {
+        if (successorOutcome == Outcome::Draw) {
+            return 0;
+        }
+        if (successorOutcome == winFor(sideToMove)) {
+            return 1;
+        }
+        return 2;
+    }
+    if (currentOutcome == opponentWinFor(sideToMove)) {
+        if (successorOutcome == Outcome::Draw) {
+            return 0;
+        }
+        if (successorOutcome == opponentWinFor(sideToMove)) {
+            return 1;
+        }
+        return 2;
+    }
+    if (successorOutcome == winFor(sideToMove)) {
+        return 0;
+    }
+    if (successorOutcome == Outcome::Draw) {
+        return 1;
+    }
+    return 2;
+}
+
 int moveClassificationRank(const std::string& classification) {
     if (classification == "winning") {
         return 0;
@@ -1646,6 +1684,49 @@ std::string terminalReasonForLookup(
         return position.side == Side::Cannon ? "cannon has no legal moves" : "soldier has no legal moves";
     }
     return "rules-terminal";
+}
+
+bool isPreferredWdlLineMove(
+    const DenseTablebaseMoveInfo& lhs,
+    const DenseTablebaseMoveInfo& rhs,
+    Side sideToMove,
+    Outcome currentOutcome) {
+    const int lhsTier = wdlLineMoveTier(sideToMove, currentOutcome, lhs.successorOutcome);
+    const int rhsTier = wdlLineMoveTier(sideToMove, currentOutcome, rhs.successorOutcome);
+    if (lhsTier != rhsTier) {
+        return lhsTier < rhsTier;
+    }
+    if (lhs.move.capture != rhs.move.capture) {
+        return lhs.move.capture;
+    }
+    if (lhs.move.capture && lhs.successorSoldierCount != rhs.successorSoldierCount) {
+        return lhs.successorSoldierCount < rhs.successorSoldierCount;
+    }
+    return std::tie(lhs.move.from, lhs.move.to, lhs.move.capture, lhs.move.capturedSquare,
+                    lhs.successorSoldierCount, lhs.successorIndex) <
+           std::tie(rhs.move.from, rhs.move.to, rhs.move.capture, rhs.move.capturedSquare,
+                    rhs.successorSoldierCount, rhs.successorIndex);
+}
+
+std::vector<DenseTablebaseMoveInfo> sortedWdlLineMoves(
+    std::vector<DenseTablebaseMoveInfo> moves,
+    Side sideToMove,
+    Outcome currentOutcome) {
+    std::sort(moves.begin(), moves.end(), [sideToMove, currentOutcome](const DenseTablebaseMoveInfo& lhs, const DenseTablebaseMoveInfo& rhs) {
+        return isPreferredWdlLineMove(lhs, rhs, sideToMove, currentOutcome);
+    });
+    return moves;
+}
+
+std::string wdlLineLookupStopReason(
+    const std::filesystem::path& tablebaseDir,
+    const std::string& error) {
+    if (!std::filesystem::exists(tablebaseDir) ||
+        error.find("missing dense tablebase layer") != std::string::npos ||
+        error.find("tablebase directory does not exist") != std::string::npos) {
+        return "missingTablebase";
+    }
+    return "lookupError";
 }
 
 }  // namespace
@@ -1699,6 +1780,102 @@ DenseTablebaseLookupResult lookupDenseTablebasePosition(
                std::tie(rhs.move.from, rhs.move.to, rhs.move.capture, rhs.move.capturedSquare,
                         rhs.successorSoldierCount, rhs.successorIndex);
     });
+    return result;
+}
+
+WdlLineExplorerResult exploreDenseTablebaseWdlLine(
+    const WdlLineExplorerOptions& options) {
+    WdlLineExplorerResult result;
+    result.start = options.start;
+
+    if (options.maxPlies < 0) {
+        result.stopReason = "lookupError";
+        result.error = "maxPlies must be non-negative";
+        return result;
+    }
+
+    Position current = options.start;
+    std::unordered_map<uint64_t, int> visited;
+    visited.emplace(packPosition(current), 0);
+
+    for (int ply = 0; ply < options.maxPlies; ++ply) {
+        DenseTablebaseLookupResult lookup;
+        try {
+            DenseTablebaseLookupOptions lookupOptions;
+            lookupOptions.tablebaseDir = options.tablebaseDir;
+            lookupOptions.position = current;
+            lookupOptions.includeMoves = true;
+            lookup = lookupDenseTablebasePosition(lookupOptions);
+        } catch (const std::exception& error) {
+            result.stopReason = wdlLineLookupStopReason(options.tablebaseDir, error.what());
+            result.error = error.what();
+            if (result.plies.empty()) {
+                result.startOutcome = Outcome::Unknown;
+            }
+            return result;
+        }
+
+        if (ply == 0) {
+            result.startOutcome = lookup.outcome;
+        }
+
+        if (lookup.terminal) {
+            result.stopReason = "terminal";
+            return result;
+        }
+        if (lookup.moves.empty()) {
+            result.stopReason = "noLegalMoves";
+            return result;
+        }
+
+        const std::vector<DenseTablebaseMoveInfo> sortedMoves =
+            sortedWdlLineMoves(std::move(lookup.moves), current.side, lookup.outcome);
+        const DenseTablebaseMoveInfo& chosen = sortedMoves.front();
+
+        WdlLinePly linePly;
+        linePly.ply = ply;
+        linePly.position = current;
+        linePly.soldierCount = lookup.soldierCount;
+        linePly.denseIndex = lookup.denseIndex;
+        linePly.outcome = lookup.outcome;
+        linePly.sideToMove = current.side;
+        linePly.chosenMove = chosen.move;
+        linePly.successor = chosen.successor;
+        linePly.successorOutcome = chosen.successorOutcome;
+        linePly.chosenClassification = chosen.classification;
+
+        if (options.includeAlternatives) {
+            linePly.alternatives.reserve(sortedMoves.size());
+            for (const DenseTablebaseMoveInfo& move : sortedMoves) {
+                linePly.alternatives.push_back(WdlAlternativeMove{
+                    move.move,
+                    move.successorOutcome,
+                    move.classification,
+                });
+            }
+        }
+
+        current = chosen.successor;
+        result.plies.push_back(std::move(linePly));
+
+        const uint64_t key = packPosition(current);
+        const auto [it, inserted] = visited.emplace(key, ply + 1);
+        if (!inserted) {
+            result.stopReason = "cycle";
+            result.cycleStartPly = it->second;
+            return result;
+        }
+    }
+
+    result.stopReason = "maxPlies";
+    if (result.plies.empty()) {
+        try {
+            result.startOutcome = lookupDenseTablebaseOutcomeAt(options.tablebaseDir, options.start);
+        } catch (const std::exception& error) {
+            result.stopReason = wdlLineLookupStopReason(options.tablebaseDir, error.what());
+            result.error = error.what();
+        }
+    }
     return result;
 }
 

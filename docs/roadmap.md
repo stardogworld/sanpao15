@@ -55,6 +55,9 @@
 - Use a `uint32_t` queue and `uint32_t` predecessor-index buffer in the production dense layer path while keeping public dense indexes as `uint64_t`.
 - Query complete dense `.s15res` tablebase directories with `--query-tablebase`, including WDL-only move recommendations and JSON output.
 - Query local dense `.s15res` files from the UI by random-reading only target outcome bytes.
+- Explore one deterministic WDL-only line with `--explore-tablebase --max-plies`, JSON output, cycle detection, and random `.s15res` reads.
+- Play WDL-only lines in the UI with max-plies, previous/next, autoplay, click-to-jump plies, last-move highlighting, recommended-move highlighting, undo/redo/reset, and copy/paste notation.
+- Document UI reference research and local asset policy; current UI piece SVGs are self-created.
 - Centralize the current ruleset as `sanpao15-min-four-soldiers`, where `soldierCount < 4` is immediate `CannonWin`.
 
 ## Solver Lines
@@ -72,7 +75,7 @@
 - Keep CSR or flat layer-local edge storage as a fallback if streaming regeneration is too slow.
 - Evaluate D4 symmetry reduction for dense layers.
 - Keep the partitioned reachability line available for standard-initial-position experiments.
-- Add WDL-only principal variation / line exploration on top of dense lookup.
+- Improve WDL line explorer presentation and add training/play modes.
 - Publish a reproducible full tablebase artifact plan for `.s15res` outputs.
 - Improve partitioned closure performance with a direct per-bucket candidate collector if needed.
 - Design layer-local CSR edge files.

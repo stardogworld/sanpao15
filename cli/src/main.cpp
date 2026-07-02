@@ -79,8 +79,10 @@ struct CliOptions {
     bool preflightLayerRange = false;
     bool verifyLayer = false;
     bool queryTablebase = false;
+    bool exploreTablebase = false;
     bool queryMoves = false;
     bool jsonOutput = false;
+    bool maxPliesProvided = false;
     bool allowK4 = false;
     bool outDirProvided = false;
     bool outResProvided = false;
@@ -115,6 +117,7 @@ struct CliOptions {
     int rangeEndLayer = 0;
     int preflightStartLayer = 0;
     int preflightEndLayer = 0;
+    int maxPlies = 100;
     uint64_t denseIndexValue = 0;
     GraphBackend graphBackend = GraphBackend::Csr;
     PartitionMethod partitionMethod = PartitionMethod::Splitmix64Mod;
@@ -155,6 +158,7 @@ struct CliOptions {
     std::optional<std::filesystem::path> verifyLayerPath;
     std::optional<std::filesystem::path> verifyLowKDir;
     std::optional<std::filesystem::path> queryTablebaseDir;
+    std::optional<std::filesystem::path> exploreTablebaseDir;
     std::optional<std::string> queryPositionNotation;
     std::optional<std::string> analysisNotation;
     std::optional<std::filesystem::path> saveTablePath;
@@ -205,6 +209,8 @@ void printUsage() {
         << "                  [--preflight-json FILE]\n"
         << "  sanpao15_cli --query-tablebase DIR --position \"SSSSS/SSSSS/SSSSS/...../.CCC. c\"\n"
         << "                  [--moves] [--json]\n"
+        << "  sanpao15_cli --explore-tablebase DIR --position \"SSSSS/SSSSS/SSSSS/...../.CCC. c\"\n"
+        << "                  [--max-plies N] [--json]\n"
         << "  sanpao15_cli --analyze \"SSSSS/SSSSS/SSSSS/...../.CCC. c\" [--limit N|--full]\n"
         << "  sanpao15_cli --load-table FILE --analyze \"SSSSS/SSSSS/SSSSS/...../.CCC. c\"\n\n"
         << "Options:\n"
@@ -286,9 +292,11 @@ void printUsage() {
         << "  --preflight-layer-range START END  Dry-run a production range: inspect files and estimate disk/RAM/time.\n"
         << "  --preflight-json FILE  Output JSON path for --preflight-layer-range. Default: out-dir/preflight.json.\n"
         << "  --query-tablebase DIR  Random-read complete dense .s15res layers for a position outcome.\n"
-        << "  --position TEXT  Position notation for --query-tablebase.\n"
+        << "  --explore-tablebase DIR  Random-read .s15res layers to sample one WDL-preserving line.\n"
+        << "  --position TEXT  Position notation for --query-tablebase or --explore-tablebase.\n"
         << "  --moves        Include legal successor outcomes and WDL recommendation groups.\n"
-        << "  --json         Emit JSON for --query-tablebase.\n"
+        << "  --max-plies N  Maximum plies for --explore-tablebase. Default: 100.\n"
+        << "  --json         Emit JSON for --query-tablebase or --explore-tablebase.\n"
         << "  --resume       Skip existing valid range layers.\n"
         << "  --clean-temp   Remove stale layer-NN.s15res.tmp files for the selected range before solving.\n"
         << "  --external-seed-dedup  Use external sorted runs for next-layer seed dedup.\n"
@@ -737,6 +745,12 @@ CliOptions parseArgs(int argc, char** argv) {
             }
             options.queryTablebaseDir = std::filesystem::path(argv[++i]);
             options.queryTablebase = true;
+        } else if (arg == "--explore-tablebase") {
+            if (i + 1 >= argc) {
+                throw std::invalid_argument("--explore-tablebase requires a directory path");
+            }
+            options.exploreTablebaseDir = std::filesystem::path(argv[++i]);
+            options.exploreTablebase = true;
         } else if (arg == "--position") {
             if (i + 1 >= argc) {
                 throw std::invalid_argument("--position requires a notation string");
@@ -746,6 +760,16 @@ CliOptions parseArgs(int argc, char** argv) {
             options.queryMoves = true;
         } else if (arg == "--json") {
             options.jsonOutput = true;
+        } else if (arg == "--max-plies") {
+            if (i + 1 >= argc) {
+                throw std::invalid_argument("--max-plies requires a value");
+            }
+            const uint64_t value = parseLimit(argv[++i]);
+            if (value == 0 || value > 1000000) {
+                throw std::invalid_argument("--max-plies must be in 1..1000000");
+            }
+            options.maxPlies = static_cast<int>(value);
+            options.maxPliesProvided = true;
         } else if (arg == "--verify-lowk") {
             if (i + 1 >= argc) {
                 throw std::invalid_argument("--verify-lowk requires a directory path");
@@ -840,7 +864,8 @@ CliOptions parseArgs(int argc, char** argv) {
         static_cast<int>(options.solveLayerRange) +
         static_cast<int>(options.preflightLayerRange) +
         static_cast<int>(options.verifyLayer) +
-        static_cast<int>(options.queryTablebase);
+        static_cast<int>(options.queryTablebase) +
+        static_cast<int>(options.exploreTablebase);
     if (validationModeCount + partitionModeCount + migrationModeCount + partitionedResumeModeCount + denseModeCount > 1) {
         throw std::invalid_argument("choose only one validate/inspect/partition/dense tablebase mode");
     }
@@ -855,6 +880,7 @@ CliOptions parseArgs(int argc, char** argv) {
         const bool disallowedOverwrite = options.partitionOverwrite && !options.solveLayer && !options.solveLayerRange;
         const bool disallowedCleanTemp = options.cleanTemp && !options.solveLayerRange;
         const bool disallowedRangeResume = options.rangeResume && !options.solveLayerRange;
+        const bool disallowedMaxPlies = options.maxPliesProvided && !options.exploreTablebase;
         if (options.buildLayersDir.has_value() || options.statsOnly || options.probe || options.analysisNotation.has_value() ||
             options.saveTablePath.has_value() || options.loadTablePath.has_value() || disallowedFull ||
             options.limitProvided || options.noPred || options.maxStatesPerLayerProvided ||
@@ -870,21 +896,27 @@ CliOptions parseArgs(int argc, char** argv) {
             options.partitionCacheBucketsProvided || options.benchmarkModeProvided || disallowedSample ||
             options.lookupKeyProvided || options.sampleStatesProvided || options.nextSeedPartitionDir.has_value() ||
             disallowedOverwrite || disallowedCleanTemp || disallowedRangeResume ||
-            options.migrateOutputProvided || options.cleanupStaleRuns) {
+            options.migrateOutputProvided || options.cleanupStaleRuns || disallowedMaxPlies) {
             throw std::invalid_argument("dense tablebase modes cannot be combined with build, solve, stats, probe, validate, partition, migration, or repair options");
         }
     }
     if (options.queryTablebase && !options.queryPositionNotation.has_value()) {
         throw std::invalid_argument("--query-tablebase requires --position TEXT");
     }
-    if (options.queryPositionNotation.has_value() && !options.queryTablebase) {
-        throw std::invalid_argument("--position is only valid with --query-tablebase");
+    if (options.exploreTablebase && !options.queryPositionNotation.has_value()) {
+        throw std::invalid_argument("--explore-tablebase requires --position TEXT");
+    }
+    if (options.queryPositionNotation.has_value() && !options.queryTablebase && !options.exploreTablebase) {
+        throw std::invalid_argument("--position is only valid with --query-tablebase or --explore-tablebase");
     }
     if (options.queryMoves && !options.queryTablebase) {
         throw std::invalid_argument("--moves is only valid with --query-tablebase");
     }
-    if (options.jsonOutput && !options.queryTablebase) {
-        throw std::invalid_argument("--json is only valid with --query-tablebase");
+    if (options.maxPliesProvided && !options.exploreTablebase) {
+        throw std::invalid_argument("--max-plies is only valid with --explore-tablebase");
+    }
+    if (options.jsonOutput && !options.queryTablebase && !options.exploreTablebase) {
+        throw std::invalid_argument("--json is only valid with --query-tablebase or --explore-tablebase");
     }
     if (options.solveLowK && options.lowKMax > 3) {
         throw std::invalid_argument("--solve-lowk supports only K in 0..3 in this prototype");
@@ -1366,6 +1398,126 @@ void printDenseTablebaseQuery(const CliOptions& options) {
         return;
     }
     printDenseTablebaseQueryText(result, *options.queryTablebaseDir, options.queryMoves);
+}
+
+void printWdlAlternativeJson(const WdlAlternativeMove& alternative, const std::string& indent) {
+    std::cout << indent << "{\n";
+    std::cout << indent << "  \"move\": \"" << jsonEscape(moveToString(alternative.move)) << "\",\n";
+    std::cout << indent << "  \"from\": " << alternative.move.from << ",\n";
+    std::cout << indent << "  \"to\": " << alternative.move.to << ",\n";
+    std::cout << indent << "  \"capture\": " << (alternative.move.capture ? "true" : "false") << ",\n";
+    std::cout << indent << "  \"capturedSquare\": " << alternative.move.capturedSquare << ",\n";
+    std::cout << indent << "  \"successorOutcome\": \"" << outcomeToString(alternative.successorOutcome) << "\",\n";
+    std::cout << indent << "  \"classification\": \"" << alternative.classification << "\"\n";
+    std::cout << indent << "}";
+}
+
+void printWdlLinePlyJson(const WdlLinePly& ply, const std::string& indent) {
+    std::cout << indent << "{\n";
+    std::cout << indent << "  \"ply\": " << ply.ply << ",\n";
+    std::cout << indent << "  \"position\": \"" << jsonEscape(positionToNotation(ply.position)) << "\",\n";
+    std::cout << indent << "  \"sideToMove\": \"" << sideToString(ply.sideToMove) << "\",\n";
+    std::cout << indent << "  \"outcome\": \"" << outcomeToString(ply.outcome) << "\",\n";
+    std::cout << indent << "  \"soldierCount\": " << ply.soldierCount << ",\n";
+    std::cout << indent << "  \"denseIndex\": " << ply.denseIndex << ",\n";
+    std::cout << indent << "  \"chosenMove\": \"" << jsonEscape(moveToString(ply.chosenMove)) << "\",\n";
+    std::cout << indent << "  \"from\": " << ply.chosenMove.from << ",\n";
+    std::cout << indent << "  \"to\": " << ply.chosenMove.to << ",\n";
+    std::cout << indent << "  \"capture\": " << (ply.chosenMove.capture ? "true" : "false") << ",\n";
+    std::cout << indent << "  \"capturedSquare\": " << ply.chosenMove.capturedSquare << ",\n";
+    std::cout << indent << "  \"successorPosition\": \"" << jsonEscape(positionToNotation(ply.successor)) << "\",\n";
+    std::cout << indent << "  \"successorOutcome\": \"" << outcomeToString(ply.successorOutcome) << "\",\n";
+    std::cout << indent << "  \"classification\": \"" << ply.chosenClassification << "\",\n";
+    std::cout << indent << "  \"alternatives\": [\n";
+    for (size_t i = 0; i < ply.alternatives.size(); ++i) {
+        printWdlAlternativeJson(ply.alternatives[i], indent + "    ");
+        std::cout << (i + 1 == ply.alternatives.size() ? "\n" : ",\n");
+    }
+    std::cout << indent << "  ]\n";
+    std::cout << indent << "}";
+}
+
+void printWdlLineExplorerJson(
+    const WdlLineExplorerResult& result,
+    const std::filesystem::path& tablebaseDir,
+    int maxPlies) {
+    std::cout << "{\n";
+    std::cout << "  \"position\": \"" << jsonEscape(positionToNotation(result.start)) << "\",\n";
+    std::cout << "  \"tablebaseDir\": \"" << jsonEscape(tablebaseDir.string()) << "\",\n";
+    std::cout << "  \"ruleset\": \"" << RulesetName << "\",\n";
+    std::cout << "  \"rulesetHash\": \"" << formatHex64(StandardRulesetHash) << "\",\n";
+    std::cout << "  \"startOutcome\": \"" << outcomeToString(result.startOutcome) << "\",\n";
+    std::cout << "  \"maxPlies\": " << maxPlies << ",\n";
+    std::cout << "  \"stopReason\": \"" << jsonEscape(result.stopReason) << "\",\n";
+    if (result.cycleStartPly.has_value()) {
+        std::cout << "  \"cycleStartPly\": " << *result.cycleStartPly << ",\n";
+    } else {
+        std::cout << "  \"cycleStartPly\": null,\n";
+    }
+    if (result.error.has_value()) {
+        std::cout << "  \"error\": \"" << jsonEscape(*result.error) << "\",\n";
+    }
+    std::cout << "  \"plies\": [\n";
+    for (size_t i = 0; i < result.plies.size(); ++i) {
+        printWdlLinePlyJson(result.plies[i], "    ");
+        std::cout << (i + 1 == result.plies.size() ? "\n" : ",\n");
+    }
+    std::cout << "  ]\n";
+    std::cout << "}\n";
+}
+
+void printWdlLineExplorerText(
+    const WdlLineExplorerResult& result,
+    const std::filesystem::path& tablebaseDir,
+    int maxPlies) {
+    std::cout << "WDL line explorer\n";
+    std::cout << "Tablebase dir: " << tablebaseDir.string() << "\n";
+    std::cout << "Ruleset: " << RulesetName << " " << formatHex64(StandardRulesetHash) << "\n";
+    std::cout << "Position: " << positionToNotation(result.start) << "\n";
+    std::cout << "Start outcome: " << outcomeToString(result.startOutcome) << "\n";
+    std::cout << "Max plies: " << maxPlies << "\n";
+    std::cout << "Note: WDL-only; no DTW, DTC, shortest win, or fastest draw is encoded.\n\n";
+    std::cout << std::left
+              << std::setw(6) << "ply"
+              << std::setw(10) << "side"
+              << std::setw(12) << "outcome"
+              << std::setw(24) << "chosen move"
+              << std::setw(20) << "successor outcome"
+              << "classification\n";
+    for (const WdlLinePly& ply : result.plies) {
+        std::cout << std::left
+                  << std::setw(6) << ply.ply
+                  << std::setw(10) << sideToString(ply.sideToMove)
+                  << std::setw(12) << outcomeToString(ply.outcome)
+                  << std::setw(24) << moveToString(ply.chosenMove)
+                  << std::setw(20) << outcomeToString(ply.successorOutcome)
+                  << ply.chosenClassification
+                  << "\n";
+    }
+    std::cout << "\nStop reason: " << result.stopReason << "\n";
+    if (result.cycleStartPly.has_value()) {
+        std::cout << "Cycle start ply: " << *result.cycleStartPly << "\n";
+    }
+    if (result.error.has_value()) {
+        std::cout << "Error: " << *result.error << "\n";
+    }
+    std::cout << "Plies generated: " << formatInteger(static_cast<uint64_t>(result.plies.size())) << "\n";
+    std::cout << "Status: explored\n";
+}
+
+void printWdlLineExplorer(const CliOptions& options) {
+    WdlLineExplorerOptions explorerOptions;
+    explorerOptions.tablebaseDir = *options.exploreTablebaseDir;
+    explorerOptions.start = parsePositionNotation(*options.queryPositionNotation);
+    explorerOptions.maxPlies = options.maxPlies;
+    explorerOptions.includeAlternatives = true;
+
+    const WdlLineExplorerResult result = exploreDenseTablebaseWdlLine(explorerOptions);
+    if (options.jsonOutput) {
+        printWdlLineExplorerJson(result, *options.exploreTablebaseDir, options.maxPlies);
+        return;
+    }
+    printWdlLineExplorerText(result, *options.exploreTablebaseDir, options.maxPlies);
 }
 
 void printLayerArray(const char* title, const std::array<uint64_t, 16>& values) {
@@ -3051,6 +3203,10 @@ int main(int argc, char** argv) {
         }
         if (options.queryTablebase) {
             printDenseTablebaseQuery(options);
+            return 0;
+        }
+        if (options.exploreTablebase) {
+            printWdlLineExplorer(options);
             return 0;
         }
         if (options.buildLayerExternalProvided) {

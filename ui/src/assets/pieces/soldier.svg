@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="Soldier piece">
+  <circle cx="64" cy="64" r="58" fill="#edf7ef" stroke="#245f46" stroke-width="8"/>
+  <path d="M64 28l28 14v18c0 22-12 36-28 44-16-8-28-22-28-44V42z" fill="#245f46"/>
+  <path d="M51 59h26M64 46v33" stroke="#edf7ef" stroke-width="8" stroke-linecap="round"/>
+</svg>

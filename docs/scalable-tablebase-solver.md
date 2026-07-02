@@ -208,16 +208,24 @@ Read-only dense lookup after a range has produced `.s15res` files:
 ```powershell
 .\build\sanpao15_cli.exe --query-tablebase build\prod-layers --position "SSSSS/SSSSS/SSSSS/...../.CCC. c" --moves
 .\build\sanpao15_cli.exe --query-tablebase build\prod-layers --position "SSSSS/SSSSS/SSSSS/...../.CCC. c" --moves --json
+.\build\sanpao15_cli.exe --explore-tablebase build\prod-layers --position "SSSSS/SSSSS/SSSSS/...../.CCC. c" --max-plies 100
 ```
 
 Lookup does not call the solver and does not load full layers. It validates the
 selected layer header, seeks to the target outcome byte, and repeats that
 single-byte read for legal successors when recommendations are requested.
+The WDL line explorer repeats those single-byte reads along one deterministic
+sample line, records alternatives, and stops on terminal positions, cycles,
+missing tablebase files, lookup errors, or the max-plies cap.
 
 ## Output
 
 The streaming solver still writes outcome-only `.s15res` files. It does not
 store distance, DTW, or best moves.
+
+The line explorer and UI recommendations are therefore WDL-only. They must not
+be interpreted as fastest wins, shortest wins, fastest draws, or distance
+optimal play.
 
 The production per-layer path keeps the public dense index type as `uint64_t`
 but uses a `uint32_t` resolved queue and `uint32_t` predecessor-index scratch

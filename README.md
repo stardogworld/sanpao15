@@ -129,6 +129,8 @@ Useful CLI modes:
 .\build\sanpao15_cli.exe --query-tablebase build\prod-layers --position "SSSSS/SSSSS/SSSSS/...../.CCC. c"
 .\build\sanpao15_cli.exe --query-tablebase build\prod-layers --position "SSSSS/SSSSS/SSSSS/...../.CCC. c" --moves
 .\build\sanpao15_cli.exe --query-tablebase build\prod-layers --position "SSSSS/SSSSS/SSSSS/...../.CCC. c" --moves --json
+.\build\sanpao15_cli.exe --explore-tablebase build\prod-layers --position "SSSSS/SSSSS/SSSSS/...../.CCC. c" --max-plies 100
+.\build\sanpao15_cli.exe --explore-tablebase build\prod-layers --position "SSSSS/SSSSS/SSSSS/...../.CCC. c" --max-plies 100 --json
 .\build\sanpao15_cli.exe --limit 50000
 .\build\sanpao15_cli.exe --full
 .\build\sanpao15_cli.exe --analyze "SSSSS/SSSSS/SSSSS/...../.CCC. c" --limit 10000
@@ -277,6 +279,7 @@ Dense tablebase lookup is read-only and random-access:
 ```powershell
 .\build\sanpao15_cli.exe --query-tablebase build\prod-layers --position "SSSSS/SSSSS/SSSSS/...../.CCC. c" --moves
 .\build\sanpao15_cli.exe --query-tablebase build\prod-layers --position "SSSSS/SSSSS/SSSSS/...../.CCC. c" --moves --json
+.\build\sanpao15_cli.exe --explore-tablebase build\prod-layers --position "SSSSS/SSSSS/SSSSS/...../.CCC. c" --max-plies 100
 ```
 
 The query locates `layer-NN.s15res` by soldier count, validates the header
@@ -285,6 +288,12 @@ to only the outcome byte needed for the current position. With `--moves`, each
 legal successor is read the same way and classified from the side to move:
 winning, drawing, or losing. This is outcome-only WDL guidance; `.s15res` does
 not contain distance, DTW, or fastest-win data.
+
+`--explore-tablebase` samples one deterministic WDL line using the same
+random-read `.s15res` lookup. It chooses moves that preserve the current WDL
+result when possible, detects cycles, stops at `--max-plies`, and reports
+`terminal`, `cycle`, `maxPlies`, `noLegalMoves`, `missingTablebase`, or
+`lookupError`. It does not solve, regenerate, or load the full tablebase.
 
 Layer-local edge probe:
 
@@ -322,6 +331,12 @@ through `layer-15.s15res` as files. The browser keeps file handles and reads
 only the target header/outcome byte for the current position and each legal
 successor; it does not load the full 4.7GB outcome set. Recommended moves are
 grouped as winning, drawing, or losing using the same WDL-only rule as the CLI.
+
+The Line Explorer panel samples and plays back one WDL-only line from the
+current position. It supports max-plies control, previous/next, 700ms autoplay,
+click-to-jump plies, stop reason display, last-move highlight, recommended-move
+highlight, undo/redo/reset, and copy/paste notation. It is not a shortest-win
+or fastest-draw explorer.
 
 `Unknown` means not proven, not found in the table, or unresolved because the table was truncated. It must not be treated as `Draw`.
 

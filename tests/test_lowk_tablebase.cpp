@@ -43,6 +43,14 @@ Position captureOneSoldierPosition() {
     return pos;
 }
 
+Position lineExplorerK4Position() {
+    Position pos;
+    pos.cannons = maskOf({20, 21, 22});
+    pos.soldiers = maskOf({10, 11, 12, 13});
+    pos.side = Side::Cannon;
+    return pos;
+}
+
 uint64_t nextRandom(uint64_t& state) {
     state = state * 6364136223846793005ull + 1442695040888963407ull;
     return state;
@@ -952,4 +960,67 @@ SANPAO15_TEST(denseTablebaseInitialPositionEncodesToLayer15) {
     SANPAO15_REQUIRE(popcount25(initial.soldiers) == 15);
     SANPAO15_REQUIRE(index < denseStateCount(15));
     SANPAO15_REQUIRE(positionFromDenseIndex(15, index) == initial);
+}
+
+SANPAO15_TEST(wdlLineExplorerKeepsDrawBeforeWinningSuccessorAndPrefersCapture) {
+    const std::filesystem::path dir = tempDir("sanpao15-wdl-line-draw-selection");
+    const Position pos = lineExplorerK4Position();
+    const uint64_t index = denseIndex(pos);
+    const std::vector<DenseSuccessor> successors = generateDenseSuccessorsFromPosition(4, index, pos);
+    SANPAO15_REQUIRE(!successors.empty());
+
+    PackedOutcomeTable2Bit k4(denseStateCount(4), Outcome::SoldierWin);
+    PackedOutcomeTable2Bit k3(denseStateCount(3), Outcome::SoldierWin);
+    k4.set(index, Outcome::Draw);
+
+    bool setWinningQuiet = false;
+    bool setDrawingCapture = false;
+    for (const DenseSuccessor& successor : successors) {
+        if (!successor.move.capture && !setWinningQuiet) {
+            k4.set(successor.toIndex, Outcome::CannonWin);
+            setWinningQuiet = true;
+        }
+        if (successor.move.capture) {
+            k3.set(successor.toIndex, Outcome::Draw);
+            setDrawingCapture = true;
+        }
+    }
+    SANPAO15_REQUIRE(setWinningQuiet);
+    SANPAO15_REQUIRE(setDrawingCapture);
+
+    saveDenseResultTable2Bit(k3, 3, lowKLayerResultPath(dir, 3), StandardRulesetHash);
+    saveDenseResultTable2Bit(k4, 4, lowKLayerResultPath(dir, 4), StandardRulesetHash);
+
+    WdlLineExplorerOptions options;
+    options.tablebaseDir = dir;
+    options.start = pos;
+    options.maxPlies = 1;
+    const WdlLineExplorerResult result = exploreDenseTablebaseWdlLine(options);
+
+    SANPAO15_REQUIRE(result.startOutcome == Outcome::Draw);
+    SANPAO15_REQUIRE(result.stopReason == "maxPlies");
+    SANPAO15_REQUIRE(result.plies.size() == 1);
+    SANPAO15_REQUIRE(result.plies[0].chosenMove.capture);
+    SANPAO15_REQUIRE(result.plies[0].chosenMove.from == 20);
+    SANPAO15_REQUIRE(result.plies[0].chosenMove.to == 10);
+    SANPAO15_REQUIRE(result.plies[0].successorOutcome == Outcome::Draw);
+    SANPAO15_REQUIRE(result.plies[0].chosenClassification == "drawing");
+    SANPAO15_REQUIRE(!result.plies[0].alternatives.empty());
+
+    std::filesystem::remove_all(dir);
+}
+
+SANPAO15_TEST(wdlLineExplorerReportsMissingTablebaseWithoutThrowing) {
+    const std::filesystem::path dir = std::filesystem::temp_directory_path() / "sanpao15-wdl-line-missing";
+    std::filesystem::remove_all(dir);
+
+    WdlLineExplorerOptions options;
+    options.tablebaseDir = dir;
+    options.start = lineExplorerK4Position();
+    options.maxPlies = 5;
+    const WdlLineExplorerResult result = exploreDenseTablebaseWdlLine(options);
+
+    SANPAO15_REQUIRE(result.stopReason == "missingTablebase");
+    SANPAO15_REQUIRE(result.error.has_value());
+    SANPAO15_REQUIRE(result.plies.empty());
 }

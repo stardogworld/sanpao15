@@ -32,6 +32,10 @@ function winForSide(side: Position["side"]): Outcome {
   return side === "cannon" ? "CannonWin" : "SoldierWin";
 }
 
+function opponentWinForSide(side: Position["side"]): Outcome {
+  return side === "cannon" ? "SoldierWin" : "CannonWin";
+}
+
 function classify(sideToMove: Position["side"], outcome: Outcome): MoveClassification {
   if (outcome === winForSide(sideToMove)) {
     return "winning";
@@ -42,14 +46,43 @@ function classify(sideToMove: Position["side"], outcome: Outcome): MoveClassific
   return "losing";
 }
 
-function chooseRecommended(moves: RecommendedMove[]): RecommendedMove[] {
-  for (const classification of ["winning", "drawing", "losing"] as const) {
-    const selected = moves.filter((move) => move.classification === classification);
-    if (selected.length > 0) {
-      return selected;
-    }
+function wdlRecommendationTier(side: Position["side"], currentOutcome: Outcome, successorOutcome: Outcome): number {
+  if (currentOutcome === winForSide(side)) {
+    if (successorOutcome === winForSide(side)) return 0;
+    if (successorOutcome === "Draw") return 1;
+    return 2;
   }
-  return [];
+  if (currentOutcome === "Draw") {
+    if (successorOutcome === "Draw") return 0;
+    if (successorOutcome === winForSide(side)) return 1;
+    return 2;
+  }
+  if (currentOutcome === opponentWinForSide(side)) {
+    if (successorOutcome === "Draw") return 0;
+    if (successorOutcome === opponentWinForSide(side)) return 1;
+    return 2;
+  }
+  return classificationRank(classify(side, successorOutcome));
+}
+
+function compareRecommended(side: Position["side"], currentOutcome: Outcome, left: RecommendedMove, right: RecommendedMove): number {
+  const tier = wdlRecommendationTier(side, currentOutcome, left.successorOutcome) -
+    wdlRecommendationTier(side, currentOutcome, right.successorOutcome);
+  if (tier !== 0) return tier;
+  if (left.move.capture !== right.move.capture) return left.move.capture ? -1 : 1;
+  if (left.move.capture && left.successorSoldierCount !== right.successorSoldierCount) {
+    return left.successorSoldierCount - right.successorSoldierCount;
+  }
+  if (left.move.from !== right.move.from) return left.move.from - right.move.from;
+  if (left.move.to !== right.move.to) return left.move.to - right.move.to;
+  if (left.move.capturedSquare !== right.move.capturedSquare) return left.move.capturedSquare - right.move.capturedSquare;
+  return left.successorIndex < right.successorIndex ? -1 : left.successorIndex > right.successorIndex ? 1 : 0;
+}
+
+function chooseRecommended(side: Position["side"], currentOutcome: Outcome, moves: RecommendedMove[]): RecommendedMove[] {
+  if (moves.length === 0) return [];
+  const bestTier = wdlRecommendationTier(side, currentOutcome, moves[0].successorOutcome);
+  return moves.filter((move) => wdlRecommendationTier(side, currentOutcome, move.successorOutcome) === bestTier);
 }
 
 export function moveText(move: Move): string {
@@ -76,17 +109,11 @@ export async function recommendMoves(
     });
   }
 
-  moves.sort((left, right) => {
-    const rank = classificationRank(left.classification) - classificationRank(right.classification);
-    if (rank !== 0) return rank;
-    if (left.move.from !== right.move.from) return left.move.from - right.move.from;
-    if (left.move.to !== right.move.to) return left.move.to - right.move.to;
-    return Number(left.successorIndex - right.successorIndex);
-  });
+  moves.sort((left, right) => compareRecommended(position.side, current.outcome, left, right));
 
   return {
     ...current,
     moves,
-    recommendedMoves: chooseRecommended(moves),
+    recommendedMoves: chooseRecommended(position.side, current.outcome, moves),
   };
 }

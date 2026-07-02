@@ -139,6 +139,7 @@ Useful CLI commands:
 .\build\sanpao15_cli.exe --validate-res build\empty-k0.s15res
 .\build\sanpao15_cli.exe --query-tablebase build\prod-layers --position "SSSSS/SSSSS/SSSSS/...../.CCC. c" --moves
 .\build\sanpao15_cli.exe --query-tablebase build\prod-layers --position "SSSSS/SSSSS/SSSSS/...../.CCC. c" --moves --json
+.\build\sanpao15_cli.exe --explore-tablebase build\prod-layers --position "SSSSS/SSSSS/SSSSS/...../.CCC. c" --max-plies 100
 ```
 
 Do not commit generated `.s15res` files.
@@ -157,6 +158,15 @@ successor, grouping moves as winning, drawing, or losing from the current side
 to move. With `--json`, the same data is emitted for tools or UI integration.
 This is WDL-only information: `.s15res` has no DTW, distance, or best-move
 payload.
+
+`--explore-tablebase DIR --position TEXT --max-plies N [--json]` uses the same
+random-access lookup to sample one deterministic WDL line. The selection rule
+preserves the current result when possible: winning positions keep the moving
+side winning, draw positions keep Draw, and losing positions choose the best
+practical WDL tier. Ties prefer captures, then lower successor soldier count
+for captures, then lexical move order. The result includes cycle detection and
+stop reasons. It does not load full layers and does not provide shortest-win,
+fastest-draw, DTW, or DTC information.
 
 ## Dense Successor Indexing
 
