@@ -159,16 +159,22 @@ prototype files are rejected by current readers. MTD resume uses header-only
 validation for existing `.s15mtd` files; use `--verify-mtd-layer` when full
 payload and semantic verification is required. The MTD solve path streams
 packed12 output from material/distance arrays instead of keeping a second
-current-layer packed table resident in memory.
+current-layer packed table resident in memory, and the writer buffers packed12
+payload bytes in blocks without changing the `.s15mtd` format.
 
 MTD solve, range solve, verify, and inspect accept `--threads N`. `--threads 1`
 is the deterministic baseline, `--threads 0` resolves to hardware concurrency,
 and the resolved count is clamped to at most 256 and the current work size. The
-threaded pass parallelizes WDL solved scans, outcome counting, solve
+threaded pass parallelizes the merged WDL solved/outcome scan, solve
 initialization scans, inspect stats scans, and verify scans. The win, Draw
 material, and Draw distance predecessor/worklist propagation loops remain
 single-threaded. MTD v2 semantics and file format are unchanged; benchmark
 threaded output against `--threads 1` with SHA256 before trusting a new range.
+
+Draw material thresholds begin at soldier count `4`, matching the ruleset
+terminal condition where `soldierCount < 4` is already `CannonWin`. The
+threshold attractor uses stamps for same-layer reachability instead of copying
+already assigned material states each round.
 
 `inspect-res` reads only the header and file size. `validate-res` additionally
 scans the payload and rejects invalid byte-encoded outcomes. Packed 2-bit

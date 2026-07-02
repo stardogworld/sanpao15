@@ -170,7 +170,7 @@ The v2 prototype solves each layer in outcome-aware phases:
 
 ```text
 1. Load solved current WDL, and lower WDL/MTD when k >= 4.
-2. Reject any Unknown WDL entry.
+2. Scan each required WDL layer once to reject Unknown and count outcomes.
 3. Solve CannonWin guarantee distance in the CannonWin subgraph.
 4. Solve SoldierWin guarantee distance in the SoldierWin subgraph.
 5. Solve Draw materialTarget with a Draw-only threshold attractor.
@@ -187,9 +187,17 @@ guaranteeDistance = 0
 
 The production solve path writes packed12 output directly from the solved
 material and distance arrays. It no longer constructs a second resident
-`PackedMtdTable12` for the current layer before writing. The legacy
+`PackedMtdTable12` for the current layer before writing, and it buffers payload
+bytes into write blocks without changing the `.s15mtd` format. The legacy
 `saveMtdTable(PackedMtdTable12, ...)` API remains for tests and small-table
 utilities.
+
+Draw material thresholds start at `MinSoldiersForSoldierSurvival` (`4`) because
+states below that soldier count are already `CannonWin`. The threshold
+attractor uses a stamp array: material-assigned Draw states are naturally true,
+and newly reached same-layer states are true only for the current threshold
+stamp. This removes per-threshold copies of assigned states and keeps MTD v2
+semantics unchanged.
 
 ## Threading
 
@@ -215,8 +223,7 @@ Threading is supported by:
 The threaded pass parallelizes only safe linear scans and initialization scans:
 
 ```text
-wdlSolvedScan
-outcomeCount
+wdlSolvedOutcomeScan
 winningInitialScan
 drawThresholdInitialScan
 drawDistanceInitialScan
@@ -331,8 +338,8 @@ packed output table. For the largest layer, `k=11`, this removes about
 The recommended next steps are:
 
 ```text
-1. threaded performance pass
-2. cautious k=5/k=6 benchmark
-3. production range planning
+1. worklist propagation optimization
+2. k7/k8 benchmark
+3. production range solver
 4. backend/UI MTD query integration
 ```

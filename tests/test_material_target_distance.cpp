@@ -1,7 +1,9 @@
 #include "test_common.h"
 
+#include <array>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <string>
 
 #include "sanpao15/dense_index.h"
@@ -26,6 +28,13 @@ void writeByteAt(const std::filesystem::path& path, std::streamoff offset, uint8
     file.put(static_cast<char>(value));
 }
 
+std::string readBinaryFile(const std::filesystem::path& path) {
+    std::ifstream input(path, std::ios::binary);
+    return {
+        std::istreambuf_iterator<char>(input),
+        std::istreambuf_iterator<char>()};
+}
+
 }  // namespace
 
 SANPAO15_TEST(mtdEntryEncodeDecodeRoundtrip) {
@@ -37,6 +46,57 @@ SANPAO15_TEST(mtdEntryEncodeDecodeRoundtrip) {
     SANPAO15_REQUIRE(saturatedAdd1(253) == 254);
     SANPAO15_REQUIRE(saturatedAdd1(254) == MtdSaturatedDistance);
     SANPAO15_REQUIRE(saturatedAdd1(255) == MtdSaturatedDistance);
+}
+
+SANPAO15_TEST(mtdDrawMaterialThresholdStartsAtSurvivalLimit) {
+    SANPAO15_REQUIRE(firstMtdDrawMaterialThreshold() == 4);
+    SANPAO15_REQUIRE(mtdDrawMaterialThresholdRounds(0) == 0);
+    SANPAO15_REQUIRE(mtdDrawMaterialThresholdRounds(3) == 0);
+    SANPAO15_REQUIRE(mtdDrawMaterialThresholdRounds(4) == 0);
+    SANPAO15_REQUIRE(mtdDrawMaterialThresholdRounds(5) == 1);
+    SANPAO15_REQUIRE(mtdDrawMaterialThresholdRounds(6) == 2);
+}
+
+SANPAO15_TEST(mtdThresholdStampTreatsAssignedMaterialAsTrueAndWraps) {
+    MtdThresholdStampScratch scratch(3);
+    SANPAO15_REQUIRE(scratch.currentStamp() == 0);
+    SANPAO15_REQUIRE(scratch.isTrue(1, true));
+    SANPAO15_REQUIRE(!scratch.isTrue(1, false));
+
+    scratch.nextRound();
+    SANPAO15_REQUIRE(scratch.currentStamp() == 1);
+    SANPAO15_REQUIRE(scratch.mark(1, false));
+    SANPAO15_REQUIRE(scratch.isTrue(1, false));
+    SANPAO15_REQUIRE(!scratch.mark(1, false));
+    SANPAO15_REQUIRE(!scratch.mark(2, true));
+
+    for (int i = 0; i < 255; ++i) {
+        scratch.nextRound();
+    }
+    SANPAO15_REQUIRE(scratch.currentStamp() == 1);
+    SANPAO15_REQUIRE(!scratch.isTrue(1, false));
+    SANPAO15_REQUIRE(scratch.mark(1, false));
+}
+
+SANPAO15_TEST(mtdSolvedWdlScanCountsOutcomesAndRejectsUnknown) {
+    PackedOutcomeTable2Bit table(8, Outcome::CannonWin);
+    table.set(1, Outcome::SoldierWin);
+    table.set(2, Outcome::Draw);
+    table.set(3, Outcome::Draw);
+
+    const MtdWdlLayerScanSummary single = scanSolvedWdlLayer(table, 0, "test", 1);
+    const MtdWdlLayerScanSummary threaded = scanSolvedWdlLayer(table, 0, "test", 4);
+    SANPAO15_REQUIRE(single.outcomeCounts == threaded.outcomeCounts);
+    SANPAO15_REQUIRE(!threaded.hasUnknown);
+    SANPAO15_REQUIRE(threaded.outcomeCounts[static_cast<size_t>(Outcome::Unknown)] == 0);
+    SANPAO15_REQUIRE(threaded.outcomeCounts[static_cast<size_t>(Outcome::CannonWin)] == 5);
+    SANPAO15_REQUIRE(threaded.outcomeCounts[static_cast<size_t>(Outcome::SoldierWin)] == 1);
+    SANPAO15_REQUIRE(threaded.outcomeCounts[static_cast<size_t>(Outcome::Draw)] == 2);
+
+    table.set(6, Outcome::Unknown);
+    sanpao15::test::requireThrows([&] {
+        (void)scanSolvedWdlLayer(table, 0, "test", 4);
+    }, "solved WDL scan should reject Unknown");
 }
 
 SANPAO15_TEST(packedMtdTableSupportsOddStateCounts) {
@@ -173,6 +233,33 @@ SANPAO15_TEST(mtdStreamingWriterRoundtripAndStats) {
     std::filesystem::remove_all(dir);
 }
 
+SANPAO15_TEST(mtdArrayWriterIsByteIdenticalToPackedWriter) {
+    const std::filesystem::path dir = tempDir("sanpao15-mtd-writer-identical");
+    const std::filesystem::path packedPath = dir / "packed.s15mtd";
+    const std::filesystem::path arrayPath = dir / "array.s15mtd";
+    const uint64_t stateCount = denseStateCount(0);
+    PackedMtdTable12 table(stateCount, MtdEntry{0, 0});
+    table.set(0, MtdEntry{0, 7});
+    table.set(1, MtdEntry{0, MtdSaturatedDistance});
+    table.set(stateCount - 1, MtdEntry{0, 11});
+
+    std::vector<uint8_t> material(static_cast<size_t>(stateCount), 0);
+    std::vector<uint16_t> distance(static_cast<size_t>(stateCount), 0);
+    distance[0] = 7;
+    distance[1] = MtdSaturatedDistance;
+    distance[static_cast<size_t>(stateCount - 1)] = 11;
+
+    saveMtdTable(table, 0, packedPath, StandardRulesetHash);
+    const MtdLayerWriteStats stats = writeMtdTableFromArrays(arrayPath, 0, material, distance, StandardRulesetHash);
+    SANPAO15_REQUIRE(readBinaryFile(packedPath) == readBinaryFile(arrayPath));
+    SANPAO15_REQUIRE(stats.stateCount == stateCount);
+    SANPAO15_REQUIRE(stats.distanceCounts[7] == 1);
+    SANPAO15_REQUIRE(stats.distanceCounts[11] == 1);
+    SANPAO15_REQUIRE(stats.saturatedDistanceCount == 1);
+    SANPAO15_REQUIRE(stats.maxExactDistance == 11);
+    std::filesystem::remove_all(dir);
+}
+
 SANPAO15_TEST(mtdStreamingWriterRejectsUnassignedMaterial) {
     const std::filesystem::path dir = tempDir("sanpao15-mtd-streaming-invalid");
     const std::filesystem::path path = mtdLayerPath(dir, 0);
@@ -271,7 +358,7 @@ SANPAO15_TEST(mtdBaseLayerThreadedSolveWritesThreadMetadataAndVerifies) {
             std::istreambuf_iterator<char>());
     }
     SANPAO15_REQUIRE(json.find("\"threads\": 8") != std::string::npos);
-    SANPAO15_REQUIRE(json.find("\"wdlSolvedScan\"") != std::string::npos);
+    SANPAO15_REQUIRE(json.find("\"wdlSolvedOutcomeScan\"") != std::string::npos);
 
     MtdLayerVerifyOptions verifyOptions;
     verifyOptions.soldierCount = 0;

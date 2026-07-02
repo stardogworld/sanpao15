@@ -75,6 +75,28 @@ struct MtdLayerWriteStats {
     uint64_t saturatedDistanceCount = 0;
 };
 
+struct MtdWdlLayerScanSummary {
+    std::array<uint64_t, 4> outcomeCounts{};
+    bool hasUnknown = false;
+    uint64_t firstUnknown = 0;
+};
+
+class MtdThresholdStampScratch {
+public:
+    explicit MtdThresholdStampScratch(uint64_t stateCount = 0);
+
+    void reset(uint64_t stateCount);
+    void nextRound();
+    bool isTrue(uint64_t index, bool materialAssigned) const;
+    bool mark(uint64_t index, bool materialAssigned);
+    uint8_t currentStamp() const;
+    const std::vector<uint8_t>& stamps() const;
+
+private:
+    std::vector<uint8_t> stamps_;
+    uint8_t currentStamp_ = 0;
+};
+
 struct MtdLayerSolveResult {
     int soldierCount = 0;
     uint32_t threads = 1;
@@ -182,6 +204,13 @@ uint16_t encodeMtdEntry(MtdEntry entry);
 MtdEntry decodeMtdEntry(uint16_t encoded);
 uint8_t saturatedAdd1(uint8_t distance);
 uint64_t mtdPayloadBytes(uint64_t stateCount);
+int firstMtdDrawMaterialThreshold();
+uint64_t mtdDrawMaterialThresholdRounds(int soldierCount);
+MtdWdlLayerScanSummary scanSolvedWdlLayer(
+    const PackedOutcomeTable2Bit& table,
+    int soldierCount,
+    const char* label,
+    uint32_t threads);
 
 std::filesystem::path mtdLayerPath(const std::filesystem::path& dir, int soldierCount);
 std::filesystem::path mtdLayerStatsPath(const std::filesystem::path& dir, int soldierCount);
