@@ -27,14 +27,23 @@ import {
 } from "./tablebase/recommend";
 import {
   exploreWdlLine,
-  linePlyMoveText,
   type WdlLineExplorerResult,
 } from "./tablebase/lineExplorer";
+import {
+  badge,
+  classificationBadge,
+  outcomeBadge,
+  sideBadge,
+  stopReasonBadge,
+} from "./ui/badges";
 
 interface HistoryEntry {
   position: Position;
   lastMove: Move | null;
 }
+
+const initialNotation = "SSSSS/SSSSS/SSSSS/...../.CCC. c";
+const drawingFirstMove: Move = { from: 22, to: 12, capture: true, capturedSquare: 12 };
 
 export class Sanpao15App {
   private position: Position = initialPosition();
@@ -47,6 +56,7 @@ export class Sanpao15App {
 
   private readonly root: HTMLElement;
   private readonly boardEl = document.createElement("section");
+  private readonly headerStatusEl = document.createElement("div");
   private readonly turnEl = document.createElement("strong");
   private readonly soldierCountEl = document.createElement("strong");
   private readonly resultEl = document.createElement("strong");
@@ -58,6 +68,9 @@ export class Sanpao15App {
   private readonly lineResultEl = document.createElement("div");
   private readonly maxPliesInputEl = document.createElement("input");
   private readonly playbackStatusEl = document.createElement("div");
+  private readonly feedbackEl = document.createElement("div");
+  private readonly initialCardEl = document.createElement("div");
+  private readonly helpEl = document.createElement("div");
 
   private resultTable: ResultTable | null = null;
   private tableLoadError: string | null = null;
@@ -66,6 +79,7 @@ export class Sanpao15App {
   private lineResult: WdlLineExplorerResult | null = null;
   private activeLinePly = 0;
   private autoplayTimer: number | null = null;
+  private spotlightMove: Move | null = null;
 
   constructor(root: HTMLElement) {
     this.root = root;
@@ -79,6 +93,7 @@ export class Sanpao15App {
           <h1>Sanpao15</h1>
           <p>Outcome-only tablebase explorer</p>
         </div>
+        <div class="header-status"></div>
       </header>
       <main class="game-layout">
         <div class="board-column">
@@ -92,39 +107,55 @@ export class Sanpao15App {
           </section>
         </div>
         <aside class="side-column">
-          <section class="status-panel">
+          <details class="app-panel game-panel" open>
+            <summary>Game</summary>
+            <div class="status-panel">
             <div class="metric"><span>Turn</span></div>
             <div class="metric"><span>Soldiers</span></div>
             <div class="metric"><span>Terminal</span></div>
-          </section>
-          <section class="tablebase-panel">
+            </div>
+            <div class="feedback"></div>
+          </details>
+          <details class="app-panel tablebase-panel" open>
+            <summary>Tablebase</summary>
             <div class="panel-heading">
-              <h2>Tablebase</h2>
               <div class="tablebase-actions"></div>
             </div>
             <div class="tablebase-status"></div>
             <div class="tablebase-result"></div>
-          </section>
-          <section class="line-panel">
+          </details>
+          <details class="app-panel line-panel" open>
+            <summary>Line Explorer</summary>
             <div class="panel-heading">
-              <h2>Line Explorer</h2>
               <div class="line-actions"></div>
             </div>
             <p class="panel-note">WDL-only: no shortest win, fastest draw, DTW, or DTC is encoded.</p>
             <div class="playback-actions"></div>
             <div class="playback-status"></div>
             <div class="line-result"></div>
-          </section>
-          <section class="analysis-panel"></section>
+          </details>
+          <details class="app-panel initial-panel" open>
+            <summary>Initial Position</summary>
+            <div class="initial-card"></div>
+          </details>
+          <details class="app-panel help-panel">
+            <summary>Help</summary>
+            <div class="help-copy"></div>
+          </details>
+          <details class="app-panel analysis-panel">
+            <summary>Reachable Table Analysis</summary>
+          </details>
         </aside>
       </main>
     `;
 
+    const headerStatus = this.requireElement(".header-status");
     const boardWrap = this.requireElement(".board-wrap");
     const toolbar = this.requireElement(".toolbar");
     const notationPanel = this.requireElement(".notation-panel");
     const notationActions = this.requireElement(".notation-actions");
     const statusPanel = this.requireElement(".status-panel");
+    const feedback = this.requireElement(".feedback");
     const analysisPanel = this.requireElement(".analysis-panel");
     const tablebaseActions = this.requireElement(".tablebase-actions");
     const tablebaseStatus = this.requireElement(".tablebase-status");
@@ -133,6 +164,11 @@ export class Sanpao15App {
     const playbackActions = this.requireElement(".playback-actions");
     const playbackStatus = this.requireElement(".playback-status");
     const lineResult = this.requireElement(".line-result");
+    const initialCard = this.requireElement(".initial-card");
+    const helpCopy = this.requireElement(".help-copy");
+
+    this.headerStatusEl.className = "header-status-copy";
+    headerStatus.append(this.headerStatusEl);
 
     this.boardEl.className = "board";
     this.boardEl.setAttribute("aria-label", "5x5 board");
@@ -203,10 +239,23 @@ export class Sanpao15App {
     playbackStatus.append(this.playbackStatusEl);
     lineResult.append(this.lineResultEl);
 
+    this.feedbackEl.className = "feedback-copy";
+    feedback.append(this.feedbackEl);
+
+    this.initialCardEl.className = "initial-card-copy";
+    initialCard.append(this.initialCardEl);
+
+    this.helpEl.className = "help-copy-inner";
+    helpCopy.append(this.helpEl);
+
     this.analysisEl.className = "analysis-copy";
     analysisPanel.append(this.analysisEl);
 
+    this.renderInitialCard();
+    this.renderHelp();
+    this.renderTablebaseStatus();
     this.render();
+    this.renderPlaybackStatus();
   }
 
   private requireElement(selector: string): HTMLElement {
@@ -234,6 +283,7 @@ export class Sanpao15App {
     this.lastMove = null;
     this.clearSelection();
     this.clearPositionDerivedOutput();
+    this.showFeedback("Initial position restored.");
     this.render();
     void this.queryTablebaseIfLoaded();
   }
@@ -251,7 +301,10 @@ export class Sanpao15App {
     this.lastMove = previous.lastMove;
     this.clearSelection();
     this.clearPositionDerivedOutput();
+    this.lineResult = null;
+    this.activeLinePly = 0;
     this.render();
+    this.renderPlaybackStatus();
     void this.queryTablebaseIfLoaded();
   }
 
@@ -263,7 +316,10 @@ export class Sanpao15App {
     this.lastMove = next.lastMove;
     this.clearSelection();
     this.clearPositionDerivedOutput();
+    this.lineResult = null;
+    this.activeLinePly = 0;
     this.render();
+    this.renderPlaybackStatus();
     void this.queryTablebaseIfLoaded();
   }
 
@@ -276,7 +332,10 @@ export class Sanpao15App {
     this.lastMove = lastMove;
     this.clearSelection();
     this.clearPositionDerivedOutput();
+    this.lineResult = null;
+    this.activeLinePly = 0;
     this.render();
+    this.renderPlaybackStatus();
     void this.queryTablebaseIfLoaded();
   }
 
@@ -285,6 +344,7 @@ export class Sanpao15App {
     this.tablebaseResult = null;
     this.tablebaseResultEl.textContent = "";
     this.recommendedMoves = [];
+    this.spotlightMove = null;
   }
 
   private async analyze(): Promise<void> {
@@ -334,10 +394,12 @@ export class Sanpao15App {
     try {
       this.tablebase = await openTablebaseDirectory();
       this.renderTablebaseStatus();
+      this.showFeedback("Tablebase loaded.");
       await this.queryTablebase();
     } catch (error) {
       this.tablebase = null;
       this.tablebaseStatusEl.textContent = error instanceof Error ? error.message : String(error);
+      this.render();
     }
   }
 
@@ -346,24 +408,37 @@ export class Sanpao15App {
     try {
       this.tablebase = await openTablebaseFiles();
       this.renderTablebaseStatus();
+      this.showFeedback("Tablebase files loaded.");
       await this.queryTablebase();
     } catch (error) {
       this.tablebase = null;
       this.tablebaseStatusEl.textContent = error instanceof Error ? error.message : String(error);
+      this.render();
     }
   }
 
   private renderTablebaseStatus(): void {
     if (!this.tablebase) {
-      this.tablebaseStatusEl.textContent = "";
+      this.tablebaseStatusEl.replaceChildren(this.renderEmptyState(
+        "Tablebase not loaded",
+        "Select a directory or layer files to query WDL outcomes. The browser reads only the needed .s15res bytes.",
+      ));
       return;
     }
     const layers = Array.from(this.tablebase.layers.keys()).sort((left, right) => left - right);
-    this.tablebaseStatusEl.textContent = [
-      `Loaded: ${this.tablebase.sourceName}`,
-      `Layers: ${layers.join(", ")}`,
-      "Lookup mode: random-read outcome bytes only",
-    ].join("\n");
+    const encodings = Array.from(new Set(Array.from(this.tablebase.layers.values()).map((layer) => layer.encoding))).join(", ");
+    const complete = layers.length === 16 && layers[0] === 0 && layers[layers.length - 1] === 15;
+    const container = document.createElement("div");
+    container.className = "status-grid";
+    container.append(
+      this.statusItem("Status", complete ? "Complete 0..15" : "Partial", complete ? "drawing" : "warning"),
+      this.statusItem("Source", this.tablebase.sourceName),
+      this.statusItem("Layers", layers.join(", ")),
+      this.statusItem("Encoding", encodings || "unknown"),
+      this.statusItem("Ruleset", `0x${this.tablebase.rulesetHash.toString(16).toUpperCase()}`),
+      this.statusItem("Read mode", "random .s15res byte reads"),
+    );
+    this.tablebaseStatusEl.replaceChildren(container);
   }
 
   private async queryTablebaseIfLoaded(): Promise<void> {
@@ -374,7 +449,11 @@ export class Sanpao15App {
 
   private async queryTablebase(): Promise<void> {
     if (!this.tablebase) {
-      this.tablebaseResultEl.textContent = "Select a tablebase directory or layer files first.";
+      this.tablebaseResultEl.replaceChildren(this.renderEmptyState(
+        "No lookup yet",
+        "Load a tablebase first. Querying will not load full layers into memory.",
+      ));
+      this.render();
       return;
     }
 
@@ -384,11 +463,13 @@ export class Sanpao15App {
       this.tablebaseResult = result;
       this.recommendedMoves = result.recommendedMoves.map((move) => move.move);
       this.tablebaseResultEl.replaceChildren(this.renderTablebaseResult(result));
+      this.showFeedback(`Lookup updated: ${result.outcome}.`);
       this.render();
     } catch (error) {
       this.tablebaseResult = null;
       this.recommendedMoves = [];
       this.tablebaseResultEl.textContent = error instanceof Error ? error.message : String(error);
+      this.showFeedback("Tablebase lookup failed.");
       this.render();
     }
   }
@@ -398,15 +479,14 @@ export class Sanpao15App {
     container.className = "tablebase-result-grid";
 
     const summary = document.createElement("div");
-    summary.className = "tablebase-summary";
-    summary.textContent = [
-      `Outcome: ${outcomeLabel(result.outcome)}`,
-      `Soldiers: ${result.soldierCount}`,
-      `Dense index: ${result.denseIndex.toString()}`,
-      `Legal moves: ${result.moves.length}`,
-      `Recommended: ${result.recommendedMoves.length}`,
-      "Outcome-only: no DTW or shortest-win distance",
-    ].join("\n");
+    summary.className = "tablebase-summary summary-band";
+    summary.append(
+      this.summaryStat("Outcome", outcomeBadge(result.outcome)),
+      this.summaryStat("Soldiers", String(result.soldierCount)),
+      this.summaryStat("Dense index", result.denseIndex.toString()),
+      this.summaryStat("Legal moves", String(result.moves.length)),
+      this.summaryStat("Recommended", String(result.recommendedMoves.length)),
+    );
     container.append(summary);
 
     for (const group of ["winning", "drawing", "losing"] as MoveClassification[]) {
@@ -426,7 +506,14 @@ export class Sanpao15App {
         const list = document.createElement("ul");
         for (const move of moves) {
           const item = document.createElement("li");
-          item.textContent = `${moveText(move.move)} -> ${outcomeLabel(move.successorOutcome)} (k=${move.successorSoldierCount}, i=${move.successorIndex.toString()})`;
+          item.className = "move-row";
+          const moveMain = document.createElement("span");
+          moveMain.className = "move-main";
+          moveMain.textContent = moveText(move.move);
+          const detail = document.createElement("span");
+          detail.className = "move-detail";
+          detail.textContent = `k=${move.successorSoldierCount} i=${move.successorIndex.toString()}`;
+          item.append(moveMain, outcomeBadge(move.successorOutcome), classificationBadge(move.classification), detail);
           if (result.recommendedMoves.includes(move)) {
             item.classList.add("recommended");
           }
@@ -448,7 +535,9 @@ export class Sanpao15App {
     this.lineResult = result;
     this.activeLinePly = 0;
     this.lineResultEl.replaceChildren(this.renderLineResult(result));
+    this.showFeedback(result.error ? result.error : `Line explored: ${result.stopReason}.`);
     this.renderPlaybackStatus();
+    this.render();
   }
 
   private renderLineResult(result: WdlLineExplorerResult): HTMLElement {
@@ -456,25 +545,60 @@ export class Sanpao15App {
     container.className = "line-result-grid";
 
     const summary = document.createElement("div");
-    summary.className = "line-summary";
-    summary.textContent = [
-      `Start outcome: ${outcomeLabel(result.startOutcome)}`,
-      `Stop reason: ${result.stopReason}`,
-      result.cycleStartPly !== null ? `Cycle start ply: ${result.cycleStartPly}` : "Cycle start ply: none",
-      result.error ? `Error: ${result.error}` : `Plies: ${result.plies.length}`,
-    ].join("\n");
+    summary.className = "line-summary summary-band";
+    summary.append(
+      this.summaryStat("Start", outcomeBadge(result.startOutcome)),
+      this.summaryStat("Stop", stopReasonBadge(result.stopReason)),
+      this.summaryStat("Cycle", result.cycleStartPly !== null ? String(result.cycleStartPly) : "none"),
+      this.summaryStat(result.error ? "Error" : "Plies", result.error ?? String(result.plies.length)),
+    );
     container.append(summary);
+
+    if (result.stopReason === "maxPlies") {
+      const note = document.createElement("p");
+      note.className = "panel-note warning-note";
+      note.textContent = "This is a WDL sample line, not shortest play.";
+      container.append(note);
+    }
 
     const list = document.createElement("ol");
     list.className = "line-list";
     for (const ply of result.plies) {
       const item = document.createElement("li");
+      item.className = "line-ply-item";
+      if (ply.ply === this.activeLinePly) {
+        item.classList.add("active");
+      }
+      if (result.cycleStartPly === ply.ply) {
+        item.classList.add("cycle-start");
+      }
       const button = document.createElement("button");
       button.type = "button";
       button.className = "line-ply-button";
-      button.textContent = `${ply.ply}. ${sideLabel(ply.sideToMove)} ${outcomeLabel(ply.outcome)} ${linePlyMoveText(ply)}`;
+      button.append(
+        this.lineCell("ply", String(ply.ply)),
+        this.lineCell("side", sideLabel(ply.sideToMove)),
+        this.lineCell("move", moveText(ply.chosenMove)),
+        this.lineCell("successor", ply.successorOutcome),
+        this.lineCell("class", ply.classification),
+        this.lineCell("soldiers", `k=${ply.soldierCount}`),
+      );
       button.addEventListener("click", () => this.jumpToLinePly(ply.ply));
       item.append(button);
+      if (ply.alternatives.length > 1) {
+        const details = document.createElement("details");
+        details.className = "alternatives";
+        const summaryText = document.createElement("summary");
+        summaryText.textContent = `${ply.alternatives.length - 1} alternatives`;
+        const altList = document.createElement("ul");
+        for (const alternative of ply.alternatives.slice(1)) {
+          const altItem = document.createElement("li");
+          altItem.textContent = `${moveText(alternative.move)} -> ${alternative.successorOutcome} (${alternative.classification})`;
+          altList.append(altItem);
+        }
+        details.append(summaryText, altList);
+        item.append(details);
+      }
       list.append(item);
     }
     container.append(list);
@@ -495,7 +619,9 @@ export class Sanpao15App {
     this.activeLinePly = plyIndex;
     this.position = clonePosition(ply.position);
     this.lastMove = plyIndex === 0 ? null : this.lineResult.plies[plyIndex - 1]?.chosenMove ?? null;
+    this.spotlightMove = ply.chosenMove;
     this.clearSelection();
+    this.refreshLineListHighlight();
     this.render();
     this.renderPlaybackStatus();
     void this.queryTablebaseIfLoaded();
@@ -565,8 +691,9 @@ export class Sanpao15App {
     try {
       const next = parsePositionNotation(this.pasteInputEl.value);
       this.setPosition(next, null, true);
+      this.showFeedback("Position pasted.");
     } catch (error) {
-      this.analysisEl.textContent = error instanceof Error ? error.message : String(error);
+      this.showFeedback(error instanceof Error ? error.message : String(error), true);
     }
   }
 
@@ -578,7 +705,11 @@ export class Sanpao15App {
       this.lastMove = move;
       this.clearSelection();
       this.clearPositionDerivedOutput();
+      this.lineResult = null;
+      this.activeLinePly = 0;
+      this.showFeedback(`Moved ${moveText(move)}.`);
       this.render();
+      this.renderPlaybackStatus();
       void this.queryTablebaseIfLoaded();
       return;
     }
@@ -589,12 +720,14 @@ export class Sanpao15App {
         : this.position.soldiers.has(square);
     if (!ownPiece || terminalOutcome(this.position) !== "Unknown") {
       this.clearSelection();
+      this.showFeedback(terminalOutcome(this.position) !== "Unknown" ? "Terminal position: no move can be made." : "Select a piece for the side to move.");
       this.render();
       return;
     }
 
     this.selectedSquare = square;
     this.selectedMoves = generateLegalMoves(this.position).filter((candidate) => candidate.from === square);
+    this.showFeedback(this.selectedMoves.length === 0 ? "That piece has no legal move." : `${this.selectedMoves.length} legal target(s).`);
     this.render();
   }
 
@@ -610,12 +743,137 @@ export class Sanpao15App {
       legalMoves: this.selectedMoves,
       recommendedMoves: this.recommendedMoves,
       lastMove: this.lastMove,
+      lineMove: this.currentLineMove(),
+      spotlightMove: this.spotlightMove,
       onSquareClick: (square) => this.onSquareClick(square),
     });
 
-    this.turnEl.textContent = sideLabel(this.position.side);
+    this.turnEl.replaceChildren(sideBadge(this.position.side));
     this.soldierCountEl.textContent = String(this.position.soldiers.size);
-    this.resultEl.textContent = outcomeLabel(terminalOutcome(this.position));
+    this.resultEl.replaceChildren(outcomeBadge(terminalOutcome(this.position)));
     this.notationEl.textContent = positionToNotation(this.position);
+    this.renderHeaderStatus();
+  }
+
+  private renderHeaderStatus(): void {
+    this.headerStatusEl.replaceChildren(
+      badge("sanpao15-min-four-soldiers", "neutral"),
+      outcomeBadge(this.tablebaseResult?.outcome ?? terminalOutcome(this.position)),
+      badge(this.tablebase ? `tablebase ${this.tablebase.layers.size}/16` : "tablebase not loaded", this.tablebase ? "drawing" : "warning"),
+    );
+  }
+
+  private renderEmptyState(title: string, detail: string): HTMLElement {
+    const container = document.createElement("div");
+    container.className = "empty-state";
+    const heading = document.createElement("strong");
+    heading.textContent = title;
+    const copy = document.createElement("p");
+    copy.textContent = detail;
+    container.append(heading, copy);
+    return container;
+  }
+
+  private statusItem(label: string, value: string, tone: Parameters<typeof badge>[1] = "neutral"): HTMLElement {
+    const item = document.createElement("div");
+    item.className = "status-item";
+    const key = document.createElement("span");
+    key.textContent = label;
+    const valueEl = value.length < 24 ? badge(value, tone) : document.createElement("strong");
+    valueEl.textContent = value;
+    item.append(key, valueEl);
+    return item;
+  }
+
+  private summaryStat(label: string, value: string | HTMLElement): HTMLElement {
+    const item = document.createElement("div");
+    item.className = "summary-stat";
+    const key = document.createElement("span");
+    key.textContent = label;
+    const val = typeof value === "string" ? document.createElement("strong") : value;
+    if (typeof value === "string") {
+      val.textContent = value;
+    }
+    item.append(key, val);
+    return item;
+  }
+
+  private lineCell(label: string, value: string): HTMLElement {
+    const cell = document.createElement("span");
+    cell.className = `line-cell ${label}`;
+    const small = document.createElement("small");
+    small.textContent = label;
+    const strong = document.createElement("strong");
+    strong.textContent = value;
+    cell.append(small, strong);
+    return cell;
+  }
+
+  private currentLineMove(): Move | null {
+    if (!this.lineResult) return null;
+    return this.lineResult.plies[this.activeLinePly]?.chosenMove ?? null;
+  }
+
+  private refreshLineListHighlight(): void {
+    const items = this.lineResultEl.querySelectorAll(".line-ply-item");
+    items.forEach((item, index) => {
+      item.classList.toggle("active", index === this.activeLinePly);
+    });
+  }
+
+  private showFeedback(message: string, important = false): void {
+    this.feedbackEl.textContent = message;
+    this.feedbackEl.classList.toggle("important", important);
+  }
+
+  private renderInitialCard(): void {
+    const container = document.createElement("div");
+    container.className = "initial-card-grid";
+    const notation = document.createElement("code");
+    notation.textContent = initialNotation;
+    const meaning = document.createElement("p");
+    meaning.textContent = "The standard initial position is Draw. Cannon has exactly one drawing first move; every other legal first move enters SoldierWin.";
+    const actions = document.createElement("div");
+    actions.className = "card-actions";
+    actions.append(
+      this.makeButton("Reset to initial", () => this.reset()),
+      this.makeButton("Show drawing move", () => {
+        this.spotlightMove = drawingFirstMove;
+        this.showFeedback("Drawing first move highlighted: 22->12 captures 12.");
+        this.render();
+      }),
+      this.makeButton("Explore drawing line", () => {
+        this.reset();
+        window.setTimeout(() => {
+          void this.exploreLine();
+        }, 0);
+      }),
+      this.makeButton("Copy position", () => {
+        this.pasteInputEl.value = initialNotation;
+        void navigator.clipboard?.writeText(initialNotation);
+        this.showFeedback("Initial position copied.");
+      }),
+    );
+    container.append(
+      this.summaryStat("Position", notation),
+      this.summaryStat("Result", outcomeBadge("Draw")),
+      this.summaryStat("Only drawing first move", "22->12 captures 12"),
+      meaning,
+      actions,
+    );
+    this.initialCardEl.replaceChildren(container);
+  }
+
+  private renderHelp(): void {
+    this.helpEl.innerHTML = `
+      <ul class="help-list">
+        <li>Cannons move one orthogonal step to an empty square.</li>
+        <li>Cannons capture by jumping over one empty square to a soldier.</li>
+        <li>Soldiers move one orthogonal step to an empty square and do not capture.</li>
+        <li>soldierCount &lt; 4 is CannonWin.</li>
+        <li>No cannon legal move is SoldierWin.</li>
+        <li>The dense tablebase is outcome-only WDL. It has no DTW, DTC, or shortest-play data.</li>
+      </ul>
+    `;
   }
 }

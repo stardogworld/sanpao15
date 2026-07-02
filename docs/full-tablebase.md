@@ -168,6 +168,14 @@ for captures, then lexical move order. The result includes cycle detection and
 stop reasons. It does not load full layers and does not provide shortest-win,
 fastest-draw, DTW, or DTC information.
 
+The TypeScript UI uses the same `.s15res` random-read model in the browser. It
+keeps `File` handles for selected layer files, validates headers, and reads only
+the target outcome byte for the current position and legal successors. The UI
+does not load the complete 4.7 GiB outcome set into memory. Its line explorer is
+also WDL-only: rows show ply, side to move, chosen move, successor outcome,
+classification, soldier count, alternatives, cycle markers, and stop reason,
+but no distance-to-win or shortest-draw claim.
+
 ## Dense Successor Indexing
 
 Dense successor indexing is available for the full tablebase route. Given a

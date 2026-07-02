@@ -338,6 +338,20 @@ click-to-jump plies, stop reason display, last-move highlight, recommended-move
 highlight, undo/redo/reset, and copy/paste notation. It is not a shortest-win
 or fastest-draw explorer.
 
+The browser UI is organized around a board-first layout with collapsible
+analysis panels. The Tablebase panel shows loaded layer coverage, encoding,
+ruleset hash, and random-read mode. The Initial Position panel highlights the
+standard start:
+
+```text
+SSSSS/SSSSS/SSSSS/...../.CCC. c
+```
+
+With the complete dense tablebase loaded, that position is `Draw` and the only
+drawing first move is `22->12 captures 12`. The panel can reset to the start,
+highlight that move, copy the notation, or explore a WDL sample line. Mobile
+layouts keep the board on top and place the panels below it.
+
 `Unknown` means not proven, not found in the table, or unresolved because the table was truncated. It must not be treated as `Draw`.
 
 ## Layout

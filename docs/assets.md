@@ -5,8 +5,9 @@ Current UI assets are self-created for this repository:
 - `ui/src/assets/pieces/cannon.svg`
 - `ui/src/assets/pieces/soldier.svg`
 
-They are simple SVG placeholders for high-DPI board pieces. No third-party
-piece set, web image, or hotlinked asset is used.
+They are simple self-created SVG pieces rendered directly on the board for
+high-DPI displays. No third-party piece set, web image, or hotlinked asset is
+used.
 
 Future asset changes must record:
 

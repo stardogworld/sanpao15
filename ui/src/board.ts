@@ -1,12 +1,17 @@
 import type { Move, Position } from "./engine";
 import { boardSize, movesEqual } from "./engine";
 
+const cannonPieceUrl = new URL("./assets/pieces/cannon.svg", import.meta.url).href;
+const soldierPieceUrl = new URL("./assets/pieces/soldier.svg", import.meta.url).href;
+
 export interface BoardRenderOptions {
   position: Position;
   selectedSquare: number | null;
   legalMoves: Move[];
   recommendedMoves?: Move[];
   lastMove?: Move | null;
+  lineMove?: Move | null;
+  spotlightMove?: Move | null;
   onSquareClick: (square: number) => void;
 }
 
@@ -14,6 +19,23 @@ function pieceLabel(position: Position, square: number): string {
   if (position.soldiers.has(square)) return "Soldier";
   if (position.cannons.has(square)) return "Cannon";
   return "Empty";
+}
+
+function appendPiece(button: HTMLButtonElement, kind: "cannon" | "soldier"): void {
+  const image = document.createElement("img");
+  image.className = "piece-image";
+  image.alt = kind === "cannon" ? "Cannon" : "Soldier";
+  image.src = kind === "cannon" ? cannonPieceUrl : soldierPieceUrl;
+
+  const label = document.createElement("span");
+  label.className = "piece-label";
+  label.textContent = kind === "cannon" ? "C" : "S";
+
+  button.append(image, label);
+}
+
+function moveTouchesSquare(move: Move | null | undefined, square: number): boolean {
+  return !!move && (move.from === square || move.to === square);
 }
 
 export function renderBoard(container: HTMLElement, options: BoardRenderOptions): void {
@@ -29,11 +51,11 @@ export function renderBoard(container: HTMLElement, options: BoardRenderOptions)
     button.setAttribute("aria-label", `${pieceLabel(options.position, square)} on square ${square}`);
 
     if (options.position.soldiers.has(square)) {
-      button.textContent = "S";
       button.classList.add("soldier");
+      appendPiece(button, "soldier");
     } else if (options.position.cannons.has(square)) {
-      button.textContent = "C";
       button.classList.add("cannon");
+      appendPiece(button, "cannon");
     } else {
       button.textContent = "";
       button.classList.add("empty");
@@ -48,7 +70,7 @@ export function renderBoard(container: HTMLElement, options: BoardRenderOptions)
       button.classList.add(targetMove.capture ? "capture-target" : "move-target");
     }
 
-    if (options.lastMove && (options.lastMove.from === square || options.lastMove.to === square)) {
+    if (moveTouchesSquare(options.lastMove, square)) {
       button.classList.add("last-move");
     }
 
@@ -58,6 +80,14 @@ export function renderBoard(container: HTMLElement, options: BoardRenderOptions)
 
     if (targetMove && recommended.some((move) => movesEqual(move, targetMove))) {
       button.classList.add("recommended-target");
+    }
+
+    if (moveTouchesSquare(options.lineMove, square)) {
+      button.classList.add("line-move");
+    }
+
+    if (moveTouchesSquare(options.spotlightMove, square)) {
+      button.classList.add("spotlight-move");
     }
 
     button.addEventListener("click", () => options.onSquareClick(square));
