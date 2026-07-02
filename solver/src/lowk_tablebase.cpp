@@ -14,6 +14,7 @@
 #include <stdexcept>
 #include <string>
 #include <system_error>
+#include <tuple>
 
 #include "sanpao15/bitboard.h"
 #include "sanpao15/dense_index.h"
@@ -1538,6 +1539,167 @@ std::filesystem::path lowKLayerResultPath(const std::filesystem::path& dir, int 
     std::ostringstream name;
     name << "layer-" << std::setw(2) << std::setfill('0') << soldierCount << ".s15res";
     return dir / name.str();
+}
+
+Outcome lookupDenseTablebaseOutcomeAt(
+    const std::filesystem::path& tablebaseDir,
+    const Position& position) {
+    if (!std::filesystem::exists(tablebaseDir)) {
+        throw std::runtime_error("tablebase directory does not exist: " + tablebaseDir.string());
+    }
+    if (!std::filesystem::is_directory(tablebaseDir)) {
+        throw std::runtime_error("tablebase path is not a directory: " + tablebaseDir.string());
+    }
+
+    const int soldierCount = popcount25(position.soldiers);
+    requireDenseRangeLayer(soldierCount);
+    const uint64_t index = denseIndex(position);
+    const uint64_t stateCount = denseStateCount(soldierCount);
+    if (index >= stateCount) {
+        throw std::out_of_range("position dense index is outside the layer state count");
+    }
+
+    const std::filesystem::path layerPath = lowKLayerResultPath(tablebaseDir, soldierCount);
+    if (!std::filesystem::exists(layerPath)) {
+        throw std::runtime_error("missing dense tablebase layer: " + layerPath.string());
+    }
+
+    const DenseResultFileInfo info = inspectDenseResultFile(layerPath);
+    if (info.rulesetHash != StandardRulesetHash) {
+        throw std::runtime_error(".s15res ruleset hash mismatch: " + layerPath.string());
+    }
+    if (info.soldierCount != soldierCount) {
+        throw std::runtime_error(".s15res soldier count mismatch: " + layerPath.string());
+    }
+    if (info.stateCount != stateCount) {
+        throw std::runtime_error(".s15res state count does not match denseStateCount(K): " + layerPath.string());
+    }
+
+    constexpr std::streamoff HeaderBytes = 44;
+    uint64_t payloadIndex = 0;
+    if (info.encoding == DenseResultEncoding::Byte) {
+        payloadIndex = index;
+    } else if (info.encoding == DenseResultEncoding::Packed2Bit) {
+        payloadIndex = index / 4u;
+    } else {
+        throw std::runtime_error("unsupported dense result encoding: " + layerPath.string());
+    }
+    if (payloadIndex >= info.payloadBytes) {
+        throw std::runtime_error(".s15res payload index is outside payload size: " + layerPath.string());
+    }
+
+    std::ifstream input(layerPath, std::ios::binary);
+    if (!input) {
+        throw std::runtime_error("failed to open .s15res for random lookup: " + layerPath.string());
+    }
+    input.seekg(HeaderBytes + static_cast<std::streamoff>(payloadIndex));
+    const int byte = input.get();
+    if (byte == std::char_traits<char>::eof()) {
+        throw std::runtime_error("unexpected end of .s15res during random lookup: " + layerPath.string());
+    }
+
+    if (info.encoding == DenseResultEncoding::Byte) {
+        return decodeOutcome(static_cast<uint8_t>(byte));
+    }
+
+    const int shift = static_cast<int>((index % 4u) * 2u);
+    return decodeOutcome(static_cast<uint8_t>((static_cast<uint8_t>(byte) >> shift) & 0x3u));
+}
+
+namespace {
+
+std::string classifyDenseTablebaseMove(Side sideToMove, Outcome successorOutcome) {
+    if (successorOutcome == winFor(sideToMove)) {
+        return "winning";
+    }
+    if (successorOutcome == Outcome::Draw) {
+        return "drawing";
+    }
+    return "losing";
+}
+
+int moveClassificationRank(const std::string& classification) {
+    if (classification == "winning") {
+        return 0;
+    }
+    if (classification == "drawing") {
+        return 1;
+    }
+    return 2;
+}
+
+std::string terminalReasonForLookup(
+    const Position& position,
+    const DenseTerminalInfo& terminal,
+    const std::vector<DenseSuccessor>& successors) {
+    if (!terminal.terminal) {
+        return {};
+    }
+    const std::optional<Outcome> material = forcedOutcomeByMaterialRule(popcount25(position.soldiers));
+    if (material.has_value()) {
+        return RulesetSummary;
+    }
+    if (!cannonHasAnyMove(position)) {
+        return "cannon has no legal moves";
+    }
+    if (successors.empty()) {
+        return position.side == Side::Cannon ? "cannon has no legal moves" : "soldier has no legal moves";
+    }
+    return "rules-terminal";
+}
+
+}  // namespace
+
+DenseTablebaseLookupResult lookupDenseTablebasePosition(
+    const DenseTablebaseLookupOptions& options) {
+    DenseTablebaseLookupResult result;
+    result.position = options.position;
+    result.soldierCount = popcount25(options.position.soldiers);
+    requireDenseRangeLayer(result.soldierCount);
+    result.denseIndex = denseIndex(options.position);
+    if (result.denseIndex >= denseStateCount(result.soldierCount)) {
+        throw std::out_of_range("position dense index is outside the layer state count");
+    }
+
+    result.outcome = lookupDenseTablebaseOutcomeAt(options.tablebaseDir, options.position);
+
+    std::vector<DenseSuccessor> successors =
+        generateDenseSuccessorsFromPosition(result.soldierCount, result.denseIndex, options.position);
+    const DenseTerminalInfo terminal = terminalOutcomeForPositionWithSuccessors(options.position, successors);
+    result.terminal = terminal.terminal;
+    result.terminalReason = terminalReasonForLookup(options.position, terminal, successors);
+
+    if (!options.includeMoves) {
+        return result;
+    }
+
+    result.moves.reserve(successors.size());
+    for (const DenseSuccessor& successor : successors) {
+        const Position successorPosition = positionFromDenseIndex(successor.toSoldierCount, successor.toIndex);
+        const Outcome successorOutcome =
+            lookupDenseTablebaseOutcomeAt(options.tablebaseDir, successorPosition);
+        result.moves.push_back(DenseTablebaseMoveInfo{
+            successor.move,
+            successorPosition,
+            successor.toIndex,
+            successor.toSoldierCount,
+            successorOutcome,
+            classifyDenseTablebaseMove(options.position.side, successorOutcome),
+        });
+    }
+
+    std::sort(result.moves.begin(), result.moves.end(), [](const DenseTablebaseMoveInfo& lhs, const DenseTablebaseMoveInfo& rhs) {
+        const int lhsRank = moveClassificationRank(lhs.classification);
+        const int rhsRank = moveClassificationRank(rhs.classification);
+        if (lhsRank != rhsRank) {
+            return lhsRank < rhsRank;
+        }
+        return std::tie(lhs.move.from, lhs.move.to, lhs.move.capture, lhs.move.capturedSquare,
+                        lhs.successorSoldierCount, lhs.successorIndex) <
+               std::tie(rhs.move.from, rhs.move.to, rhs.move.capture, rhs.move.capturedSquare,
+                        rhs.successorSoldierCount, rhs.successorIndex);
+    });
+    return result;
 }
 
 std::vector<LowKTablebaseLayerResult> solveLowKTablebase(const LowKTablebaseSolveOptions& options) {

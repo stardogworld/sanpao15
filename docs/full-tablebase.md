@@ -137,6 +137,8 @@ Useful CLI commands:
 .\build\sanpao15_cli.exe --create-empty-res 0 build\empty-k0.s15res --encoding 2bit
 .\build\sanpao15_cli.exe --inspect-res build\empty-k0.s15res
 .\build\sanpao15_cli.exe --validate-res build\empty-k0.s15res
+.\build\sanpao15_cli.exe --query-tablebase build\prod-layers --position "SSSSS/SSSSS/SSSSS/...../.CCC. c" --moves
+.\build\sanpao15_cli.exe --query-tablebase build\prod-layers --position "SSSSS/SSSSS/SSSSS/...../.CCC. c" --moves --json
 ```
 
 Do not commit generated `.s15res` files.
@@ -145,6 +147,16 @@ Do not commit generated `.s15res` files.
 scans the payload and rejects invalid byte-encoded outcomes. Packed 2-bit
 layers naturally encode only values `0..3`; validation also checks packed
 unused bits when a file shape can contain them.
+
+`--query-tablebase DIR --position TEXT` performs a read-only random-access
+lookup against `DIR/layer-NN.s15res`. It validates the file header and file
+size, computes the dense index, then reads only one payload byte for the target
+outcome. Byte and packed 2-bit encodings are both supported. With `--moves`,
+the CLI generates legal successors and reads one outcome byte for each
+successor, grouping moves as winning, drawing, or losing from the current side
+to move. With `--json`, the same data is emitted for tools or UI integration.
+This is WDL-only information: `.s15res` has no DTW, distance, or best-move
+payload.
 
 ## Dense Successor Indexing
 

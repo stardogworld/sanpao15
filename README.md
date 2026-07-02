@@ -126,6 +126,9 @@ Useful CLI modes:
 .\build\sanpao15_cli.exe --solve-layer-range 0 4 --out-dir build\range-k0-k4 --encoding 2bit --resume
 .\build\sanpao15_cli.exe --preflight-layer-range 0 15 --out-dir build\prod-layers --encoding 2bit
 .\build\sanpao15_cli.exe --preflight-layer-range 8 10 --out-dir build\some-empty-dir --encoding 2bit --preflight-json build\some-empty-dir\preflight.json
+.\build\sanpao15_cli.exe --query-tablebase build\prod-layers --position "SSSSS/SSSSS/SSSSS/...../.CCC. c"
+.\build\sanpao15_cli.exe --query-tablebase build\prod-layers --position "SSSSS/SSSSS/SSSSS/...../.CCC. c" --moves
+.\build\sanpao15_cli.exe --query-tablebase build\prod-layers --position "SSSSS/SSSSS/SSSSS/...../.CCC. c" --moves --json
 .\build\sanpao15_cli.exe --limit 50000
 .\build\sanpao15_cli.exe --full
 .\build\sanpao15_cli.exe --analyze "SSSSS/SSSSS/SSSSS/...../.CCC. c" --limit 10000
@@ -269,6 +272,20 @@ If a partial range starts at `START >= 4`, preflight requires
 planned range and can be solved first.
 `.s15res --validate-res` scans payload bytes instead of checking only headers.
 
+Dense tablebase lookup is read-only and random-access:
+
+```powershell
+.\build\sanpao15_cli.exe --query-tablebase build\prod-layers --position "SSSSS/SSSSS/SSSSS/...../.CCC. c" --moves
+.\build\sanpao15_cli.exe --query-tablebase build\prod-layers --position "SSSSS/SSSSS/SSSSS/...../.CCC. c" --moves --json
+```
+
+The query locates `layer-NN.s15res` by soldier count, validates the header
+against the current ruleset hash, dense state count, and encoding, then seeks
+to only the outcome byte needed for the current position. With `--moves`, each
+legal successor is read the same way and classified from the side to move:
+winning, drawing, or losing. This is outcome-only WDL guidance; `.s15res` does
+not contain distance, DTW, or fastest-win data.
+
 Layer-local edge probe:
 
 ```powershell
@@ -298,6 +315,13 @@ ui/public/tables/standard.s15tbl
 ```
 
 The UI mirrors the rules in TypeScript and reads `.s15tbl` files directly. A later milestone will compile the C++ core to WebAssembly so the UI can call the same engine directly.
+
+The UI can also query a local dense outcome tablebase. Use the Tablebase panel
+to select a directory such as `build\prod-layers`, or select `layer-00.s15res`
+through `layer-15.s15res` as files. The browser keeps file handles and reads
+only the target header/outcome byte for the current position and each legal
+successor; it does not load the full 4.7GB outcome set. Recommended moves are
+grouped as winning, drawing, or losing using the same WDL-only rule as the CLI.
 
 `Unknown` means not proven, not found in the table, or unresolved because the table was truncated. It must not be treated as `Draw`.
 

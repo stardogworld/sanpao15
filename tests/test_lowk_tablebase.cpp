@@ -1,6 +1,7 @@
 #include "test_common.h"
 
 #include <algorithm>
+#include <array>
 #include <filesystem>
 #include <fstream>
 #include <limits>
@@ -810,4 +811,145 @@ SANPAO15_TEST(streamingLowKRejectsKAbovePrototypeLimit) {
         options.outputDir = std::filesystem::temp_directory_path() / "sanpao15-streaming-lowk-too-large";
         (void)solveLowKTablebaseStreaming(options);
     }, "K above streaming prototype limit should be rejected");
+}
+
+SANPAO15_TEST(denseTablebaseLookupReadsK0OutcomeByPosition) {
+    const std::filesystem::path dir = tempDir("sanpao15-dense-lookup-k0");
+    DenseOutcomeTable table(denseStateCount(0), Outcome::CannonWin);
+    saveDenseResultTable(table, 0, lowKLayerResultPath(dir, 0), StandardRulesetHash);
+
+    const Position pos = parsePositionNotation("CCC../...../...../...../..... c");
+    SANPAO15_REQUIRE(lookupDenseTablebaseOutcomeAt(dir, pos) == Outcome::CannonWin);
+
+    DenseTablebaseLookupOptions options;
+    options.tablebaseDir = dir;
+    options.position = pos;
+    const DenseTablebaseLookupResult result = lookupDenseTablebasePosition(options);
+    SANPAO15_REQUIRE(result.soldierCount == 0);
+    SANPAO15_REQUIRE(result.denseIndex == denseIndex(pos));
+    SANPAO15_REQUIRE(result.outcome == Outcome::CannonWin);
+    SANPAO15_REQUIRE(result.terminal);
+    SANPAO15_REQUIRE(result.terminalReason == RulesetSummary);
+    std::filesystem::remove_all(dir);
+}
+
+SANPAO15_TEST(denseTablebaseLookupRejectsMissingDirAndLayer) {
+    const std::filesystem::path missingDir = std::filesystem::temp_directory_path() / "sanpao15-dense-lookup-missing-dir";
+    std::filesystem::remove_all(missingDir);
+    const Position pos = parsePositionNotation("CCC../...../...../...../..... c");
+    sanpao15::test::requireThrows([&] {
+        (void)lookupDenseTablebaseOutcomeAt(missingDir, pos);
+    }, "missing tablebase directory should throw");
+
+    const std::filesystem::path dir = tempDir("sanpao15-dense-lookup-missing-layer");
+    sanpao15::test::requireThrows([&] {
+        (void)lookupDenseTablebaseOutcomeAt(dir, pos);
+    }, "missing layer file should throw");
+    std::filesystem::remove_all(dir);
+}
+
+SANPAO15_TEST(denseTablebaseLookupRejectsWrongRulesetAndLayerHeader) {
+    const Position pos = parsePositionNotation("CCC../...../...../...../..... c");
+
+    const std::filesystem::path wrongRulesetDir = tempDir("sanpao15-dense-lookup-wrong-ruleset");
+    DenseOutcomeTable k0(denseStateCount(0), Outcome::CannonWin);
+    saveDenseResultTable(k0, 0, lowKLayerResultPath(wrongRulesetDir, 0), StandardRulesetHash + 1u);
+    sanpao15::test::requireThrows([&] {
+        (void)lookupDenseTablebaseOutcomeAt(wrongRulesetDir, pos);
+    }, "wrong ruleset hash should throw");
+    std::filesystem::remove_all(wrongRulesetDir);
+
+    const std::filesystem::path wrongLayerDir = tempDir("sanpao15-dense-lookup-wrong-layer");
+    DenseOutcomeTable k1(denseStateCount(1), Outcome::CannonWin);
+    saveDenseResultTable(k1, 1, lowKLayerResultPath(wrongLayerDir, 0), StandardRulesetHash);
+    sanpao15::test::requireThrows([&] {
+        (void)lookupDenseTablebaseOutcomeAt(wrongLayerDir, pos);
+    }, "wrong soldier count in layer file should throw");
+    std::filesystem::remove_all(wrongLayerDir);
+}
+
+SANPAO15_TEST(denseTablebaseLookupSupportsByteAndPacked2BitRandomAccess) {
+    const std::array<Outcome, 5> outcomes{
+        Outcome::Unknown,
+        Outcome::CannonWin,
+        Outcome::SoldierWin,
+        Outcome::Draw,
+        Outcome::CannonWin,
+    };
+
+    const std::filesystem::path byteDir = tempDir("sanpao15-dense-lookup-byte");
+    DenseOutcomeTable byteTable(denseStateCount(0), Outcome::Draw);
+    for (uint64_t index = 0; index < outcomes.size(); ++index) {
+        byteTable.set(index, outcomes[static_cast<size_t>(index)]);
+    }
+    saveDenseResultTable(byteTable, 0, lowKLayerResultPath(byteDir, 0), StandardRulesetHash);
+
+    const std::filesystem::path packedDir = tempDir("sanpao15-dense-lookup-packed");
+    PackedOutcomeTable2Bit packedTable(denseStateCount(0), Outcome::Draw);
+    for (uint64_t index = 0; index < outcomes.size(); ++index) {
+        packedTable.set(index, outcomes[static_cast<size_t>(index)]);
+    }
+    saveDenseResultTable2Bit(packedTable, 0, lowKLayerResultPath(packedDir, 0), StandardRulesetHash);
+
+    for (uint64_t index = 0; index < outcomes.size(); ++index) {
+        const Position pos = positionFromDenseIndex(0, index);
+        SANPAO15_REQUIRE(lookupDenseTablebaseOutcomeAt(byteDir, pos) == outcomes[static_cast<size_t>(index)]);
+        SANPAO15_REQUIRE(lookupDenseTablebaseOutcomeAt(packedDir, pos) == outcomes[static_cast<size_t>(index)]);
+    }
+
+    std::filesystem::remove_all(byteDir);
+    std::filesystem::remove_all(packedDir);
+}
+
+SANPAO15_TEST(denseTablebaseMoveClassificationUsesSideToMove) {
+    const std::filesystem::path dir = tempDir("sanpao15-dense-lookup-classification");
+    DenseOutcomeTable table(denseStateCount(0), Outcome::SoldierWin);
+    const Position pos = parsePositionNotation("CCC../...../...../...../..... c");
+    const uint64_t index = denseIndex(pos);
+    const std::vector<DenseSuccessor> successors = generateDenseSuccessors(0, index);
+    SANPAO15_REQUIRE(successors.size() >= 3);
+
+    table.set(index, Outcome::Draw);
+    table.set(successors[0].toIndex, Outcome::CannonWin);
+    table.set(successors[1].toIndex, Outcome::Draw);
+    table.set(successors[2].toIndex, Outcome::SoldierWin);
+    saveDenseResultTable(table, 0, lowKLayerResultPath(dir, 0), StandardRulesetHash);
+
+    DenseTablebaseLookupOptions options;
+    options.tablebaseDir = dir;
+    options.position = pos;
+    options.includeMoves = true;
+    const DenseTablebaseLookupResult result = lookupDenseTablebasePosition(options);
+
+    bool sawWinning = false;
+    bool sawDrawing = false;
+    bool sawLosing = false;
+    for (const DenseTablebaseMoveInfo& move : result.moves) {
+        if (move.successorIndex == successors[0].toIndex) {
+            SANPAO15_REQUIRE(move.classification == "winning");
+            sawWinning = true;
+        }
+        if (move.successorIndex == successors[1].toIndex) {
+            SANPAO15_REQUIRE(move.classification == "drawing");
+            sawDrawing = true;
+        }
+        if (move.successorIndex == successors[2].toIndex) {
+            SANPAO15_REQUIRE(move.classification == "losing");
+            sawLosing = true;
+        }
+    }
+    SANPAO15_REQUIRE(sawWinning);
+    SANPAO15_REQUIRE(sawDrawing);
+    SANPAO15_REQUIRE(sawLosing);
+    SANPAO15_REQUIRE(result.moves[0].classification == "winning");
+
+    std::filesystem::remove_all(dir);
+}
+
+SANPAO15_TEST(denseTablebaseInitialPositionEncodesToLayer15) {
+    const Position initial = parsePositionNotation("SSSSS/SSSSS/SSSSS/...../.CCC. c");
+    const uint64_t index = denseIndex(initial);
+    SANPAO15_REQUIRE(popcount25(initial.soldiers) == 15);
+    SANPAO15_REQUIRE(index < denseStateCount(15));
+    SANPAO15_REQUIRE(positionFromDenseIndex(15, index) == initial);
 }

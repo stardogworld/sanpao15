@@ -6,6 +6,7 @@
 #include <string>
 #include <vector>
 
+#include "sanpao15/position.h"
 #include "sanpao15/dense_successor.h"
 #include "sanpao15/dense_table.h"
 
@@ -216,6 +217,31 @@ struct DenseLayerVerifyResult {
     DenseResultEncoding encoding = DenseResultEncoding::Packed2Bit;
 };
 
+struct DenseTablebaseLookupOptions {
+    std::filesystem::path tablebaseDir;
+    Position position;
+    bool includeMoves = false;
+};
+
+struct DenseTablebaseMoveInfo {
+    Move move;
+    Position successor;
+    uint64_t successorIndex = 0;
+    int successorSoldierCount = 0;
+    Outcome successorOutcome = Outcome::Unknown;
+    std::string classification;
+};
+
+struct DenseTablebaseLookupResult {
+    Position position;
+    int soldierCount = 0;
+    uint64_t denseIndex = 0;
+    Outcome outcome = Outcome::Unknown;
+    bool terminal = false;
+    std::string terminalReason;
+    std::vector<DenseTablebaseMoveInfo> moves;
+};
+
 DenseLayerSolveResult solveDenseLayerOutcome(
     int soldierCount,
     const PackedOutcomeTable2Bit* lowerLayer,
@@ -252,5 +278,11 @@ LowKTablebaseVerifyResult verifyLowKTablebase(
     int maxK,
     uint64_t sampleLimit);
 DenseLayerVerifyResult verifyDenseLayerResult(const DenseLayerVerifyOptions& options);
+
+Outcome lookupDenseTablebaseOutcomeAt(
+    const std::filesystem::path& tablebaseDir,
+    const Position& position);
+DenseTablebaseLookupResult lookupDenseTablebasePosition(
+    const DenseTablebaseLookupOptions& options);
 
 }  // namespace sanpao15

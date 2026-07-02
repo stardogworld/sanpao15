@@ -78,6 +78,9 @@ struct CliOptions {
     bool solveLayerRange = false;
     bool preflightLayerRange = false;
     bool verifyLayer = false;
+    bool queryTablebase = false;
+    bool queryMoves = false;
+    bool jsonOutput = false;
     bool allowK4 = false;
     bool outDirProvided = false;
     bool outResProvided = false;
@@ -151,6 +154,8 @@ struct CliOptions {
     std::optional<std::filesystem::path> preflightJsonPath;
     std::optional<std::filesystem::path> verifyLayerPath;
     std::optional<std::filesystem::path> verifyLowKDir;
+    std::optional<std::filesystem::path> queryTablebaseDir;
+    std::optional<std::string> queryPositionNotation;
     std::optional<std::string> analysisNotation;
     std::optional<std::filesystem::path> saveTablePath;
     std::optional<std::filesystem::path> loadTablePath;
@@ -198,6 +203,8 @@ void printUsage() {
         << "                  [--resume] [--overwrite] [--clean-temp]\n"
         << "  sanpao15_cli --preflight-layer-range START END --out-dir DIR [--encoding byte|2bit]\n"
         << "                  [--preflight-json FILE]\n"
+        << "  sanpao15_cli --query-tablebase DIR --position \"SSSSS/SSSSS/SSSSS/...../.CCC. c\"\n"
+        << "                  [--moves] [--json]\n"
         << "  sanpao15_cli --analyze \"SSSSS/SSSSS/SSSSS/...../.CCC. c\" [--limit N|--full]\n"
         << "  sanpao15_cli --load-table FILE --analyze \"SSSSS/SSSSS/SSSSS/...../.CCC. c\"\n\n"
         << "Options:\n"
@@ -278,6 +285,10 @@ void printUsage() {
         << "  --solve-layer-range START END  Production range solve for dense layers START..END.\n"
         << "  --preflight-layer-range START END  Dry-run a production range: inspect files and estimate disk/RAM/time.\n"
         << "  --preflight-json FILE  Output JSON path for --preflight-layer-range. Default: out-dir/preflight.json.\n"
+        << "  --query-tablebase DIR  Random-read complete dense .s15res layers for a position outcome.\n"
+        << "  --position TEXT  Position notation for --query-tablebase.\n"
+        << "  --moves        Include legal successor outcomes and WDL recommendation groups.\n"
+        << "  --json         Emit JSON for --query-tablebase.\n"
         << "  --resume       Skip existing valid range layers.\n"
         << "  --clean-temp   Remove stale layer-NN.s15res.tmp files for the selected range before solving.\n"
         << "  --external-seed-dedup  Use external sorted runs for next-layer seed dedup.\n"
@@ -720,6 +731,21 @@ CliOptions parseArgs(int argc, char** argv) {
                 throw std::invalid_argument("--preflight-json requires a file path");
             }
             options.preflightJsonPath = std::filesystem::path(argv[++i]);
+        } else if (arg == "--query-tablebase") {
+            if (i + 1 >= argc) {
+                throw std::invalid_argument("--query-tablebase requires a directory path");
+            }
+            options.queryTablebaseDir = std::filesystem::path(argv[++i]);
+            options.queryTablebase = true;
+        } else if (arg == "--position") {
+            if (i + 1 >= argc) {
+                throw std::invalid_argument("--position requires a notation string");
+            }
+            options.queryPositionNotation = argv[++i];
+        } else if (arg == "--moves") {
+            options.queryMoves = true;
+        } else if (arg == "--json") {
+            options.jsonOutput = true;
         } else if (arg == "--verify-lowk") {
             if (i + 1 >= argc) {
                 throw std::invalid_argument("--verify-lowk requires a directory path");
@@ -813,7 +839,8 @@ CliOptions parseArgs(int argc, char** argv) {
         static_cast<int>(options.solveLayer) +
         static_cast<int>(options.solveLayerRange) +
         static_cast<int>(options.preflightLayerRange) +
-        static_cast<int>(options.verifyLayer);
+        static_cast<int>(options.verifyLayer) +
+        static_cast<int>(options.queryTablebase);
     if (validationModeCount + partitionModeCount + migrationModeCount + partitionedResumeModeCount + denseModeCount > 1) {
         throw std::invalid_argument("choose only one validate/inspect/partition/dense tablebase mode");
     }
@@ -846,6 +873,18 @@ CliOptions parseArgs(int argc, char** argv) {
             options.migrateOutputProvided || options.cleanupStaleRuns) {
             throw std::invalid_argument("dense tablebase modes cannot be combined with build, solve, stats, probe, validate, partition, migration, or repair options");
         }
+    }
+    if (options.queryTablebase && !options.queryPositionNotation.has_value()) {
+        throw std::invalid_argument("--query-tablebase requires --position TEXT");
+    }
+    if (options.queryPositionNotation.has_value() && !options.queryTablebase) {
+        throw std::invalid_argument("--position is only valid with --query-tablebase");
+    }
+    if (options.queryMoves && !options.queryTablebase) {
+        throw std::invalid_argument("--moves is only valid with --query-tablebase");
+    }
+    if (options.jsonOutput && !options.queryTablebase) {
+        throw std::invalid_argument("--json is only valid with --query-tablebase");
     }
     if (options.solveLowK && options.lowKMax > 3) {
         throw std::invalid_argument("--solve-lowk supports only K in 0..3 in this prototype");
@@ -1158,6 +1197,175 @@ std::string moveToString(const Move& move) {
         text += std::to_string(move.capturedSquare);
     }
     return text;
+}
+
+std::string jsonEscape(const std::string& text) {
+    std::string escaped;
+    escaped.reserve(text.size());
+    for (char ch : text) {
+        switch (ch) {
+            case '\\':
+                escaped += "\\\\";
+                break;
+            case '"':
+                escaped += "\\\"";
+                break;
+            case '\n':
+                escaped += "\\n";
+                break;
+            case '\r':
+                escaped += "\\r";
+                break;
+            case '\t':
+                escaped += "\\t";
+                break;
+            default:
+                escaped.push_back(ch);
+                break;
+        }
+    }
+    return escaped;
+}
+
+std::vector<const DenseTablebaseMoveInfo*> recommendedMoves(const DenseTablebaseLookupResult& result) {
+    for (const std::string& classification : {"winning", "drawing", "losing"}) {
+        std::vector<const DenseTablebaseMoveInfo*> selected;
+        for (const DenseTablebaseMoveInfo& move : result.moves) {
+            if (move.classification == classification) {
+                selected.push_back(&move);
+            }
+        }
+        if (!selected.empty()) {
+            return selected;
+        }
+    }
+    return {};
+}
+
+void printDenseTablebaseMoveText(const DenseTablebaseMoveInfo& move, const std::string& indent) {
+    std::cout << indent << moveToString(move.move)
+              << " -> layer " << move.successorSoldierCount
+              << " index " << formatInteger(move.successorIndex)
+              << " outcome " << outcomeToString(move.successorOutcome)
+              << " classification " << move.classification
+              << "\n";
+}
+
+void printDenseTablebaseMoveJson(const DenseTablebaseMoveInfo& move, const std::string& indent) {
+    std::cout << indent << "{\n";
+    std::cout << indent << "  \"move\": \"" << jsonEscape(moveToString(move.move)) << "\",\n";
+    std::cout << indent << "  \"from\": " << move.move.from << ",\n";
+    std::cout << indent << "  \"to\": " << move.move.to << ",\n";
+    std::cout << indent << "  \"capture\": " << (move.move.capture ? "true" : "false") << ",\n";
+    std::cout << indent << "  \"capturedSquare\": " << move.move.capturedSquare << ",\n";
+    std::cout << indent << "  \"successorPosition\": \"" << jsonEscape(positionToNotation(move.successor)) << "\",\n";
+    std::cout << indent << "  \"successorSoldierCount\": " << move.successorSoldierCount << ",\n";
+    std::cout << indent << "  \"successorIndex\": " << move.successorIndex << ",\n";
+    std::cout << indent << "  \"successorOutcome\": \"" << outcomeToString(move.successorOutcome) << "\",\n";
+    std::cout << indent << "  \"classification\": \"" << move.classification << "\"\n";
+    std::cout << indent << "}";
+}
+
+void printDenseTablebaseQueryJson(const DenseTablebaseLookupResult& result, const std::filesystem::path& tablebaseDir) {
+    const std::vector<const DenseTablebaseMoveInfo*> recommended = recommendedMoves(result);
+    std::cout << "{\n";
+    std::cout << "  \"position\": \"" << jsonEscape(positionToNotation(result.position)) << "\",\n";
+    std::cout << "  \"tablebaseDir\": \"" << jsonEscape(tablebaseDir.string()) << "\",\n";
+    std::cout << "  \"ruleset\": \"" << RulesetName << "\",\n";
+    std::cout << "  \"rulesetHash\": \"" << formatHex64(StandardRulesetHash) << "\",\n";
+    std::cout << "  \"soldierCount\": " << result.soldierCount << ",\n";
+    std::cout << "  \"sideToMove\": \"" << sideToString(result.position.side) << "\",\n";
+    std::cout << "  \"denseIndex\": " << result.denseIndex << ",\n";
+    std::cout << "  \"outcome\": \"" << outcomeToString(result.outcome) << "\",\n";
+    std::cout << "  \"terminal\": " << (result.terminal ? "true" : "false") << ",\n";
+    std::cout << "  \"terminalReason\": \"" << jsonEscape(result.terminalReason) << "\",\n";
+    std::cout << "  \"legalMoveCount\": " << result.moves.size() << ",\n";
+    std::cout << "  \"recommendedMoveCount\": " << recommended.size() << ",\n";
+    std::cout << "  \"moves\": [\n";
+    for (size_t i = 0; i < result.moves.size(); ++i) {
+        printDenseTablebaseMoveJson(result.moves[i], "    ");
+        std::cout << (i + 1 == result.moves.size() ? "\n" : ",\n");
+    }
+    std::cout << "  ],\n";
+    std::cout << "  \"recommendedMoves\": [\n";
+    for (size_t i = 0; i < recommended.size(); ++i) {
+        printDenseTablebaseMoveJson(*recommended[i], "    ");
+        std::cout << (i + 1 == recommended.size() ? "\n" : ",\n");
+    }
+    std::cout << "  ]\n";
+    std::cout << "}\n";
+}
+
+void printDenseTablebaseQueryText(
+    const DenseTablebaseLookupResult& result,
+    const std::filesystem::path& tablebaseDir,
+    bool includeMoves) {
+    const std::vector<const DenseTablebaseMoveInfo*> recommended = recommendedMoves(result);
+    std::cout << "Dense tablebase query\n";
+    std::cout << "Tablebase dir: " << tablebaseDir.string() << "\n";
+    std::cout << "Ruleset: " << RulesetName << " " << formatHex64(StandardRulesetHash) << "\n";
+    std::cout << "Position: " << positionToNotation(result.position) << "\n";
+    std::cout << "Soldier count: " << result.soldierCount << "\n";
+    std::cout << "Side to move: " << sideToString(result.position.side) << "\n";
+    std::cout << "Dense index: " << formatInteger(result.denseIndex) << "\n";
+    std::cout << "Outcome: " << outcomeToString(result.outcome) << "\n";
+    std::cout << "Terminal: " << (result.terminal ? "yes" : "no") << "\n";
+    if (result.terminal) {
+        std::cout << "Terminal reason: " << result.terminalReason << "\n";
+    }
+
+    if (!includeMoves) {
+        std::cout << "Status: queried\n";
+        return;
+    }
+
+    if (result.moves.empty()) {
+        std::cout << "Legal moves: none\n";
+        std::cout << "Recommended moves: none\n";
+        std::cout << "Status: queried\n";
+        return;
+    }
+
+    std::cout << "Legal move count: " << formatInteger(static_cast<uint64_t>(result.moves.size())) << "\n";
+    std::cout << "\nLegal moves:\n";
+    for (const DenseTablebaseMoveInfo& move : result.moves) {
+        printDenseTablebaseMoveText(move, "  ");
+    }
+
+    std::cout << "\nRecommended moves (outcome-only):\n";
+    for (const DenseTablebaseMoveInfo* move : recommended) {
+        printDenseTablebaseMoveText(*move, "  ");
+    }
+
+    std::cout << "\nMove groups:\n";
+    for (const std::string& classification : {"winning", "drawing", "losing"}) {
+        std::cout << "  " << classification << ":\n";
+        bool any = false;
+        for (const DenseTablebaseMoveInfo& move : result.moves) {
+            if (move.classification == classification) {
+                printDenseTablebaseMoveText(move, "    ");
+                any = true;
+            }
+        }
+        if (!any) {
+            std::cout << "    none\n";
+        }
+    }
+    std::cout << "Status: queried\n";
+}
+
+void printDenseTablebaseQuery(const CliOptions& options) {
+    DenseTablebaseLookupOptions lookupOptions;
+    lookupOptions.tablebaseDir = *options.queryTablebaseDir;
+    lookupOptions.position = parsePositionNotation(*options.queryPositionNotation);
+    lookupOptions.includeMoves = options.queryMoves || options.jsonOutput;
+
+    const DenseTablebaseLookupResult result = lookupDenseTablebasePosition(lookupOptions);
+    if (options.jsonOutput) {
+        printDenseTablebaseQueryJson(result, *options.queryTablebaseDir);
+        return;
+    }
+    printDenseTablebaseQueryText(result, *options.queryTablebaseDir, options.queryMoves);
 }
 
 void printLayerArray(const char* title, const std::array<uint64_t, 16>& values) {
@@ -2839,6 +3047,10 @@ int main(int argc, char** argv) {
         }
         if (options.verifyLayer) {
             printVerifyLayer(options);
+            return 0;
+        }
+        if (options.queryTablebase) {
+            printDenseTablebaseQuery(options);
             return 0;
         }
         if (options.buildLayerExternalProvided) {

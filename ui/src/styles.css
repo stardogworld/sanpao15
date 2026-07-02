@@ -152,7 +152,8 @@ h1 {
 }
 
 .notation-panel,
-.analysis-panel {
+.analysis-panel,
+.tablebase-panel {
   display: grid;
   gap: 8px;
   border-top: 1px solid #d2d8d1;
@@ -161,10 +162,88 @@ h1 {
 }
 
 code,
-.analysis-copy {
+.analysis-copy,
+.tablebase-status-copy,
+.tablebase-result-copy,
+.tablebase-summary {
   overflow-wrap: anywhere;
   color: #17211f;
   font-family: "Cascadia Mono", "SFMono-Regular", Consolas, monospace;
+  white-space: pre-wrap;
+}
+
+.panel-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.panel-heading h2 {
+  margin: 0;
+  color: #17211f;
+  font-size: 1.1rem;
+}
+
+.tablebase-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.tablebase-result-grid {
+  display: grid;
+  gap: 12px;
+}
+
+.tablebase-summary {
+  border: 1px solid #d2d8d1;
+  border-radius: 6px;
+  padding: 12px;
+  background: #ffffff;
+}
+
+.move-group {
+  border-left: 4px solid #9aa7a2;
+  padding: 8px 0 8px 12px;
+}
+
+.move-group h3 {
+  margin: 0 0 6px;
+  color: #17211f;
+  font-size: 1rem;
+  text-transform: capitalize;
+}
+
+.move-group ul {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding-left: 18px;
+}
+
+.move-group li {
+  line-height: 1.4;
+}
+
+.move-group.winning {
+  border-left-color: #2f7d50;
+}
+
+.move-group.drawing {
+  border-left-color: #6b7280;
+}
+
+.move-group.losing {
+  border-left-color: #bd4b3d;
+}
+
+.move-group .recommended {
+  font-weight: 800;
+}
+
+.empty-group {
+  margin: 0;
 }
 
 @media (max-width: 760px) {
@@ -181,5 +260,11 @@ code,
   .toolbar {
     display: grid;
     grid-template-columns: 1fr;
+  }
+
+  .panel-heading,
+  .tablebase-actions {
+    align-items: stretch;
+    flex-direction: column;
   }
 }
