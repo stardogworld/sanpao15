@@ -55,6 +55,7 @@ struct MtdFileInfo {
 
 struct MtdInspectStats {
     MtdFileInfo info;
+    uint32_t threads = 1;
     uint8_t minMaterialTarget = 0;
     uint8_t maxMaterialTarget = 0;
     uint8_t maxExactDistance = 0;
@@ -76,10 +77,12 @@ struct MtdLayerWriteStats {
 
 struct MtdLayerSolveResult {
     int soldierCount = 0;
+    uint32_t threads = 1;
     uint64_t stateCount = 0;
     uint64_t outputBytes = 0;
     std::filesystem::path outputPath;
     std::filesystem::path statsPath;
+    std::vector<std::string> parallelStages;
     std::array<uint64_t, 4> outcomeCounts{};
     std::array<uint64_t, 16> materialTargetCounts{};
     std::array<uint64_t, 16> cannonMaxCapturesCounts{};
@@ -101,6 +104,7 @@ struct MtdLayerSolveOptions {
     std::filesystem::path mtdDir;
     bool overwrite = false;
     bool writeStatsJson = true;
+    uint32_t threads = 1;
 };
 
 struct MtdRangeSolveOptions {
@@ -110,6 +114,7 @@ struct MtdRangeSolveOptions {
     std::filesystem::path mtdDir;
     bool overwrite = false;
     bool resume = false;
+    uint32_t threads = 1;
 };
 
 struct MtdRangeSolveResult {
@@ -127,10 +132,12 @@ struct MtdLayerVerifyOptions {
     std::filesystem::path wdlDir;
     std::filesystem::path mtdDir;
     uint64_t sampleLimit = 10000;
+    uint32_t threads = 1;
 };
 
 struct MtdLayerVerifyResult {
     int soldierCount = -1;
+    uint32_t threads = 1;
     uint64_t stateCount = 0;
     uint64_t sampledStates = 0;
     uint64_t checkedTransitions = 0;
@@ -208,7 +215,7 @@ MtdFileInfo validateMtdFile(
     const std::filesystem::path& path,
     uint64_t expectedRulesetHash,
     int expectedSoldierCount = -1);
-MtdInspectStats inspectMtdTable(const std::filesystem::path& path);
+MtdInspectStats inspectMtdTable(const std::filesystem::path& path, uint32_t threads = 1);
 MtdEntry lookupMtdEntryAt(
     const std::filesystem::path& mtdDir,
     int soldierCount,

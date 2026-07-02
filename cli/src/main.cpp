@@ -90,6 +90,7 @@ struct CliOptions {
     bool queryMtd = false;
     bool queryMoves = false;
     bool jsonOutput = false;
+    bool threadsProvided = false;
     bool serveUi = false;
     bool hostProvided = false;
     bool portProvided = false;
@@ -137,6 +138,7 @@ struct CliOptions {
     int preflightEndLayer = 0;
     int maxPlies = 100;
     int servePort = 8787;
+    uint32_t threads = 1;
     uint64_t denseIndexValue = 0;
     GraphBackend graphBackend = GraphBackend::Csr;
     PartitionMethod partitionMethod = PartitionMethod::Splitmix64Mod;
@@ -237,10 +239,10 @@ void printUsage() {
         << "                  [--moves] [--json]\n"
         << "  sanpao15_cli --explore-tablebase DIR --position \"SSSSS/SSSSS/SSSSS/...../.CCC. c\"\n"
         << "                  [--max-plies N] [--json]\n"
-        << "  sanpao15_cli --solve-mtd-layer K --wdl-dir DIR --mtd-dir DIR [--overwrite]\n"
-        << "  sanpao15_cli --solve-mtd-range START END --wdl-dir DIR --mtd-dir DIR [--resume|--overwrite]\n"
-        << "  sanpao15_cli --verify-mtd-layer K --wdl-dir DIR --mtd-dir DIR [--sample N]\n"
-        << "  sanpao15_cli --inspect-mtd FILE\n"
+        << "  sanpao15_cli --solve-mtd-layer K --wdl-dir DIR --mtd-dir DIR [--overwrite] [--threads N]\n"
+        << "  sanpao15_cli --solve-mtd-range START END --wdl-dir DIR --mtd-dir DIR [--resume|--overwrite] [--threads N]\n"
+        << "  sanpao15_cli --verify-mtd-layer K --wdl-dir DIR --mtd-dir DIR [--sample N] [--threads N]\n"
+        << "  sanpao15_cli --inspect-mtd FILE [--threads N]\n"
         << "  sanpao15_cli --query-mtd DIR --wdl-dir DIR --position TEXT [--moves] [--json]\n"
         << "  sanpao15_cli --serve-ui [--tablebase-dir DIR] [--host HOST] [--port PORT]\n"
         << "                  [--ui-dir DIR] [--open]\n"
@@ -333,6 +335,7 @@ void printUsage() {
         << "  --query-mtd DIR  Query material target and guarantee distance from .s15mtd files.\n"
         << "  --wdl-dir DIR    Dense WDL .s15res tablebase directory for MTD commands.\n"
         << "  --mtd-dir DIR    Material target distance .s15mtd output/input directory.\n"
+        << "  --threads N     Worker threads for MTD solve/verify/inspect. 1 is baseline; 0 uses hardware concurrency.\n"
         << "  --position TEXT  Position notation for --query-tablebase or --explore-tablebase.\n"
         << "  --moves        Include legal successor outcomes and WDL recommendation groups.\n"
         << "  --max-plies N  Maximum plies for --explore-tablebase. Default: 100.\n"
@@ -391,6 +394,14 @@ DenseResultEncoding parseDenseResultEncoding(const std::string& text) {
         return DenseResultEncoding::Packed2Bit;
     }
     throw std::invalid_argument("--encoding must be either byte or 2bit");
+}
+
+uint32_t parseThreadCount(const std::string& text) {
+    const uint64_t value = parseLimit(text);
+    if (value > 256) {
+        throw std::invalid_argument("--threads must be in 0..256");
+    }
+    return static_cast<uint32_t>(value);
 }
 
 const char* denseResultEncodingToString(DenseResultEncoding encoding) {
@@ -837,6 +848,12 @@ CliOptions parseArgs(int argc, char** argv) {
             }
             options.mtdDir = std::filesystem::path(argv[++i]);
             options.mtdDirProvided = true;
+        } else if (arg == "--threads") {
+            if (i + 1 >= argc) {
+                throw std::invalid_argument("--threads requires a value");
+            }
+            options.threads = parseThreadCount(argv[++i]);
+            options.threadsProvided = true;
         } else if (arg == "--serve-ui") {
             options.serveUi = true;
         } else if (arg == "--tablebase-dir") {
@@ -1021,7 +1038,7 @@ CliOptions parseArgs(int argc, char** argv) {
             options.maxKProvided || options.resEncodingProvided || options.overwrite ||
             options.wdlDirProvided || options.mtdDirProvided ||
             options.queryPositionNotation.has_value() || options.queryMoves || options.jsonOutput ||
-            options.maxPliesProvided || options.benchmarkSampleProvided) {
+            options.maxPliesProvided || options.benchmarkSampleProvided || options.threadsProvided) {
             throw std::invalid_argument("--serve-ui cannot be combined with solve, stats, probe, validate, partition, query, or table output options");
         }
     }
@@ -1042,6 +1059,8 @@ CliOptions parseArgs(int argc, char** argv) {
             !options.solveMtdLayer && !options.solveMtdRange && !options.verifyMtdLayer && !options.queryMtd;
         const bool disallowedMtdDir = options.mtdDirProvided &&
             !options.solveMtdLayer && !options.solveMtdRange && !options.verifyMtdLayer;
+        const bool disallowedThreads = options.threadsProvided &&
+            !options.solveMtdLayer && !options.solveMtdRange && !options.verifyMtdLayer && !options.inspectMtd;
         if (options.buildLayersDir.has_value() || options.statsOnly || options.probe || options.analysisNotation.has_value() ||
             options.saveTablePath.has_value() || options.loadTablePath.has_value() || disallowedFull ||
             options.limitProvided || options.noPred || options.maxStatesPerLayerProvided ||
@@ -1058,9 +1077,13 @@ CliOptions parseArgs(int argc, char** argv) {
             options.lookupKeyProvided || options.sampleStatesProvided || options.nextSeedPartitionDir.has_value() ||
             disallowedOverwrite || disallowedCleanTemp || disallowedRangeResume ||
             options.migrateOutputProvided || options.cleanupStaleRuns || disallowedMaxPlies ||
-            disallowedWdlDir || disallowedMtdDir) {
+            disallowedWdlDir || disallowedMtdDir || disallowedThreads) {
             throw std::invalid_argument("dense tablebase modes cannot be combined with build, solve, stats, probe, validate, partition, migration, or repair options");
         }
+    }
+    if (options.threadsProvided &&
+        !options.solveMtdLayer && !options.solveMtdRange && !options.verifyMtdLayer && !options.inspectMtd) {
+        throw std::invalid_argument("--threads is only valid with --solve-mtd-layer, --solve-mtd-range, --verify-mtd-layer, or --inspect-mtd");
     }
     if ((options.queryTablebase || options.queryMtd) && !options.queryPositionNotation.has_value()) {
         throw std::invalid_argument("--query-tablebase and --query-mtd require --position TEXT");
@@ -1835,6 +1858,7 @@ void printValidateRes(const std::filesystem::path& path) {
 
 void printMtdLayerResult(const MtdLayerSolveResult& layer) {
     std::cout << "Layer " << layer.soldierCount << "\n";
+    std::cout << "Threads: " << layer.threads << "\n";
     std::cout << "State count: " << formatInteger(layer.stateCount) << "\n";
     std::cout << "Encoding: " << mtdEncodingToString(MtdEncoding::Packed12Material4Distance8) << "\n";
     std::cout << "Semantic version: 2 outcome-aware-material-target-distance\n";
@@ -1877,6 +1901,7 @@ void printSolveMtdLayer(const CliOptions& options) {
     solveOptions.wdlDir = *options.wdlDir;
     solveOptions.mtdDir = *options.mtdDir;
     solveOptions.overwrite = options.overwrite;
+    solveOptions.threads = options.threads;
     const MtdLayerSolveResult result = solveMtdLayer(solveOptions);
     std::cout << "Material target distance layer solve\n";
     std::cout << "WDL dir: " << options.wdlDir->string() << "\n";
@@ -1894,6 +1919,7 @@ void printSolveMtdRange(const CliOptions& options) {
     rangeOptions.mtdDir = *options.mtdDir;
     rangeOptions.overwrite = options.overwrite;
     rangeOptions.resume = options.rangeResume;
+    rangeOptions.threads = options.threads;
     const MtdRangeSolveResult result = solveMtdRange(rangeOptions);
     std::cout << "Material target distance range solve\n";
     std::cout << "WDL dir: " << result.wdlDir.string() << "\n";
@@ -1912,8 +1938,8 @@ void printSolveMtdRange(const CliOptions& options) {
     std::cout << "Status: solved\n";
 }
 
-void printInspectMtd(const std::filesystem::path& path) {
-    const MtdInspectStats stats = inspectMtdTable(path);
+void printInspectMtd(const std::filesystem::path& path, uint32_t threads) {
+    const MtdInspectStats stats = inspectMtdTable(path, threads);
     const MtdFileInfo& info = stats.info;
     std::cout << "Material target distance file\n";
     std::cout << "Magic: S15MTD1\\0\n";
@@ -1924,6 +1950,7 @@ void printInspectMtd(const std::filesystem::path& path) {
         std::cout << "Ruleset summary: " << RulesetSummary << "\n";
     }
     std::cout << "Soldier count: " << info.soldierCount << "\n";
+    std::cout << "Threads: " << stats.threads << "\n";
     std::cout << "State count: " << formatInteger(info.stateCount) << "\n";
     std::cout << "Encoding: " << mtdEncodingToString(info.encoding) << "\n";
     std::cout << "Payload bytes: " << formatInteger(info.payloadBytes)
@@ -1962,11 +1989,13 @@ void printVerifyMtdLayer(const CliOptions& options) {
     verifyOptions.wdlDir = *options.wdlDir;
     verifyOptions.mtdDir = *options.mtdDir;
     verifyOptions.sampleLimit = options.benchmarkSampleProvided ? options.benchmarkSample : 10000;
+    verifyOptions.threads = options.threads;
     const MtdLayerVerifyResult result = verifyMtdLayer(verifyOptions);
     std::cout << "Verify material target distance layer\n";
     std::cout << "WDL dir: " << options.wdlDir->string() << "\n";
     std::cout << "MTD dir: " << options.mtdDir->string() << "\n";
     std::cout << "Layer: " << result.soldierCount << "\n";
+    std::cout << "Threads: " << result.threads << "\n";
     std::cout << "State count: " << formatInteger(result.stateCount) << "\n";
     std::cout << "Sample limit: "
               << (verifyOptions.sampleLimit == 0 ? std::string("full") : formatInteger(verifyOptions.sampleLimit))
@@ -3648,7 +3677,7 @@ int main(int argc, char** argv) {
             return 0;
         }
         if (options.inspectMtd) {
-            printInspectMtd(*options.inspectMtdPath);
+            printInspectMtd(*options.inspectMtdPath, options.threads);
             return 0;
         }
         if (options.queryMtd) {

@@ -17,6 +17,7 @@
 #include "sanpao15/dense_successor.h"
 #include "sanpao15/lowk_tablebase.h"
 #include "sanpao15/notation.h"
+#include "sanpao15/parallel.h"
 #include "sanpao15/rules.h"
 #include "sanpao15/ruleset.h"
 
@@ -380,21 +381,43 @@ uint8_t computeDistanceForState(
     return any ? best : MtdSaturatedDistance;
 }
 
-void requireSolvedWdlLayer(const PackedOutcomeTable2Bit& table, int soldierCount, const char* label) {
-    for (uint64_t index = 0; index < table.size(); ++index) {
-        if (table.getUnchecked(index) == Outcome::Unknown) {
-            std::ostringstream message;
-            message << "MTD requires solved WDL table; " << label << " layer " << soldierCount
-                    << " has Unknown at dense index " << index;
-            throw std::runtime_error(message.str());
+void requireSolvedWdlLayer(const PackedOutcomeTable2Bit& table, int soldierCount, const char* label, uint32_t threads) {
+    const uint32_t effectiveThreads = normalizeThreadCount(threads, table.size());
+    std::vector<uint64_t> firstUnknown(
+        effectiveThreads,
+        std::numeric_limits<uint64_t>::max());
+    parallelForRanges(table.size(), effectiveThreads, [&](uint64_t begin, uint64_t end, uint32_t threadId) {
+        for (uint64_t index = begin; index < end; ++index) {
+            if (table.getUnchecked(index) == Outcome::Unknown) {
+                firstUnknown[threadId] = index;
+                break;
+            }
         }
+    });
+    const uint64_t index = *std::min_element(firstUnknown.begin(), firstUnknown.end());
+    if (index != std::numeric_limits<uint64_t>::max()) {
+        std::ostringstream message;
+        message << "MTD requires solved WDL table; " << label << " layer " << soldierCount
+                << " has Unknown at dense index " << index;
+        throw std::runtime_error(message.str());
     }
 }
 
-void countWdlOutcomes(const PackedOutcomeTable2Bit& table, std::array<uint64_t, 4>& counts) {
+void countWdlOutcomes(const PackedOutcomeTable2Bit& table, std::array<uint64_t, 4>& counts, uint32_t threads) {
     counts.fill(0);
-    for (uint64_t index = 0; index < table.size(); ++index) {
-        ++counts[outcomeIndex(table.getUnchecked(index))];
+    const uint32_t effectiveThreads = normalizeThreadCount(threads, table.size());
+    std::vector<std::array<uint64_t, 4>> localCounts(effectiveThreads);
+    parallelForRanges(table.size(), effectiveThreads, [&](uint64_t begin, uint64_t end, uint32_t threadId) {
+        std::array<uint64_t, 4>& local = localCounts[threadId];
+        local.fill(0);
+        for (uint64_t index = begin; index < end; ++index) {
+            ++local[outcomeIndex(table.getUnchecked(index))];
+        }
+    });
+    for (const std::array<uint64_t, 4>& local : localCounts) {
+        for (size_t i = 0; i < counts.size(); ++i) {
+            counts[i] += local[i];
+        }
     }
 }
 
@@ -409,14 +432,15 @@ void solveWinningOutcomeMtd(
     std::vector<uint8_t>& material,
     std::vector<uint16_t>& distance,
     uint64_t& queuePeak,
-    uint64_t& iterations) {
+    uint64_t& iterations,
+    uint32_t threads) {
     const uint64_t stateCount = denseStateCount(k);
+    const uint32_t effectiveThreads = normalizeThreadCount(threads, stateCount);
     const Side winner = winnerForOutcome(outcome);
     std::vector<uint8_t> finalized(static_cast<size_t>(stateCount), 0);
     std::vector<uint8_t> hasCandidate(static_cast<size_t>(stateCount), 0);
     std::vector<uint8_t> loserUnresolved(static_cast<size_t>(stateCount), 0);
     std::array<std::vector<uint32_t>, 256> buckets;
-    std::vector<DenseSuccessor> successors;
     std::vector<uint32_t> predecessorIndices;
     predecessorIndices.reserve(32);
     uint64_t pendingQueueEntries = 0;
@@ -464,65 +488,78 @@ void solveWinningOutcomeMtd(
         }
     };
 
-    for (uint64_t index = 0; index < stateCount; ++index) {
-        if (currentWdl.getUnchecked(index) != outcome) {
-            continue;
-        }
-        material[static_cast<size_t>(index)] = static_cast<uint8_t>(k);
-        distance[static_cast<size_t>(index)] = UnsolvedDistance;
-        const Position pos = positionFromDenseIndex(k, index);
-        generateDenseSuccessorsFromPosition(k, index, pos, successors);
-        const DenseTerminalInfo terminal = terminalOutcomeForPositionWithSuccessors(pos, successors);
-        if (isTerminalForMtdOutcome(terminal, outcome)) {
-            material[static_cast<size_t>(index)] = static_cast<uint8_t>(k);
-            distance[static_cast<size_t>(index)] = 0;
-            hasCandidate[static_cast<size_t>(index)] = 1;
-            enqueue(0, index);
-            continue;
-        }
+    using BucketSet = std::array<std::vector<uint32_t>, 256>;
+    std::vector<BucketSet> initialBuckets(effectiveThreads);
+    parallelForRanges(stateCount, effectiveThreads, [&](uint64_t begin, uint64_t end, uint32_t threadId) {
+        std::vector<DenseSuccessor> successors;
+        BucketSet& localBuckets = initialBuckets[threadId];
+        const auto enqueueInitial = [&](uint8_t bucketIndex, uint64_t index) {
+            localBuckets[bucketIndex].push_back(checkedMtdQueueIndex(index));
+        };
 
-        uint16_t unresolvedSameLayerChildren = 0;
-        bool hasKnownChild = false;
-        uint8_t knownDistance = pos.side == winner ? MtdSaturatedDistance : 0;
-        uint8_t knownMaterial = pos.side == winner
-            ? (winner == Side::Cannon ? 15 : 0)
-            : (winner == Side::Cannon ? 0 : 15);
-        for (const DenseSuccessor& successor : successors) {
-            const Outcome childOutcome = successorOutcomeFor(successor, currentWdl, lowerWdl);
-            if (childOutcome != outcome) {
+        for (uint64_t index = begin; index < end; ++index) {
+            if (currentWdl.getUnchecked(index) != outcome) {
                 continue;
             }
-            if (successor.kind == DenseSuccessorKind::CaptureToLowerLayer) {
-                if (lowerMtd == nullptr) {
-                    throw std::logic_error("winning MTD capture requires lower MTD layer");
+            material[static_cast<size_t>(index)] = static_cast<uint8_t>(k);
+            distance[static_cast<size_t>(index)] = UnsolvedDistance;
+            const Position pos = positionFromDenseIndex(k, index);
+            generateDenseSuccessorsFromPosition(k, index, pos, successors);
+            const DenseTerminalInfo terminal = terminalOutcomeForPositionWithSuccessors(pos, successors);
+            if (isTerminalForMtdOutcome(terminal, outcome)) {
+                material[static_cast<size_t>(index)] = static_cast<uint8_t>(k);
+                distance[static_cast<size_t>(index)] = 0;
+                hasCandidate[static_cast<size_t>(index)] = 1;
+                enqueueInitial(0, index);
+                continue;
+            }
+
+            uint16_t unresolvedSameLayerChildren = 0;
+            bool hasKnownChild = false;
+            uint8_t knownDistance = pos.side == winner ? MtdSaturatedDistance : 0;
+            uint8_t knownMaterial = pos.side == winner
+                ? (winner == Side::Cannon ? 15 : 0)
+                : (winner == Side::Cannon ? 0 : 15);
+            for (const DenseSuccessor& successor : successors) {
+                const Outcome childOutcome = successorOutcomeFor(successor, currentWdl, lowerWdl);
+                if (childOutcome != outcome) {
+                    continue;
                 }
-                const MtdEntry child = lowerMtd->getUnchecked(successor.toIndex);
-                const uint8_t candidate = saturatedAdd1(child.guaranteeDistance);
-                hasKnownChild = true;
-                if (pos.side == winner) {
-                    if (candidate < knownDistance ||
-                        (candidate == knownDistance &&
-                         ((winner == Side::Cannon && child.materialTarget < knownMaterial) ||
-                          (winner == Side::Soldier && child.materialTarget > knownMaterial)))) {
+                if (successor.kind == DenseSuccessorKind::CaptureToLowerLayer) {
+                    if (lowerMtd == nullptr) {
+                        throw std::logic_error("winning MTD capture requires lower MTD layer");
+                    }
+                    const MtdEntry child = lowerMtd->getUnchecked(successor.toIndex);
+                    const uint8_t candidate = saturatedAdd1(child.guaranteeDistance);
+                    hasKnownChild = true;
+                    if (pos.side == winner) {
+                        if (candidate < knownDistance ||
+                            (candidate == knownDistance &&
+                             ((winner == Side::Cannon && child.materialTarget < knownMaterial) ||
+                              (winner == Side::Soldier && child.materialTarget > knownMaterial)))) {
+                            knownDistance = candidate;
+                            knownMaterial = child.materialTarget;
+                        }
+                    } else if (candidate > knownDistance ||
+                               (candidate == knownDistance &&
+                                ((winner == Side::Cannon && child.materialTarget > knownMaterial) ||
+                                 (winner == Side::Soldier && child.materialTarget < knownMaterial)))) {
                         knownDistance = candidate;
                         knownMaterial = child.materialTarget;
                     }
-                } else if (candidate > knownDistance ||
-                           (candidate == knownDistance &&
-                            ((winner == Side::Cannon && child.materialTarget > knownMaterial) ||
-                             (winner == Side::Soldier && child.materialTarget < knownMaterial)))) {
-                    knownDistance = candidate;
-                    knownMaterial = child.materialTarget;
+                } else {
+                    ++unresolvedSameLayerChildren;
                 }
-            } else {
-                ++unresolvedSameLayerChildren;
             }
-        }
-        if (pos.side == winner) {
-            if (hasKnownChild) {
-                schedule(index, pos.side, knownDistance, knownMaterial);
+            if (pos.side == winner) {
+                if (hasKnownChild) {
+                    hasCandidate[static_cast<size_t>(index)] = 1;
+                    distance[static_cast<size_t>(index)] = knownDistance;
+                    material[static_cast<size_t>(index)] = knownMaterial;
+                    enqueueInitial(knownDistance, index);
+                }
+                continue;
             }
-        } else {
             if (unresolvedSameLayerChildren > std::numeric_limits<uint8_t>::max()) {
                 throw std::overflow_error("MTD win-distance remaining count overflowed uint8_t");
             }
@@ -533,15 +570,25 @@ void solveWinningOutcomeMtd(
                 hasCandidate[static_cast<size_t>(index)] = 1;
             }
             if (unresolvedSameLayerChildren == 0) {
-                schedule(
-                    index,
-                    pos.side,
-                    hasKnownChild ? knownDistance : MtdSaturatedDistance,
-                    hasKnownChild ? knownMaterial : static_cast<uint8_t>(k),
-                    true);
+                const uint8_t seedDistance = hasKnownChild ? knownDistance : MtdSaturatedDistance;
+                material[static_cast<size_t>(index)] = hasKnownChild ? knownMaterial : static_cast<uint8_t>(k);
+                distance[static_cast<size_t>(index)] = seedDistance;
+                hasCandidate[static_cast<size_t>(index)] = 1;
+                enqueueInitial(seedDistance, index);
             }
         }
+    });
+    for (uint16_t bucketIndex = 0; bucketIndex <= MtdSaturatedDistance; ++bucketIndex) {
+        for (BucketSet& localBuckets : initialBuckets) {
+            std::vector<uint32_t>& localBucket = localBuckets[bucketIndex];
+            pendingQueueEntries += localBucket.size();
+            buckets[bucketIndex].insert(buckets[bucketIndex].end(), localBucket.begin(), localBucket.end());
+        }
+        if (bucketIndex == MtdSaturatedDistance) {
+            break;
+        }
     }
+    queuePeak = std::max(queuePeak, pendingQueueEntries);
 
     for (uint16_t bucketIndex = 0; bucketIndex <= MtdSaturatedDistance; ++bucketIndex) {
         std::vector<uint32_t>& bucket = buckets[bucketIndex];
@@ -606,14 +653,16 @@ void solveWinningOutcomeMtd(
         }
     }
 
-    for (uint64_t index = 0; index < stateCount; ++index) {
-        if (currentWdl.getUnchecked(index) == outcome && finalized[static_cast<size_t>(index)] == 0) {
-            distance[static_cast<size_t>(index)] = MtdSaturatedDistance;
-            if (material[static_cast<size_t>(index)] == UnassignedMaterial) {
-                material[static_cast<size_t>(index)] = static_cast<uint8_t>(k);
+    parallelForRanges(stateCount, effectiveThreads, [&](uint64_t begin, uint64_t end, uint32_t) {
+        for (uint64_t index = begin; index < end; ++index) {
+            if (currentWdl.getUnchecked(index) == outcome && finalized[static_cast<size_t>(index)] == 0) {
+                distance[static_cast<size_t>(index)] = MtdSaturatedDistance;
+                if (material[static_cast<size_t>(index)] == UnassignedMaterial) {
+                    material[static_cast<size_t>(index)] = static_cast<uint8_t>(k);
+                }
             }
         }
-    }
+    });
 }
 
 uint64_t estimateMtdMemoryBytes(int soldierCount, uint64_t stateCount, const PackedMtdTable12* lowerMtd) {
@@ -654,6 +703,13 @@ void writeMtdStatsJson(const MtdLayerSolveResult& result) {
     out << "  \"ruleset\": \"" << RulesetName << "\",\n";
     out << "  \"rulesetHash\": \"" << rulesetHashHex() << "\",\n";
     out << "  \"soldierCount\": " << result.soldierCount << ",\n";
+    out << "  \"threads\": " << result.threads << ",\n";
+    out << "  \"parallelStages\": [\n";
+    for (size_t i = 0; i < result.parallelStages.size(); ++i) {
+        out << "    \"" << jsonEscape(result.parallelStages[i]) << "\""
+            << (i + 1 == result.parallelStages.size() ? "\n" : ",\n");
+    }
+    out << "  ],\n";
     out << "  \"stateCount\": " << result.stateCount << ",\n";
     out << "  \"encoding\": \"" << mtdEncodingToString(MtdEncoding::Packed12Material4Distance8) << "\",\n";
     out << "  \"outputPath\": \"" << jsonEscape(result.outputPath.string()) << "\",\n";
@@ -1046,22 +1102,49 @@ MtdFileInfo validateMtdFile(
     return validateMtdFileFull(path, expectedRulesetHash, expectedSoldierCount);
 }
 
-MtdInspectStats inspectMtdTable(const std::filesystem::path& path) {
+MtdInspectStats inspectMtdTable(const std::filesystem::path& path, uint32_t threads) {
     MtdInspectStats stats;
     stats.info = inspectMtdFile(path);
     const PackedMtdTable12 table = loadMtdTable(path, stats.info.rulesetHash, stats.info.soldierCount);
+    stats.threads = normalizeThreadCount(threads, table.size());
     stats.minMaterialTarget = 15;
-    for (uint64_t index = 0; index < table.size(); ++index) {
-        const MtdEntry entry = table.getUnchecked(index);
-        stats.minMaterialTarget = std::min(stats.minMaterialTarget, entry.materialTarget);
-        stats.maxMaterialTarget = std::max(stats.maxMaterialTarget, entry.materialTarget);
-        ++stats.materialTargetCounts[entry.materialTarget];
-        ++stats.cannonMaxCapturesCounts[static_cast<size_t>(stats.info.soldierCount - entry.materialTarget)];
-        ++stats.distanceCounts[entry.guaranteeDistance];
-        if (entry.guaranteeDistance == MtdSaturatedDistance) {
-            ++stats.saturatedDistanceCount;
-        } else {
-            stats.maxExactDistance = std::max(stats.maxExactDistance, entry.guaranteeDistance);
+    struct LocalInspectStats {
+        uint8_t minMaterialTarget = 15;
+        uint8_t maxMaterialTarget = 0;
+        uint8_t maxExactDistance = 0;
+        uint64_t saturatedDistanceCount = 0;
+        std::array<uint64_t, 16> materialTargetCounts{};
+        std::array<uint64_t, 16> cannonMaxCapturesCounts{};
+        std::array<uint64_t, 256> distanceCounts{};
+    };
+    std::vector<LocalInspectStats> localStats(stats.threads);
+    parallelForRanges(table.size(), stats.threads, [&](uint64_t begin, uint64_t end, uint32_t threadId) {
+        LocalInspectStats& local = localStats[threadId];
+        for (uint64_t index = begin; index < end; ++index) {
+            const MtdEntry entry = table.getUnchecked(index);
+            local.minMaterialTarget = std::min(local.minMaterialTarget, entry.materialTarget);
+            local.maxMaterialTarget = std::max(local.maxMaterialTarget, entry.materialTarget);
+            ++local.materialTargetCounts[entry.materialTarget];
+            ++local.cannonMaxCapturesCounts[static_cast<size_t>(stats.info.soldierCount - entry.materialTarget)];
+            ++local.distanceCounts[entry.guaranteeDistance];
+            if (entry.guaranteeDistance == MtdSaturatedDistance) {
+                ++local.saturatedDistanceCount;
+            } else {
+                local.maxExactDistance = std::max(local.maxExactDistance, entry.guaranteeDistance);
+            }
+        }
+    });
+    for (const LocalInspectStats& local : localStats) {
+        stats.minMaterialTarget = std::min(stats.minMaterialTarget, local.minMaterialTarget);
+        stats.maxMaterialTarget = std::max(stats.maxMaterialTarget, local.maxMaterialTarget);
+        stats.maxExactDistance = std::max(stats.maxExactDistance, local.maxExactDistance);
+        stats.saturatedDistanceCount += local.saturatedDistanceCount;
+        for (size_t i = 0; i < stats.materialTargetCounts.size(); ++i) {
+            stats.materialTargetCounts[i] += local.materialTargetCounts[i];
+            stats.cannonMaxCapturesCounts[i] += local.cannonMaxCapturesCounts[i];
+        }
+        for (size_t i = 0; i < stats.distanceCounts.size(); ++i) {
+            stats.distanceCounts[i] += local.distanceCounts[i];
         }
     }
     if (table.size() == 0) {
@@ -1138,6 +1221,7 @@ MtdLayerSolveResult solveMtdLayer(const MtdLayerSolveOptions& options) {
     const auto totalStart = std::chrono::steady_clock::now();
     const int k = options.soldierCount;
     const uint64_t stateCount = denseStateCount(k);
+    const uint32_t solveThreads = normalizeThreadCount(options.threads, stateCount);
     PackedOutcomeTable2Bit currentWdl = loadDenseResultAnyEncoding(wdlLayerPath(options.wdlDir, k), k);
     std::optional<PackedOutcomeTable2Bit> lowerWdl;
     std::optional<PackedMtdTable12> lowerMtd;
@@ -1145,9 +1229,9 @@ MtdLayerSolveResult solveMtdLayer(const MtdLayerSolveOptions& options) {
         lowerWdl = loadDenseResultAnyEncoding(wdlLayerPath(options.wdlDir, k - 1), k - 1);
         lowerMtd = loadMtdTable(mtdLayerPath(options.mtdDir, k - 1), StandardRulesetHash, k - 1);
     }
-    requireSolvedWdlLayer(currentWdl, k, "current");
+    requireSolvedWdlLayer(currentWdl, k, "current", solveThreads);
     if (lowerWdl.has_value()) {
-        requireSolvedWdlLayer(*lowerWdl, k - 1, "lower");
+        requireSolvedWdlLayer(*lowerWdl, k - 1, "lower", solveThreads);
     }
 
     std::vector<uint8_t> material(static_cast<size_t>(stateCount), UnassignedMaterial);
@@ -1171,7 +1255,8 @@ MtdLayerSolveResult solveMtdLayer(const MtdLayerSolveOptions& options) {
             material,
             distance,
             queuePeak,
-            winIterations);
+            winIterations,
+            solveThreads);
         solveWinningOutcomeMtd(
             k,
             Outcome::SoldierWin,
@@ -1181,7 +1266,8 @@ MtdLayerSolveResult solveMtdLayer(const MtdLayerSolveOptions& options) {
             material,
             distance,
             queuePeak,
-            winIterations);
+            winIterations,
+            solveThreads);
         std::vector<uint8_t> thresholdTrue(static_cast<size_t>(stateCount), 0);
         std::vector<uint8_t> remaining(static_cast<size_t>(stateCount), 0);
         std::vector<uint32_t> queue;
@@ -1190,12 +1276,14 @@ MtdLayerSolveResult solveMtdLayer(const MtdLayerSolveOptions& options) {
         predecessorIndices.reserve(32);
         for (int threshold = 0; threshold < k; ++threshold) {
             std::fill(thresholdTrue.begin(), thresholdTrue.end(), uint8_t{0});
-            for (uint64_t index = 0; index < stateCount; ++index) {
-                if (currentWdl.getUnchecked(index) == Outcome::Draw &&
-                    material[static_cast<size_t>(index)] != UnassignedMaterial) {
-                    thresholdTrue[static_cast<size_t>(index)] = 1;
+            parallelForRanges(stateCount, solveThreads, [&](uint64_t begin, uint64_t end, uint32_t) {
+                for (uint64_t index = begin; index < end; ++index) {
+                    if (currentWdl.getUnchecked(index) == Outcome::Draw &&
+                        material[static_cast<size_t>(index)] != UnassignedMaterial) {
+                        thresholdTrue[static_cast<size_t>(index)] = 1;
+                    }
                 }
-            }
+            });
             std::fill(remaining.begin(), remaining.end(), uint8_t{0});
             queue.clear();
             size_t queueHead = 0;
@@ -1211,25 +1299,66 @@ MtdLayerSolveResult solveMtdLayer(const MtdLayerSolveOptions& options) {
             };
 
             ++materialIterations;
-            for (uint64_t index = 0; index < stateCount; ++index) {
-                if (thresholdTrue[static_cast<size_t>(index)] != 0) {
-                    continue;
-                }
-                const Outcome currentOutcome = currentWdl.getUnchecked(index);
-                if (currentOutcome != Outcome::Draw) {
-                    continue;
-                }
-                const Position pos = positionFromDenseIndex(k, index);
-                generateDenseSuccessorsFromPosition(k, index, pos, successors);
-                const DenseTerminalInfo terminal = terminalOutcomeForPositionWithSuccessors(pos, successors);
-                if (terminal.terminal) {
-                    throw std::runtime_error("MTD draw material solver found terminal Draw state");
-                }
+            std::vector<std::vector<uint32_t>> initialQueues(solveThreads);
+            parallelForRanges(stateCount, solveThreads, [&](uint64_t begin, uint64_t end, uint32_t threadId) {
+                std::vector<DenseSuccessor> localSuccessors;
+                std::vector<uint32_t>& localQueue = initialQueues[threadId];
+                const auto markInitialTrue = [&](uint64_t index) {
+                    uint8_t& value = thresholdTrue[static_cast<size_t>(index)];
+                    if (value != 0) {
+                        return;
+                    }
+                    value = 1;
+                    localQueue.push_back(checkedMtdQueueIndex(index));
+                };
 
-                bool hasPreserving = false;
-                if (pos.side == Side::Cannon) {
-                    bool hasTrueChild = false;
-                    for (const DenseSuccessor& successor : successors) {
+                for (uint64_t index = begin; index < end; ++index) {
+                    if (thresholdTrue[static_cast<size_t>(index)] != 0) {
+                        continue;
+                    }
+                    const Outcome currentOutcome = currentWdl.getUnchecked(index);
+                    if (currentOutcome != Outcome::Draw) {
+                        continue;
+                    }
+                    const Position pos = positionFromDenseIndex(k, index);
+                    generateDenseSuccessorsFromPosition(k, index, pos, localSuccessors);
+                    const DenseTerminalInfo terminal = terminalOutcomeForPositionWithSuccessors(pos, localSuccessors);
+                    if (terminal.terminal) {
+                        throw std::runtime_error("MTD draw material solver found terminal Draw state");
+                    }
+
+                    bool hasPreserving = false;
+                    if (pos.side == Side::Cannon) {
+                        bool hasTrueChild = false;
+                        for (const DenseSuccessor& successor : localSuccessors) {
+                            const Outcome childOutcome = successorOutcomeFor(
+                                successor,
+                                currentWdl,
+                                lowerWdl.has_value() ? &*lowerWdl : nullptr);
+                            if (!wdlPreserving(currentOutcome, childOutcome)) {
+                                continue;
+                            }
+                            hasPreserving = true;
+                            if (thresholdChildInitiallyTrue(
+                                    successor,
+                                    currentOutcome,
+                                    currentWdl,
+                                    lowerWdl.has_value() ? &*lowerWdl : nullptr,
+                                    lowerMtd.has_value() ? &*lowerMtd : nullptr,
+                                    material,
+                                    threshold)) {
+                                hasTrueChild = true;
+                                break;
+                            }
+                        }
+                        if (hasPreserving && hasTrueChild) {
+                            markInitialTrue(index);
+                        }
+                        continue;
+                    }
+
+                    uint16_t falsePreservingChildren = 0;
+                    for (const DenseSuccessor& successor : localSuccessors) {
                         const Outcome childOutcome = successorOutcomeFor(
                             successor,
                             currentWdl,
@@ -1238,54 +1367,31 @@ MtdLayerSolveResult solveMtdLayer(const MtdLayerSolveOptions& options) {
                             continue;
                         }
                         hasPreserving = true;
-                        if (thresholdChildTrue(
+                        if (!thresholdChildInitiallyTrue(
                                 successor,
                                 currentOutcome,
                                 currentWdl,
                                 lowerWdl.has_value() ? &*lowerWdl : nullptr,
                                 lowerMtd.has_value() ? &*lowerMtd : nullptr,
-                                thresholdTrue,
+                                material,
                                 threshold)) {
-                            hasTrueChild = true;
-                            break;
+                            ++falsePreservingChildren;
                         }
                     }
-                    if (hasPreserving && hasTrueChild) {
-                        markTrue(index);
-                    }
-                    continue;
-                }
-
-                uint16_t falsePreservingChildren = 0;
-                for (const DenseSuccessor& successor : successors) {
-                    const Outcome childOutcome = successorOutcomeFor(
-                        successor,
-                        currentWdl,
-                        lowerWdl.has_value() ? &*lowerWdl : nullptr);
-                    if (!wdlPreserving(currentOutcome, childOutcome)) {
+                    if (hasPreserving && falsePreservingChildren == 0) {
+                        markInitialTrue(index);
                         continue;
                     }
-                    hasPreserving = true;
-                    if (!thresholdChildInitiallyTrue(
-                            successor,
-                            currentOutcome,
-                            currentWdl,
-                            lowerWdl.has_value() ? &*lowerWdl : nullptr,
-                            lowerMtd.has_value() ? &*lowerMtd : nullptr,
-                            material,
-                            threshold)) {
-                        ++falsePreservingChildren;
-                    }
-                }
-                if (hasPreserving && falsePreservingChildren == 0) {
-                    markTrue(index);
-                } else {
                     if (falsePreservingChildren > std::numeric_limits<uint8_t>::max()) {
                         throw std::overflow_error("MTD threshold remaining count overflowed uint8_t");
                     }
                     remaining[static_cast<size_t>(index)] = static_cast<uint8_t>(falsePreservingChildren);
                 }
+            });
+            for (const std::vector<uint32_t>& localQueue : initialQueues) {
+                queue.insert(queue.end(), localQueue.begin(), localQueue.end());
             }
+            queuePeak = std::max<uint64_t>(queuePeak, queue.size() - queueHead);
 
             while (queueHead < queue.size()) {
                 const uint32_t childIndex = queue[queueHead++];
@@ -1320,21 +1426,25 @@ MtdLayerSolveResult solveMtdLayer(const MtdLayerSolveOptions& options) {
                 }
             }
 
-            for (uint64_t index = 0; index < stateCount; ++index) {
-                if (material[static_cast<size_t>(index)] == UnassignedMaterial &&
-                    thresholdTrue[static_cast<size_t>(index)] != 0) {
-                    material[static_cast<size_t>(index)] = static_cast<uint8_t>(threshold);
+            parallelForRanges(stateCount, solveThreads, [&](uint64_t begin, uint64_t end, uint32_t) {
+                for (uint64_t index = begin; index < end; ++index) {
+                    if (material[static_cast<size_t>(index)] == UnassignedMaterial &&
+                        thresholdTrue[static_cast<size_t>(index)] != 0) {
+                        material[static_cast<size_t>(index)] = static_cast<uint8_t>(threshold);
+                    }
                 }
-            }
+            });
         }
-            for (uint64_t index = 0; index < stateCount; ++index) {
+        parallelForRanges(stateCount, solveThreads, [&](uint64_t begin, uint64_t end, uint32_t) {
+            for (uint64_t index = begin; index < end; ++index) {
                 if (currentWdl.getUnchecked(index) == Outcome::Draw &&
                     material[static_cast<size_t>(index)] == UnassignedMaterial) {
                     material[static_cast<size_t>(index)] = static_cast<uint8_t>(k);
                     distance[static_cast<size_t>(index)] = 0;
                 }
             }
-        }
+        });
+    }
     const auto materialFinish = std::chrono::steady_clock::now();
 
     const auto distanceStart = std::chrono::steady_clock::now();
@@ -1381,69 +1491,94 @@ MtdLayerSolveResult solveMtdLayer(const MtdLayerSolveOptions& options) {
             enqueueDistance(static_cast<uint8_t>(current), index);
         };
 
-        for (uint64_t index = 0; index < stateCount; ++index) {
-            if (currentWdl.getUnchecked(index) != Outcome::Draw) {
-                continue;
-            }
-            const uint8_t target = material[static_cast<size_t>(index)];
-            if (target == k) {
-                finalized[static_cast<size_t>(index)] = 1;
-                distance[static_cast<size_t>(index)] = 0;
-                continue;
-            }
-            const Position pos = positionFromDenseIndex(k, index);
-            generateDenseSuccessorsFromPosition(k, index, pos, successors);
-            uint16_t unresolvedSameLayer = 0;
-            bool hasKnownOptimal = false;
-            uint8_t knownDistance = pos.side == Side::Cannon ? MtdSaturatedDistance : 0;
-            for (const DenseSuccessor& successor : successors) {
-                const Outcome childOutcome = successorOutcomeFor(
-                    successor,
-                    currentWdl,
-                    lowerWdl.has_value() ? &*lowerWdl : nullptr);
-                if (childOutcome != Outcome::Draw) {
+        using BucketSet = std::array<std::vector<uint32_t>, 256>;
+        std::vector<BucketSet> initialDistanceBuckets(solveThreads);
+        parallelForRanges(stateCount, solveThreads, [&](uint64_t begin, uint64_t end, uint32_t threadId) {
+            std::vector<DenseSuccessor> localSuccessors;
+            BucketSet& localBuckets = initialDistanceBuckets[threadId];
+            const auto enqueueInitialDistance = [&](uint8_t bucketIndex, uint64_t index) {
+                localBuckets[bucketIndex].push_back(checkedMtdQueueIndex(index));
+            };
+            for (uint64_t index = begin; index < end; ++index) {
+                if (currentWdl.getUnchecked(index) != Outcome::Draw) {
                     continue;
                 }
-                if (successor.kind == DenseSuccessorKind::CaptureToLowerLayer) {
-                    if (!lowerMtd.has_value()) {
-                        throw std::logic_error("draw distance capture requires lower MTD layer");
-                    }
-                    const MtdEntry child = lowerMtd->getUnchecked(successor.toIndex);
-                    if (child.materialTarget != target) {
+                const uint8_t target = material[static_cast<size_t>(index)];
+                if (target == k) {
+                    finalized[static_cast<size_t>(index)] = 1;
+                    distance[static_cast<size_t>(index)] = 0;
+                    continue;
+                }
+                const Position pos = positionFromDenseIndex(k, index);
+                generateDenseSuccessorsFromPosition(k, index, pos, localSuccessors);
+                uint16_t unresolvedSameLayer = 0;
+                bool hasKnownOptimal = false;
+                uint8_t knownDistance = pos.side == Side::Cannon ? MtdSaturatedDistance : 0;
+                for (const DenseSuccessor& successor : localSuccessors) {
+                    const Outcome childOutcome = successorOutcomeFor(
+                        successor,
+                        currentWdl,
+                        lowerWdl.has_value() ? &*lowerWdl : nullptr);
+                    if (childOutcome != Outcome::Draw) {
                         continue;
                     }
-                    hasKnownOptimal = true;
-                    const uint8_t candidate = saturatedAdd1(child.guaranteeDistance);
-                    if (pos.side == Side::Cannon) {
-                        knownDistance = std::min(knownDistance, candidate);
+                    if (successor.kind == DenseSuccessorKind::CaptureToLowerLayer) {
+                        if (!lowerMtd.has_value()) {
+                            throw std::logic_error("draw distance capture requires lower MTD layer");
+                        }
+                        const MtdEntry child = lowerMtd->getUnchecked(successor.toIndex);
+                        if (child.materialTarget != target) {
+                            continue;
+                        }
+                        hasKnownOptimal = true;
+                        const uint8_t candidate = saturatedAdd1(child.guaranteeDistance);
+                        if (pos.side == Side::Cannon) {
+                            knownDistance = std::min(knownDistance, candidate);
+                        } else {
+                            knownDistance = std::max(knownDistance, candidate);
+                        }
                     } else {
-                        knownDistance = std::max(knownDistance, candidate);
+                        if (material[static_cast<size_t>(successor.toIndex)] != target) {
+                            continue;
+                        }
+                        ++unresolvedSameLayer;
                     }
-                } else {
-                    if (material[static_cast<size_t>(successor.toIndex)] != target) {
-                        continue;
+                }
+                if (unresolvedSameLayer > std::numeric_limits<uint8_t>::max()) {
+                    throw std::overflow_error("MTD distance unresolved count overflowed uint8_t");
+                }
+                soldierUnresolved[static_cast<size_t>(index)] = static_cast<uint8_t>(unresolvedSameLayer);
+                if (pos.side == Side::Cannon) {
+                    if (hasKnownOptimal) {
+                        distance[static_cast<size_t>(index)] = knownDistance;
+                        hasCandidate[static_cast<size_t>(index)] = 1;
+                        enqueueInitialDistance(knownDistance, index);
                     }
-                    ++unresolvedSameLayer;
+                    continue;
                 }
-            }
-            if (unresolvedSameLayer > std::numeric_limits<uint8_t>::max()) {
-                throw std::overflow_error("MTD distance unresolved count overflowed uint8_t");
-            }
-            soldierUnresolved[static_cast<size_t>(index)] = static_cast<uint8_t>(unresolvedSameLayer);
-            if (pos.side == Side::Cannon) {
-                if (hasKnownOptimal) {
-                    scheduleDistance(index, pos.side, knownDistance);
-                }
-            } else {
                 if (hasKnownOptimal) {
                     distance[static_cast<size_t>(index)] = knownDistance;
                     hasCandidate[static_cast<size_t>(index)] = 1;
                 }
                 if (unresolvedSameLayer == 0) {
-                    scheduleDistance(index, pos.side, hasKnownOptimal ? knownDistance : MtdSaturatedDistance, true);
+                    const uint8_t seedDistance = hasKnownOptimal ? knownDistance : MtdSaturatedDistance;
+                    distance[static_cast<size_t>(index)] = seedDistance;
+                    hasCandidate[static_cast<size_t>(index)] = 1;
+                    enqueueInitialDistance(seedDistance, index);
                 }
             }
+        });
+        for (uint16_t bucketIndex = 0; bucketIndex <= MtdSaturatedDistance; ++bucketIndex) {
+            for (BucketSet& localBuckets : initialDistanceBuckets) {
+                std::vector<uint32_t>& localBucket = localBuckets[bucketIndex];
+                pendingQueueEntries += localBucket.size();
+                buckets[bucketIndex].insert(buckets[bucketIndex].end(), localBucket.begin(), localBucket.end());
+            }
+            if (bucketIndex == MtdSaturatedDistance) {
+                break;
+            }
         }
+        queuePeak = std::max(queuePeak, pendingQueueEntries);
 
         for (uint16_t bucketIndex = 0; bucketIndex <= MtdSaturatedDistance; ++bucketIndex) {
             std::vector<uint32_t>& bucket = buckets[bucketIndex];
@@ -1466,7 +1601,7 @@ MtdLayerSolveResult solveMtdLayer(const MtdLayerSolveOptions& options) {
                 }
                 const Position child = positionFromDenseIndex(k, childIndex);
                 const Side parentSide = opposite(child.side);
-                    const uint8_t candidate = saturatedAdd1(static_cast<uint8_t>(distance[static_cast<size_t>(childIndex)]));
+                const uint8_t candidate = saturatedAdd1(static_cast<uint8_t>(distance[static_cast<size_t>(childIndex)]));
                 generateDensePredecessorIndicesFromPosition(k, childIndex, child, predecessorIndices);
                 for (uint32_t parentIndex : predecessorIndices) {
                     if (finalized[static_cast<size_t>(parentIndex)] != 0 ||
@@ -1501,13 +1636,15 @@ MtdLayerSolveResult solveMtdLayer(const MtdLayerSolveOptions& options) {
             }
         }
 
-        for (uint64_t index = 0; index < stateCount; ++index) {
-            if (currentWdl.getUnchecked(index) == Outcome::Draw &&
-                material[static_cast<size_t>(index)] != k &&
-                finalized[static_cast<size_t>(index)] == 0) {
-                distance[static_cast<size_t>(index)] = MtdSaturatedDistance;
+        parallelForRanges(stateCount, solveThreads, [&](uint64_t begin, uint64_t end, uint32_t) {
+            for (uint64_t index = begin; index < end; ++index) {
+                if (currentWdl.getUnchecked(index) == Outcome::Draw &&
+                    material[static_cast<size_t>(index)] != k &&
+                    finalized[static_cast<size_t>(index)] == 0) {
+                    distance[static_cast<size_t>(index)] = MtdSaturatedDistance;
+                }
             }
-        }
+        });
     }
     const auto distanceFinish = std::chrono::steady_clock::now();
 
@@ -1523,9 +1660,17 @@ MtdLayerSolveResult solveMtdLayer(const MtdLayerSolveOptions& options) {
 
     MtdLayerSolveResult result;
     result.soldierCount = k;
+    result.threads = solveThreads;
     result.stateCount = stateCount;
     result.outputPath = outputPath;
     result.statsPath = statsPath;
+    result.parallelStages = {
+        "wdlSolvedScan",
+        "outcomeCount",
+        "winningInitialScan",
+        "drawThresholdInitialScan",
+        "drawDistanceInitialScan",
+    };
     result.outputBytes = std::filesystem::file_size(outputPath);
     result.stageMaterialSeconds = std::chrono::duration<double>(materialFinish - materialStart).count();
     result.stageDistanceSeconds = std::chrono::duration<double>(distanceFinish - distanceStart).count();
@@ -1535,7 +1680,7 @@ MtdLayerSolveResult solveMtdLayer(const MtdLayerSolveOptions& options) {
     result.queuePeak = queuePeak;
     result.distanceIterations = distanceIterations + winIterations;
     result.materialIterations = materialIterations;
-    countWdlOutcomes(currentWdl, result.outcomeCounts);
+    countWdlOutcomes(currentWdl, result.outcomeCounts, solveThreads);
     fillStatsFromWriteStats(result, writeStats);
     if (options.writeStatsJson) {
         writeMtdStatsJson(result);
@@ -1572,6 +1717,7 @@ MtdRangeSolveResult solveMtdRange(const MtdRangeSolveOptions& options) {
             const MtdFileInfo info = validateMtdHeaderOnly(outputPath, StandardRulesetHash, k);
             MtdLayerSolveResult layer;
             layer.soldierCount = k;
+            layer.threads = normalizeThreadCount(options.threads, info.stateCount);
             layer.stateCount = info.stateCount;
             layer.outputPath = outputPath;
             layer.statsPath = mtdLayerStatsPath(options.mtdDir, k);
@@ -1585,6 +1731,7 @@ MtdRangeSolveResult solveMtdRange(const MtdRangeSolveOptions& options) {
         layerOptions.wdlDir = options.wdlDir;
         layerOptions.mtdDir = options.mtdDir;
         layerOptions.overwrite = options.overwrite;
+        layerOptions.threads = options.threads;
         const MtdLayerSolveResult layer = solveMtdLayer(layerOptions);
         result.totalOutputBytes += layer.outputBytes;
         result.layers.push_back(layer);
@@ -1608,75 +1755,161 @@ MtdLayerVerifyResult verifyMtdLayer(const MtdLayerVerifyOptions& options) {
     }
     const PackedMtdTable12 table =
         loadMtdTable(mtdLayerPath(options.mtdDir, options.soldierCount), StandardRulesetHash, options.soldierCount);
-    requireSolvedWdlLayer(currentWdl, options.soldierCount, "current");
+    const uint32_t verifyThreads = normalizeThreadCount(options.threads, table.size());
+    requireSolvedWdlLayer(currentWdl, options.soldierCount, "current", verifyThreads);
     if (lowerWdl.has_value()) {
-        requireSolvedWdlLayer(*lowerWdl, options.soldierCount - 1, "lower");
+        requireSolvedWdlLayer(*lowerWdl, options.soldierCount - 1, "lower", verifyThreads);
     }
 
     MtdLayerVerifyResult result;
     result.soldierCount = options.soldierCount;
+    result.threads = normalizeThreadCount(options.threads, table.size());
     result.stateCount = table.size();
     const uint64_t samples = options.sampleLimit == 0 || options.sampleLimit >= table.size()
         ? table.size()
         : options.sampleLimit;
     result.sampledStates = samples;
 
-    std::vector<DenseSuccessor> successors;
-    uint64_t rng = 0x4D54445645524946ull ^ table.size();
-    for (uint64_t sample = 0; sample < samples; ++sample) {
-        uint64_t index = sample;
-        if (samples != table.size()) {
+    const bool fullScan = samples == table.size();
+    std::vector<uint64_t> sampleIndices;
+    if (!fullScan) {
+        sampleIndices.reserve(static_cast<size_t>(samples));
+        uint64_t rng = 0x4D54445645524946ull ^ table.size();
+        for (uint64_t sample = 0; sample < samples; ++sample) {
             rng = rng * 6364136223846793005ull + 1442695040888963407ull;
-            index = rng % table.size();
+            sampleIndices.push_back(rng % table.size());
         }
-        const MtdEntry entry = table.getUnchecked(index);
-        validateEntryForLayer(entry, options.soldierCount);
-        const Outcome currentOutcome = currentWdl.getUnchecked(index);
-        if (currentOutcome == Outcome::Unknown) {
-            throw std::runtime_error("MTD verify found Unknown WDL outcome");
-        }
-        if (entry.materialTarget == options.soldierCount && entry.guaranteeDistance == 0) {
-            ++result.materialTargetKDistanceZero;
-        }
-        if (entry.guaranteeDistance == MtdSaturatedDistance) {
-            ++result.saturatedDistanceCount;
-        } else {
-            result.maxExactDistance = std::max(result.maxExactDistance, entry.guaranteeDistance);
-        }
-        if (options.soldierCount < MinSoldiersForSoldierSurvival) {
-            if (currentOutcome != Outcome::CannonWin) {
-                throw std::runtime_error("MTD verify expected base layers K=0..3 to be CannonWin");
-            }
-            if (entry.materialTarget != options.soldierCount || entry.guaranteeDistance != 0) {
-                throw std::runtime_error("MTD verify expected base layers K=0..3 to be target=k distance=0");
-            }
-            continue;
-        }
+    }
 
-        const Position pos = positionFromDenseIndex(options.soldierCount, index);
-        generateDenseSuccessorsFromPosition(options.soldierCount, index, pos, successors);
-        const DenseTerminalInfo terminal = terminalOutcomeForPositionWithSuccessors(pos, successors);
-        if (terminal.terminal) {
-            if (terminal.outcome != currentOutcome) {
-                throw std::runtime_error("MTD verify found terminal WDL mismatch");
+    struct LocalVerifyResult {
+        uint64_t checkedTransitions = 0;
+        uint64_t materialTargetKDistanceZero = 0;
+        uint8_t maxExactDistance = 0;
+        uint64_t saturatedDistanceCount = 0;
+    };
+    const uint32_t sampleThreads = normalizeThreadCount(options.threads, samples);
+    result.threads = sampleThreads;
+    std::vector<LocalVerifyResult> localResults(sampleThreads);
+    parallelForRanges(samples, sampleThreads, [&](uint64_t begin, uint64_t end, uint32_t threadId) {
+        LocalVerifyResult& local = localResults[threadId];
+        std::vector<DenseSuccessor> successors;
+        for (uint64_t sample = begin; sample < end; ++sample) {
+            const uint64_t index = fullScan ? sample : sampleIndices[static_cast<size_t>(sample)];
+            const MtdEntry entry = table.getUnchecked(index);
+            validateEntryForLayer(entry, options.soldierCount);
+            const Outcome currentOutcome = currentWdl.getUnchecked(index);
+            if (currentOutcome == Outcome::Unknown) {
+                throw std::runtime_error("MTD verify found Unknown WDL outcome");
             }
-            if (currentOutcome == Outcome::Draw) {
-                throw std::runtime_error("MTD verify found terminal Draw state");
+            if (entry.materialTarget == options.soldierCount && entry.guaranteeDistance == 0) {
+                ++local.materialTargetKDistanceZero;
             }
-            if (entry.materialTarget != options.soldierCount || entry.guaranteeDistance != 0) {
-                throw std::runtime_error("MTD verify found terminal win state with non-zero guarantee distance");
+            if (entry.guaranteeDistance == MtdSaturatedDistance) {
+                ++local.saturatedDistanceCount;
+            } else {
+                local.maxExactDistance = std::max(local.maxExactDistance, entry.guaranteeDistance);
             }
-            continue;
-        }
+            if (options.soldierCount < MinSoldiersForSoldierSurvival) {
+                if (currentOutcome != Outcome::CannonWin) {
+                    throw std::runtime_error("MTD verify expected base layers K=0..3 to be CannonWin");
+                }
+                if (entry.materialTarget != options.soldierCount || entry.guaranteeDistance != 0) {
+                    throw std::runtime_error("MTD verify expected base layers K=0..3 to be target=k distance=0");
+                }
+                continue;
+            }
 
-        if (isWinningOutcome(currentOutcome)) {
-            const Side winner = winnerForOutcome(currentOutcome);
-            const bool winnerToMove = pos.side == winner;
-            bool hasCandidate = false;
-            uint8_t expectedDistance = winnerToMove ? MtdSaturatedDistance : 0;
-            uint8_t expectedMaterial = winnerToMove
-                ? (winner == Side::Cannon ? 15 : 0)
-                : (winner == Side::Cannon ? 0 : 15);
+            const Position pos = positionFromDenseIndex(options.soldierCount, index);
+            generateDenseSuccessorsFromPosition(options.soldierCount, index, pos, successors);
+            const DenseTerminalInfo terminal = terminalOutcomeForPositionWithSuccessors(pos, successors);
+            if (terminal.terminal) {
+                if (terminal.outcome != currentOutcome) {
+                    throw std::runtime_error("MTD verify found terminal WDL mismatch");
+                }
+                if (currentOutcome == Outcome::Draw) {
+                    throw std::runtime_error("MTD verify found terminal Draw state");
+                }
+                if (entry.materialTarget != options.soldierCount || entry.guaranteeDistance != 0) {
+                    throw std::runtime_error("MTD verify found terminal win state with non-zero guarantee distance");
+                }
+                continue;
+            }
+
+            if (isWinningOutcome(currentOutcome)) {
+                const Side winner = winnerForOutcome(currentOutcome);
+                const bool winnerToMove = pos.side == winner;
+                bool hasCandidate = false;
+                uint8_t expectedDistance = winnerToMove ? MtdSaturatedDistance : 0;
+                uint8_t expectedMaterial = winnerToMove
+                    ? (winner == Side::Cannon ? 15 : 0)
+                    : (winner == Side::Cannon ? 0 : 15);
+                for (const DenseSuccessor& successor : successors) {
+                    const Outcome childOutcome = successorOutcomeFor(
+                        successor,
+                        currentWdl,
+                        lowerWdl.has_value() ? &*lowerWdl : nullptr);
+                    if (childOutcome == Outcome::Unknown) {
+                        throw std::runtime_error("MTD verify found Unknown successor WDL outcome");
+                    }
+                    if (childOutcome != currentOutcome) {
+                        continue;
+                    }
+                    const MtdEntry child = successorMtdFromTables(
+                        successor,
+                        table,
+                        lowerMtd.has_value() ? &*lowerMtd : nullptr);
+                    const uint8_t candidateDistance = saturatedAdd1(child.guaranteeDistance);
+                    const uint8_t candidateMaterial = child.materialTarget;
+                    ++local.checkedTransitions;
+                    if (!hasCandidate) {
+                        hasCandidate = true;
+                        expectedDistance = candidateDistance;
+                        expectedMaterial = candidateMaterial;
+                        continue;
+                    }
+                    if (winnerToMove) {
+                        if (candidateDistance < expectedDistance ||
+                            (candidateDistance == expectedDistance &&
+                             ((winner == Side::Cannon && candidateMaterial < expectedMaterial) ||
+                              (winner == Side::Soldier && candidateMaterial > expectedMaterial)))) {
+                            expectedDistance = candidateDistance;
+                            expectedMaterial = candidateMaterial;
+                        }
+                    } else if (candidateDistance > expectedDistance ||
+                               (candidateDistance == expectedDistance &&
+                                ((winner == Side::Cannon && candidateMaterial > expectedMaterial) ||
+                                 (winner == Side::Soldier && candidateMaterial < expectedMaterial)))) {
+                        expectedDistance = candidateDistance;
+                        expectedMaterial = candidateMaterial;
+                    }
+                }
+                if (!hasCandidate) {
+                    throw std::runtime_error("MTD verify found win state without outcome-preserving successor");
+                }
+                if (entry.guaranteeDistance != expectedDistance || entry.materialTarget != expectedMaterial) {
+                    std::ostringstream message;
+                    message << "MTD verify found inconsistent win guarantee distance at dense index " << index
+                            << ": outcome=" << outcomeToString(currentOutcome)
+                            << " entryMaterial=" << static_cast<int>(entry.materialTarget)
+                            << " expectedMaterial=" << static_cast<int>(expectedMaterial)
+                            << " entryDistance=" << static_cast<int>(entry.guaranteeDistance)
+                            << " expectedDistance=" << static_cast<int>(expectedDistance);
+                    throw std::runtime_error(message.str());
+                }
+                continue;
+            }
+
+            if (currentOutcome != Outcome::Draw) {
+                throw std::runtime_error("MTD verify found unsupported WDL outcome");
+            }
+            if (entry.materialTarget == options.soldierCount) {
+                if (entry.guaranteeDistance != 0) {
+                    throw std::runtime_error("MTD verify found Draw materialTarget == k with non-zero guarantee distance");
+                }
+            }
+            bool hasOptimal = entry.materialTarget == options.soldierCount;
+            uint8_t expectedDistance = entry.materialTarget == options.soldierCount ? 0 :
+                (pos.side == Side::Cannon ? MtdSaturatedDistance : 0);
             for (const DenseSuccessor& successor : successors) {
                 const Outcome childOutcome = successorOutcomeFor(
                     successor,
@@ -1685,104 +1918,44 @@ MtdLayerVerifyResult verifyMtdLayer(const MtdLayerVerifyOptions& options) {
                 if (childOutcome == Outcome::Unknown) {
                     throw std::runtime_error("MTD verify found Unknown successor WDL outcome");
                 }
-                if (childOutcome != currentOutcome) {
+                if (childOutcome != Outcome::Draw) {
                     continue;
                 }
                 const MtdEntry child = successorMtdFromTables(
                     successor,
                     table,
                     lowerMtd.has_value() ? &*lowerMtd : nullptr);
-                const uint8_t candidateDistance = saturatedAdd1(child.guaranteeDistance);
-                const uint8_t candidateMaterial = child.materialTarget;
-                ++result.checkedTransitions;
-                if (!hasCandidate) {
-                    hasCandidate = true;
-                    expectedDistance = candidateDistance;
-                    expectedMaterial = candidateMaterial;
-                    continue;
+                ++local.checkedTransitions;
+                if (pos.side == Side::Cannon && child.materialTarget < entry.materialTarget) {
+                    throw std::runtime_error("MTD verify found cannon Draw child with smaller materialTarget");
                 }
-                if (winnerToMove) {
-                    if (candidateDistance < expectedDistance ||
-                        (candidateDistance == expectedDistance &&
-                         ((winner == Side::Cannon && candidateMaterial < expectedMaterial) ||
-                          (winner == Side::Soldier && candidateMaterial > expectedMaterial)))) {
-                        expectedDistance = candidateDistance;
-                        expectedMaterial = candidateMaterial;
+                if (pos.side == Side::Soldier && child.materialTarget > entry.materialTarget) {
+                    throw std::runtime_error("MTD verify found soldier Draw child with larger materialTarget");
+                }
+                if (entry.materialTarget != options.soldierCount &&
+                    child.materialTarget == entry.materialTarget) {
+                    hasOptimal = true;
+                    const uint8_t candidate = saturatedAdd1(child.guaranteeDistance);
+                    if (pos.side == Side::Cannon) {
+                        expectedDistance = std::min(expectedDistance, candidate);
+                    } else {
+                        expectedDistance = std::max(expectedDistance, candidate);
                     }
-                } else if (candidateDistance > expectedDistance ||
-                           (candidateDistance == expectedDistance &&
-                            ((winner == Side::Cannon && candidateMaterial > expectedMaterial) ||
-                             (winner == Side::Soldier && candidateMaterial < expectedMaterial)))) {
-                    expectedDistance = candidateDistance;
-                    expectedMaterial = candidateMaterial;
                 }
             }
-            if (!hasCandidate) {
-                throw std::runtime_error("MTD verify found win state without outcome-preserving successor");
+            if (!hasOptimal) {
+                throw std::runtime_error("MTD verify found no Draw material-optimal successor");
             }
-            if (entry.guaranteeDistance != expectedDistance || entry.materialTarget != expectedMaterial) {
-                std::ostringstream message;
-                message << "MTD verify found inconsistent win guarantee distance at dense index " << index
-                        << ": outcome=" << outcomeToString(currentOutcome)
-                        << " entryMaterial=" << static_cast<int>(entry.materialTarget)
-                        << " expectedMaterial=" << static_cast<int>(expectedMaterial)
-                        << " entryDistance=" << static_cast<int>(entry.guaranteeDistance)
-                        << " expectedDistance=" << static_cast<int>(expectedDistance);
-                throw std::runtime_error(message.str());
-            }
-            continue;
-        }
-
-        if (currentOutcome != Outcome::Draw) {
-            throw std::runtime_error("MTD verify found unsupported WDL outcome");
-        }
-        if (entry.materialTarget == options.soldierCount) {
-            if (entry.guaranteeDistance != 0) {
-                throw std::runtime_error("MTD verify found Draw materialTarget == k with non-zero guarantee distance");
+            if (entry.materialTarget != options.soldierCount && expectedDistance != entry.guaranteeDistance) {
+                throw std::runtime_error("MTD verify found inconsistent Draw guarantee distance");
             }
         }
-        bool hasOptimal = entry.materialTarget == options.soldierCount;
-        uint8_t expectedDistance = entry.materialTarget == options.soldierCount ? 0 :
-            (pos.side == Side::Cannon ? MtdSaturatedDistance : 0);
-        for (const DenseSuccessor& successor : successors) {
-            const Outcome childOutcome = successorOutcomeFor(
-                successor,
-                currentWdl,
-                lowerWdl.has_value() ? &*lowerWdl : nullptr);
-            if (childOutcome == Outcome::Unknown) {
-                throw std::runtime_error("MTD verify found Unknown successor WDL outcome");
-            }
-            if (childOutcome != Outcome::Draw) {
-                continue;
-            }
-            const MtdEntry child = successorMtdFromTables(
-                successor,
-                table,
-                lowerMtd.has_value() ? &*lowerMtd : nullptr);
-            ++result.checkedTransitions;
-            if (pos.side == Side::Cannon && child.materialTarget < entry.materialTarget) {
-                throw std::runtime_error("MTD verify found cannon Draw child with smaller materialTarget");
-            }
-            if (pos.side == Side::Soldier && child.materialTarget > entry.materialTarget) {
-                throw std::runtime_error("MTD verify found soldier Draw child with larger materialTarget");
-            }
-            if (entry.materialTarget != options.soldierCount &&
-                child.materialTarget == entry.materialTarget) {
-                hasOptimal = true;
-                const uint8_t candidate = saturatedAdd1(child.guaranteeDistance);
-                if (pos.side == Side::Cannon) {
-                    expectedDistance = std::min(expectedDistance, candidate);
-                } else {
-                    expectedDistance = std::max(expectedDistance, candidate);
-                }
-            }
-        }
-        if (!hasOptimal) {
-            throw std::runtime_error("MTD verify found no Draw material-optimal successor");
-        }
-        if (entry.materialTarget != options.soldierCount && expectedDistance != entry.guaranteeDistance) {
-            throw std::runtime_error("MTD verify found inconsistent Draw guarantee distance");
-        }
+    });
+    for (const LocalVerifyResult& local : localResults) {
+        result.checkedTransitions += local.checkedTransitions;
+        result.materialTargetKDistanceZero += local.materialTargetKDistanceZero;
+        result.maxExactDistance = std::max(result.maxExactDistance, local.maxExactDistance);
+        result.saturatedDistanceCount += local.saturatedDistanceCount;
     }
     return result;
 }

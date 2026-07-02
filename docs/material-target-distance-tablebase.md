@@ -191,12 +191,61 @@ material and distance arrays. It no longer constructs a second resident
 `saveMtdTable(PackedMtdTable12, ...)` API remains for tests and small-table
 utilities.
 
+## Threading
+
+MTD commands accept a conservative CPU threading option:
+
+```text
+--threads 1   deterministic single-thread baseline
+--threads 0   use std::thread::hardware_concurrency(), falling back to 1
+--threads N   use N workers, clamped to at most 256 and at most the work count
+```
+
+Threading is supported by:
+
+```text
+--solve-mtd-layer
+--solve-mtd-range
+--verify-mtd-layer
+--inspect-mtd
+```
+
+`--query-mtd` remains random-access and single-request oriented.
+
+The threaded pass parallelizes only safe linear scans and initialization scans:
+
+```text
+wdlSolvedScan
+outcomeCount
+winningInitialScan
+drawThresholdInitialScan
+drawDistanceInitialScan
+inspect stats scan
+verify sample/full scan
+```
+
+The predecessor/worklist propagation stages are intentionally still
+single-threaded:
+
+```text
+winning predecessor propagation
+Draw material threshold propagation
+Draw distance propagation
+```
+
+The threading pass must not change MTD v2 semantics. For the same inputs,
+`--threads N` output is expected to be byte-identical to `--threads 1`; compare
+generated `.s15mtd` files with SHA256 when benchmarking a new platform.
+`layer-XX.mtd.solve.json` records the resolved `threads` value and the solve
+stages that were parallelized.
+
 ## CLI
 
 ```powershell
-.\build\sanpao15_cli.exe --solve-mtd-range 0 4 --wdl-dir build\prod-layers --mtd-dir build\material-target-distance-v2 --overwrite
-.\build\sanpao15_cli.exe --verify-mtd-layer 4 --wdl-dir build\prod-layers --mtd-dir build\material-target-distance-v2 --sample 10000
-.\build\sanpao15_cli.exe --inspect-mtd build\material-target-distance-v2\layer-04.s15mtd
+.\build\sanpao15_cli.exe --solve-mtd-range 0 4 --wdl-dir build\prod-layers --mtd-dir build\material-target-distance-v2 --overwrite --threads 1
+.\build\sanpao15_cli.exe --solve-mtd-range 0 4 --wdl-dir build\prod-layers --mtd-dir build\material-target-distance-v2-t16 --overwrite --threads 16
+.\build\sanpao15_cli.exe --verify-mtd-layer 4 --wdl-dir build\prod-layers --mtd-dir build\material-target-distance-v2-t16 --sample 10000 --threads 16
+.\build\sanpao15_cli.exe --inspect-mtd build\material-target-distance-v2-t16\layer-04.s15mtd --threads 16
 .\build\sanpao15_cli.exe --query-mtd build\material-target-distance-v2 --wdl-dir build\prod-layers --position "SSSS./...../...../...../.CCC. c" --moves
 ```
 

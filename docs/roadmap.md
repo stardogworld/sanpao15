@@ -58,6 +58,7 @@
 - Solve material-target-distance prototype layers `k=0..4`; Release `k=4` completed in 01:27 with no saturated distances and passed full verification.
 - Split MTD validation into header-only and full-payload paths; range resume now skips existing `.s15mtd` layers with header-only validation, while `--verify-mtd-layer` remains the full semantic check.
 - Stream MTD packed12 output from material/distance arrays, avoiding a second resident current-layer `PackedMtdTable12`, and keep the single-threaded queue accounting O(1).
+- Add `--threads N` for MTD solve, range solve, verify, and inspect. The threaded pass parallelizes safe scans and initialization scans while keeping predecessor/worklist propagation single-threaded and requiring byte-identical output versus `--threads 1`.
 - Query local dense `.s15res` files from the UI by random-reading only target outcome bytes.
 - Serve the UI from a read-only local C++ backend with automatic `/api/status` detection, backend random-read `.s15res` lookup, and browser file picker fallback.
 - Explore one deterministic WDL-only line with `--explore-tablebase --max-plies`, JSON output, cycle detection, and random `.s15res` reads.
@@ -75,9 +76,8 @@
 
 ## Next Steps
 
-- Run range `0..5` using resume.
-- Run a threaded material-target-distance performance pass after the current single-threaded structural cleanup.
-- Benchmark material-target-distance `k=5` and `k=6` before widening the production range.
+- Benchmark threaded material-target-distance `k=5` and `k=6`, comparing output hashes against `--threads 1` where practical.
+- Run range `0..5` or wider using resume after threaded benchmark validation.
 - Run `--preflight-layer-range 0 15` before widening production ranges, then rerun it after each completed range slice.
 - Consider a cautious `k=6` benchmark after range `0..5` is validated.
 - Evaluate file-backed or mmap dense outcome tables for larger layers.

@@ -131,10 +131,11 @@ Useful CLI modes:
 .\build\sanpao15_cli.exe --query-tablebase build\prod-layers --position "SSSSS/SSSSS/SSSSS/...../.CCC. c" --moves --json
 .\build\sanpao15_cli.exe --explore-tablebase build\prod-layers --position "SSSSS/SSSSS/SSSSS/...../.CCC. c" --max-plies 100
 .\build\sanpao15_cli.exe --explore-tablebase build\prod-layers --position "SSSSS/SSSSS/SSSSS/...../.CCC. c" --max-plies 100 --json
-.\build\sanpao15_cli.exe --solve-mtd-range 0 4 --wdl-dir build\prod-layers --mtd-dir build\material-target-distance-v2 --resume
-.\build\sanpao15_cli.exe --verify-mtd-layer 4 --wdl-dir build\prod-layers --mtd-dir build\material-target-distance-v2 --sample 10000
-.\build\sanpao15_cli.exe --inspect-mtd build\material-target-distance-v2\layer-04.s15mtd
+.\build\sanpao15_cli.exe --solve-mtd-range 0 4 --wdl-dir build\prod-layers --mtd-dir build\material-target-distance-v2 --resume --threads 1
+.\build\sanpao15_cli.exe --verify-mtd-layer 4 --wdl-dir build\prod-layers --mtd-dir build\material-target-distance-v2 --sample 10000 --threads 8
+.\build\sanpao15_cli.exe --inspect-mtd build\material-target-distance-v2\layer-04.s15mtd --threads 8
 .\build\sanpao15_cli.exe --query-mtd build\material-target-distance-v2 --wdl-dir build\prod-layers --position "SSSS./...../...../...../.CCC. c" --moves
+
 .\build-release\sanpao15_cli.exe --serve-ui --tablebase-dir build\prod-layers --ui-dir ui\dist --port 8787
 .\build\sanpao15_cli.exe --limit 50000
 .\build\sanpao15_cli.exe --full
@@ -147,6 +148,12 @@ Useful CLI modes:
 .\build\sanpao15_cli.exe --limit 100000 --progress 10000 --save-table debug.s15tbl
 .\build\sanpao15_cli.exe --load-table standard.s15tbl --analyze "SSSSS/SSSSS/SSSSS/...../.CCC. c"
 ```
+
+MTD solve, range solve, verify, and inspect support `--threads N`. Use
+`--threads 1` as the deterministic baseline; `--threads 0` resolves to hardware
+concurrency. The threaded pass parallelizes safe scans and initialization scans
+only; predecessor/worklist propagation remains single-threaded, and generated
+`.s15mtd` output should be byte-identical to the `--threads 1` result.
 
 Suggested workflow before a full solve:
 

@@ -2,6 +2,7 @@
 
 #include <filesystem>
 #include <fstream>
+#include <string>
 
 #include "sanpao15/dense_index.h"
 #include "sanpao15/lowk_tablebase.h"
@@ -72,12 +73,35 @@ SANPAO15_TEST(mtdHeaderAndPayloadRoundtrip) {
     SANPAO15_REQUIRE(loaded.get(1) == (MtdEntry{3, 12}));
     SANPAO15_REQUIRE(loaded.get(loaded.size() - 1) == (MtdEntry{2, 254}));
 
-    const MtdInspectStats stats = inspectMtdTable(path);
+    const MtdInspectStats stats = inspectMtdTable(path, 4);
+    SANPAO15_REQUIRE(stats.threads == 4);
     SANPAO15_REQUIRE(stats.materialTargetCounts[4] == denseStateCount(4) - 2);
     SANPAO15_REQUIRE(stats.materialTargetCounts[3] == 1);
     SANPAO15_REQUIRE(stats.materialTargetCounts[2] == 1);
     SANPAO15_REQUIRE(stats.maxExactDistance == 254);
     SANPAO15_REQUIRE(stats.saturatedDistanceCount == 0);
+    std::filesystem::remove_all(dir);
+}
+
+SANPAO15_TEST(mtdInspectThreadedStatsMatchSingleThread) {
+    const std::filesystem::path dir = tempDir("sanpao15-mtd-threaded-inspect");
+    const std::filesystem::path path = mtdLayerPath(dir, 1);
+    PackedMtdTable12 table(denseStateCount(1), MtdEntry{1, 0});
+    table.set(0, MtdEntry{0, 3});
+    table.set(1, MtdEntry{1, MtdSaturatedDistance});
+    table.set(table.size() - 1, MtdEntry{0, 7});
+    saveMtdTable(table, 1, path, StandardRulesetHash);
+
+    const MtdInspectStats single = inspectMtdTable(path, 1);
+    const MtdInspectStats threaded = inspectMtdTable(path, 8);
+    SANPAO15_REQUIRE(threaded.threads == 8);
+    SANPAO15_REQUIRE(threaded.minMaterialTarget == single.minMaterialTarget);
+    SANPAO15_REQUIRE(threaded.maxMaterialTarget == single.maxMaterialTarget);
+    SANPAO15_REQUIRE(threaded.maxExactDistance == single.maxExactDistance);
+    SANPAO15_REQUIRE(threaded.saturatedDistanceCount == single.saturatedDistanceCount);
+    SANPAO15_REQUIRE(threaded.materialTargetCounts == single.materialTargetCounts);
+    SANPAO15_REQUIRE(threaded.cannonMaxCapturesCounts == single.cannonMaxCapturesCounts);
+    SANPAO15_REQUIRE(threaded.distanceCounts == single.distanceCounts);
     std::filesystem::remove_all(dir);
 }
 
@@ -214,6 +238,51 @@ SANPAO15_TEST(mtdSolveRejectsUnknownWdl) {
     sanpao15::test::requireThrows([&] {
         (void)solveMtdLayer(options);
     }, "MTD solve should reject Unknown WDL outcomes");
+    std::filesystem::remove_all(dir);
+}
+
+SANPAO15_TEST(mtdBaseLayerThreadedSolveWritesThreadMetadataAndVerifies) {
+    const std::filesystem::path dir = tempDir("sanpao15-mtd-threaded-base-solve");
+    const std::filesystem::path wdlDir = dir / "wdl";
+    const std::filesystem::path mtdDir = dir / "mtd";
+    std::filesystem::create_directories(wdlDir);
+    std::filesystem::create_directories(mtdDir);
+
+    PackedOutcomeTable2Bit wdl(denseStateCount(0), Outcome::CannonWin);
+    saveDenseResultTable2Bit(wdl, 0, lowKLayerResultPath(wdlDir, 0), StandardRulesetHash);
+
+    MtdLayerSolveOptions solveOptions;
+    solveOptions.soldierCount = 0;
+    solveOptions.wdlDir = wdlDir;
+    solveOptions.mtdDir = mtdDir;
+    solveOptions.overwrite = true;
+    solveOptions.threads = 8;
+    const MtdLayerSolveResult solve = solveMtdLayer(solveOptions);
+    SANPAO15_REQUIRE(solve.threads == 8);
+    SANPAO15_REQUIRE(solve.outcomeCounts[static_cast<size_t>(Outcome::CannonWin)] == denseStateCount(0));
+    SANPAO15_REQUIRE(solve.materialTargetCounts[0] == denseStateCount(0));
+    SANPAO15_REQUIRE(solve.distanceCounts[0] == denseStateCount(0));
+
+    std::string json;
+    {
+        std::ifstream statsJson(solve.statsPath);
+        json.assign(
+            std::istreambuf_iterator<char>(statsJson),
+            std::istreambuf_iterator<char>());
+    }
+    SANPAO15_REQUIRE(json.find("\"threads\": 8") != std::string::npos);
+    SANPAO15_REQUIRE(json.find("\"wdlSolvedScan\"") != std::string::npos);
+
+    MtdLayerVerifyOptions verifyOptions;
+    verifyOptions.soldierCount = 0;
+    verifyOptions.wdlDir = wdlDir;
+    verifyOptions.mtdDir = mtdDir;
+    verifyOptions.sampleLimit = 0;
+    verifyOptions.threads = 8;
+    const MtdLayerVerifyResult verify = verifyMtdLayer(verifyOptions);
+    SANPAO15_REQUIRE(verify.threads == 8);
+    SANPAO15_REQUIRE(verify.sampledStates == denseStateCount(0));
+    SANPAO15_REQUIRE(verify.materialTargetKDistanceZero == denseStateCount(0));
     std::filesystem::remove_all(dir);
 }
 
