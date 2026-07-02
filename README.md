@@ -325,30 +325,32 @@ ui/public/tables/standard.s15tbl
 
 The UI mirrors the rules in TypeScript and reads `.s15tbl` files directly. A later milestone will compile the C++ core to WebAssembly so the UI can call the same engine directly.
 
-The UI can also query a local dense outcome tablebase. Use the Tablebase panel
-to select a directory such as `build\prod-layers`, or select `layer-00.s15res`
-through `layer-15.s15res` as files. The browser keeps file handles and reads
-only the target header/outcome byte for the current position and each legal
-successor; it does not load the full 4.7GB outcome set. Recommended moves are
-grouped as winning, drawing, or losing using the same WDL-only rule as the CLI.
+The browser UI defaults to Chinese and is organized around a board-first layout
+with collapsible analysis panels. The board uses self-created Chinese SVG
+pieces (`炮` / `兵`), and every board cell is explicitly sized by the 5x5 grid
+so empty rows cannot collapse.
 
-The Line Explorer panel samples and plays back one WDL-only line from the
-current position. It supports max-plies control, previous/next, 700ms autoplay,
-click-to-jump plies, stop reason display, last-move highlight, recommended-move
-highlight, undo/redo/reset, and copy/paste notation. It is not a shortest-win
-or fastest-draw explorer.
+The UI can query a local dense outcome tablebase. In the `表库` panel, select a
+directory such as `build\prod-layers`, or select `layer-00.s15res` through
+`layer-15.s15res` as files. The browser keeps file handles and reads only the
+target header/outcome byte for the current position and each legal successor;
+it does not load the full 4.7GB outcome set. Recommended moves are grouped as
+`保持胜势`, `保持和棋`, or `走向败局` using the same WDL-only rule as the CLI.
 
-The browser UI is organized around a board-first layout with collapsible
-analysis panels. The Tablebase panel shows loaded layer coverage, encoding,
-ruleset hash, and random-read mode. The Initial Position panel highlights the
-standard start:
+The `路线探索` panel samples and plays back one WDL-only line from the current
+position. It supports max-plies control, previous/next, 700ms autoplay,
+click-to-jump plies, stop reason display, last-move highlight,
+recommended-move highlight, undo/redo/reset, and copy/paste notation. It is not
+a shortest-win or fastest-draw explorer.
+
+The `初始局面` panel highlights the standard start:
 
 ```text
 SSSSS/SSSSS/SSSSS/...../.CCC. c
 ```
 
-With the complete dense tablebase loaded, that position is `Draw` and the only
-drawing first move is `22->12 captures 12`. The panel can reset to the start,
+With the complete dense tablebase loaded, that position is `和棋` and the only
+drawing first move is `22->12 吃 12`. The panel can reset to the start,
 highlight that move, copy the notation, or explore a WDL sample line. Mobile
 layouts keep the board on top and place the panels below it.
 

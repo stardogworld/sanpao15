@@ -1,5 +1,6 @@
 import type { Move, Position } from "./engine";
 import { boardSize, movesEqual } from "./engine";
+import { zh } from "./i18n/zh";
 
 const cannonPieceUrl = new URL("./assets/pieces/cannon.svg", import.meta.url).href;
 const soldierPieceUrl = new URL("./assets/pieces/soldier.svg", import.meta.url).href;
@@ -16,22 +17,17 @@ export interface BoardRenderOptions {
 }
 
 function pieceLabel(position: Position, square: number): string {
-  if (position.soldiers.has(square)) return "Soldier";
-  if (position.cannons.has(square)) return "Cannon";
-  return "Empty";
+  if (position.soldiers.has(square)) return zh.piece.soldier;
+  if (position.cannons.has(square)) return zh.piece.cannon;
+  return zh.piece.empty;
 }
 
 function appendPiece(button: HTMLButtonElement, kind: "cannon" | "soldier"): void {
   const image = document.createElement("img");
   image.className = "piece-image";
-  image.alt = kind === "cannon" ? "Cannon" : "Soldier";
+  image.alt = kind === "cannon" ? zh.piece.cannon : zh.piece.soldier;
   image.src = kind === "cannon" ? cannonPieceUrl : soldierPieceUrl;
-
-  const label = document.createElement("span");
-  label.className = "piece-label";
-  label.textContent = kind === "cannon" ? "C" : "S";
-
-  button.append(image, label);
+  button.append(image);
 }
 
 function moveTouchesSquare(move: Move | null | undefined, square: number): boolean {
@@ -48,7 +44,7 @@ export function renderBoard(container: HTMLElement, options: BoardRenderOptions)
     button.type = "button";
     button.className = "square";
     button.dataset.square = String(square);
-    button.setAttribute("aria-label", `${pieceLabel(options.position, square)} on square ${square}`);
+    button.setAttribute("aria-label", `${pieceLabel(options.position, square)}，第 ${square} 格`);
 
     if (options.position.soldiers.has(square)) {
       button.classList.add("soldier");

@@ -24,7 +24,8 @@
   color: var(--color-text);
   background: var(--color-bg);
   font-family:
-    Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", Inter, ui-sans-serif, system-ui,
+    -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
 
 * {
@@ -102,8 +103,9 @@ h1 {
 .board {
   display: grid;
   grid-template-columns: repeat(5, 1fr);
+  grid-template-rows: repeat(5, minmax(0, 1fr));
   width: min(100%, 560px);
-  aspect-ratio: 1;
+  aspect-ratio: 1 / 1;
   border: 8px solid var(--color-board-border);
   border-radius: 8px;
   background: var(--color-board-border);
@@ -117,11 +119,14 @@ h1 {
   display: grid;
   place-items: center;
   min-width: 0;
+  min-height: 0;
   border: 0;
+  padding: 0;
   background: var(--color-board-light);
   color: var(--color-text);
   cursor: pointer;
   isolation: isolate;
+  overflow: hidden;
   transition:
     transform 120ms ease,
     background 120ms ease,
@@ -140,32 +145,12 @@ h1 {
 .piece-image {
   width: 72%;
   height: 72%;
+  max-width: 72%;
+  max-height: 72%;
+  display: block;
   object-fit: contain;
   filter: drop-shadow(0 6px 7px rgb(31 40 36 / 24%));
   pointer-events: none;
-}
-
-.piece-label {
-  position: absolute;
-  right: 10%;
-  bottom: 9%;
-  min-width: 1.35em;
-  border-radius: 999px;
-  padding: 2px 5px;
-  background: rgb(255 255 255 / 86%);
-  color: var(--color-text);
-  font-size: clamp(0.7rem, 2.2vw, 0.95rem);
-  font-weight: 800;
-  line-height: 1;
-  pointer-events: none;
-}
-
-.square.cannon .piece-label {
-  color: var(--color-cannon);
-}
-
-.square.soldier .piece-label {
-  color: var(--color-soldier);
 }
 
 .square.selected {
@@ -315,7 +300,6 @@ code,
 .initial-card-copy {
   overflow-wrap: anywhere;
   color: var(--color-text);
-  font-family: "Cascadia Mono", "SFMono-Regular", Consolas, monospace;
   white-space: pre-wrap;
 }
 
@@ -324,6 +308,7 @@ code,
   padding: 10px;
   border-radius: 7px;
   background: var(--color-surface);
+  font-family: "Cascadia Mono", "SFMono-Regular", Consolas, monospace;
 }
 
 .notation-input,
@@ -509,7 +494,6 @@ code,
   margin: 0 0 7px;
   color: var(--color-text);
   font-size: 0.95rem;
-  text-transform: capitalize;
 }
 
 .move-group ul {
@@ -619,7 +603,6 @@ code,
   color: var(--color-muted);
   font-size: 0.7rem;
   font-weight: 700;
-  text-transform: uppercase;
 }
 
 .line-cell strong {
@@ -720,12 +703,6 @@ code,
   .piece-image {
     width: 78%;
     height: 78%;
-  }
-
-  .piece-label {
-    right: 6%;
-    bottom: 6%;
-    font-size: 0.68rem;
   }
 
   .toolbar {

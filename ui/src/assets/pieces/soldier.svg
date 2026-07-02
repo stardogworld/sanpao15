@@ -1,5 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="Soldier piece">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="兵">
   <circle cx="64" cy="64" r="58" fill="#edf7ef" stroke="#245f46" stroke-width="8"/>
-  <path d="M64 28l28 14v18c0 22-12 36-28 44-16-8-28-22-28-44V42z" fill="#245f46"/>
-  <path d="M51 59h26M64 46v33" stroke="#edf7ef" stroke-width="8" stroke-linecap="round"/>
+  <circle cx="64" cy="64" r="45" fill="#fbfff9" stroke="#3f7a5f" stroke-width="3"/>
+  <circle cx="64" cy="64" r="52" fill="none" stroke="#96c8aa" stroke-width="2" stroke-dasharray="5 7"/>
+  <text x="64" y="77" text-anchor="middle" font-family="KaiTi, STKaiti, SimSun, serif" font-size="54" font-weight="700" fill="#245f46">兵</text>
 </svg>

@@ -5,24 +5,29 @@ import {
   clonePosition,
   generateLegalMoves,
   initialPosition,
-  outcomeLabel,
   parsePositionNotation,
   positionToNotation,
-  sideLabel,
   terminalOutcome,
   type Move,
   type Position,
 } from "./engine";
+import {
+  classificationText,
+  formatMove,
+  localizeErrorMessage,
+  outcomeText,
+  sideText,
+  stopReasonText,
+  zh,
+} from "./i18n/zh";
 import {
   openTablebaseDirectory,
   openTablebaseFiles,
   type TablebaseDirectory,
 } from "./tablebase/denseResult";
 import {
-  moveText,
   recommendMoves,
   type MoveClassification,
-  type RecommendedMove,
   type TablebaseRecommendationResult,
 } from "./tablebase/recommend";
 import {
@@ -90,34 +95,34 @@ export class Sanpao15App {
     this.root.innerHTML = `
       <header class="topbar">
         <div>
-          <h1>Sanpao15</h1>
-          <p>Outcome-only tablebase explorer</p>
+          <h1>${zh.appTitle}</h1>
+          <p>${zh.appSubtitle}</p>
         </div>
         <div class="header-status"></div>
       </header>
       <main class="game-layout">
         <div class="board-column">
           <div class="board-wrap"></div>
-          <nav class="toolbar" aria-label="Game actions"></nav>
+          <nav class="toolbar" aria-label="对局操作"></nav>
           <section class="notation-panel">
             <div class="panel-heading compact">
-              <h2>Position</h2>
+              <h2>${zh.labels.position}</h2>
               <div class="notation-actions"></div>
             </div>
           </section>
         </div>
         <aside class="side-column">
           <details class="app-panel game-panel" open>
-            <summary>Game</summary>
+            <summary>${zh.panels.game}</summary>
             <div class="status-panel">
-            <div class="metric"><span>Turn</span></div>
-            <div class="metric"><span>Soldiers</span></div>
-            <div class="metric"><span>Terminal</span></div>
+            <div class="metric"><span>${zh.labels.turn}</span></div>
+            <div class="metric"><span>${zh.labels.soldiers}</span></div>
+            <div class="metric"><span>${zh.labels.terminal}</span></div>
             </div>
             <div class="feedback"></div>
           </details>
           <details class="app-panel tablebase-panel" open>
-            <summary>Tablebase</summary>
+            <summary>${zh.panels.tablebase}</summary>
             <div class="panel-heading">
               <div class="tablebase-actions"></div>
             </div>
@@ -125,25 +130,25 @@ export class Sanpao15App {
             <div class="tablebase-result"></div>
           </details>
           <details class="app-panel line-panel" open>
-            <summary>Line Explorer</summary>
+            <summary>${zh.panels.lineExplorer}</summary>
             <div class="panel-heading">
               <div class="line-actions"></div>
             </div>
-            <p class="panel-note">WDL-only: no shortest win, fastest draw, DTW, or DTC is encoded.</p>
+            <p class="panel-note">${zh.line.note}</p>
             <div class="playback-actions"></div>
             <div class="playback-status"></div>
             <div class="line-result"></div>
           </details>
           <details class="app-panel initial-panel" open>
-            <summary>Initial Position</summary>
+            <summary>${zh.panels.initialPosition}</summary>
             <div class="initial-card"></div>
           </details>
           <details class="app-panel help-panel">
-            <summary>Help</summary>
+            <summary>${zh.panels.help}</summary>
             <div class="help-copy"></div>
           </details>
           <details class="app-panel analysis-panel">
-            <summary>Reachable Table Analysis</summary>
+            <summary>${zh.panels.reachableAnalysis}</summary>
           </details>
         </aside>
       </main>
@@ -171,7 +176,7 @@ export class Sanpao15App {
     headerStatus.append(this.headerStatusEl);
 
     this.boardEl.className = "board";
-    this.boardEl.setAttribute("aria-label", "5x5 board");
+    this.boardEl.setAttribute("aria-label", "5x5 棋盘");
     boardWrap.append(this.boardEl);
 
     const metrics = Array.from(statusPanel.querySelectorAll(".metric"));
@@ -180,10 +185,10 @@ export class Sanpao15App {
     metrics[2].append(this.resultEl);
 
     toolbar.append(
-      this.makeButton("Reset", () => this.reset()),
-      this.makeButton("Undo", () => this.undo()),
-      this.makeButton("Redo", () => this.redo()),
-      this.makeButton("Analyze current", () => {
+      this.makeButton(zh.actions.reset, () => this.reset()),
+      this.makeButton(zh.actions.undo, () => this.undo()),
+      this.makeButton(zh.actions.redo, () => this.redo()),
+      this.makeButton(zh.actions.analyze, () => {
         void this.analyze();
       }),
     );
@@ -191,23 +196,23 @@ export class Sanpao15App {
     this.notationEl.className = "notation-code";
     this.pasteInputEl.type = "text";
     this.pasteInputEl.className = "notation-input";
-    this.pasteInputEl.placeholder = "Paste notation";
+    this.pasteInputEl.placeholder = zh.placeholders.pasteNotation;
     notationActions.append(
-      this.makeButton("Copy", () => {
+      this.makeButton(zh.actions.copy, () => {
         void this.copyNotation();
       }),
-      this.makeButton("Paste", () => this.pasteNotationFromInput()),
+      this.makeButton(zh.actions.paste, () => this.pasteNotationFromInput()),
     );
     notationPanel.append(this.notationEl, this.pasteInputEl);
 
     tablebaseActions.append(
-      this.makeButton("Directory", () => {
+      this.makeButton(zh.actions.directory, () => {
         void this.selectTablebase();
       }),
-      this.makeButton("Layer files", () => {
+      this.makeButton(zh.actions.layerFiles, () => {
         void this.selectTablebaseFiles();
       }),
-      this.makeButton("Query", () => {
+      this.makeButton(zh.actions.query, () => {
         void this.queryTablebase();
       }),
     );
@@ -222,17 +227,17 @@ export class Sanpao15App {
     this.maxPliesInputEl.max = "1000";
     this.maxPliesInputEl.step = "1";
     this.maxPliesInputEl.value = "100";
-    this.maxPliesInputEl.setAttribute("aria-label", "Max plies");
+    this.maxPliesInputEl.setAttribute("aria-label", zh.labels.maxPlies);
     lineActions.append(
       this.maxPliesInputEl,
-      this.makeButton("Explore WDL line", () => {
+      this.makeButton(zh.actions.exploreLine, () => {
         void this.exploreLine();
       }),
     );
     playbackActions.append(
-      this.makeButton("Previous", () => this.previousLinePly()),
-      this.makeButton("Next", () => this.nextLinePly()),
-      this.makeButton("Auto", () => this.toggleAutoplay()),
+      this.makeButton(zh.actions.previous, () => this.previousLinePly()),
+      this.makeButton(zh.actions.next, () => this.nextLinePly()),
+      this.makeButton(zh.actions.auto, () => this.toggleAutoplay()),
     );
     this.playbackStatusEl.className = "playback-copy";
     this.lineResultEl.className = "line-result-copy";
@@ -271,6 +276,8 @@ export class Sanpao15App {
     button.type = "button";
     button.className = "command-button";
     button.textContent = label;
+    button.title = label;
+    button.setAttribute("aria-label", label);
     button.addEventListener("click", onClick);
     return button;
   }
@@ -283,7 +290,7 @@ export class Sanpao15App {
     this.lastMove = null;
     this.clearSelection();
     this.clearPositionDerivedOutput();
-    this.showFeedback("Initial position restored.");
+    this.showFeedback(zh.initial.restored);
     this.render();
     void this.queryTablebaseIfLoaded();
   }
@@ -350,7 +357,7 @@ export class Sanpao15App {
   private async analyze(): Promise<void> {
     const outcome = terminalOutcome(this.position);
     const legalMoves = generateLegalMoves(this.position);
-    this.analysisEl.textContent = "Loading reachable result table...";
+    this.analysisEl.textContent = zh.analysis.loading;
 
     if (!this.resultTable && !this.tableLoadError) {
       try {
@@ -361,58 +368,57 @@ export class Sanpao15App {
     }
 
     if (!this.resultTable) {
-      const fallback = outcome !== "Unknown" ? `\nTerminal: ${outcomeLabel(outcome)}` : "";
-      this.analysisEl.textContent = `${this.tableLoadError ?? "Result table is not loaded."}${fallback}\nLegal moves: ${legalMoves.length}`;
+      const fallback = outcome !== "Unknown" ? `\n${zh.labels.terminal}：${outcomeText(outcome)}` : "";
+      this.analysisEl.textContent = `${this.tableLoadError ? localizeErrorMessage(this.tableLoadError) : zh.analysis.tableNotLoaded}${fallback}\n${zh.analysis.legalMoves}：${legalMoves.length}`;
       return;
     }
 
     const analysis = analyzePositionWithTable(this.position, this.resultTable);
-    const bestMove = analysis.bestMove ? `${analysis.bestMove.from} -> ${analysis.bestMove.to}` : "none";
-    const tableType = this.resultTable.exact ? "exact" : this.resultTable.truncated ? "truncated" : "partial";
-    const foundText = analysis.foundInTable ? "found" : "not found";
+    const bestMove = analysis.bestMove ? formatMove(analysis.bestMove) : zh.analysis.none;
+    const tableType = this.resultTable.exact ? zh.analysis.exact : this.resultTable.truncated ? zh.analysis.truncated : zh.analysis.partial;
+    const foundText = analysis.foundInTable ? zh.analysis.found : zh.analysis.notFound;
     const moveLines = analysis.legalMoves.map((item) => {
-      const capture = item.move.capture ? ` x${item.move.capturedSquare}` : "";
-      const best = item.isBest ? ", suggested" : "";
+      const best = item.isBest ? `，${zh.analysis.suggested}` : "";
       const distance = item.distance >= 0 ? String(item.distance) : "-";
-      return `${item.move.from} -> ${item.move.to}${capture}: ${outcomeLabel(item.outcome)}, distance ${distance}${best}`;
+      return `${formatMove(item.move)}：${outcomeText(item.outcome)}，${zh.analysis.distance} ${distance}${best}`;
     });
 
     this.analysisEl.textContent = [
-      "Reachable-table analysis",
-      `Table: ${tableType}`,
-      `Current: ${outcomeLabel(analysis.outcome)} (${foundText})`,
-      `Distance: ${analysis.distance >= 0 ? analysis.distance : "-"}`,
-      `Suggested move: ${bestMove}`,
+      zh.analysis.title,
+      `${zh.analysis.table}：${tableType}`,
+      `${zh.analysis.current}：${outcomeText(analysis.outcome)}（${foundText}）`,
+      `${zh.analysis.distance}：${analysis.distance >= 0 ? analysis.distance : "-"}`,
+      `${zh.analysis.suggestedMove}：${bestMove}`,
       "",
-      "Legal moves:",
-      ...(moveLines.length > 0 ? moveLines : ["none"]),
+      `${zh.analysis.legalMoves}：`,
+      ...(moveLines.length > 0 ? moveLines : [zh.analysis.none]),
     ].join("\n");
   }
 
   private async selectTablebase(): Promise<void> {
-    this.tablebaseStatusEl.textContent = "Selecting tablebase...";
+    this.tablebaseStatusEl.textContent = zh.tablebase.selectingDirectory;
     try {
       this.tablebase = await openTablebaseDirectory();
       this.renderTablebaseStatus();
-      this.showFeedback("Tablebase loaded.");
+      this.showFeedback(zh.tablebase.loaded);
       await this.queryTablebase();
     } catch (error) {
       this.tablebase = null;
-      this.tablebaseStatusEl.textContent = error instanceof Error ? error.message : String(error);
+      this.tablebaseStatusEl.textContent = localizeErrorMessage(error instanceof Error ? error.message : String(error));
       this.render();
     }
   }
 
   private async selectTablebaseFiles(): Promise<void> {
-    this.tablebaseStatusEl.textContent = "Selecting tablebase files...";
+    this.tablebaseStatusEl.textContent = zh.tablebase.selectingFiles;
     try {
       this.tablebase = await openTablebaseFiles();
       this.renderTablebaseStatus();
-      this.showFeedback("Tablebase files loaded.");
+      this.showFeedback(zh.tablebase.filesLoaded);
       await this.queryTablebase();
     } catch (error) {
       this.tablebase = null;
-      this.tablebaseStatusEl.textContent = error instanceof Error ? error.message : String(error);
+      this.tablebaseStatusEl.textContent = localizeErrorMessage(error instanceof Error ? error.message : String(error));
       this.render();
     }
   }
@@ -420,8 +426,8 @@ export class Sanpao15App {
   private renderTablebaseStatus(): void {
     if (!this.tablebase) {
       this.tablebaseStatusEl.replaceChildren(this.renderEmptyState(
-        "Tablebase not loaded",
-        "Select a directory or layer files to query WDL outcomes. The browser reads only the needed .s15res bytes.",
+        zh.tablebase.notLoadedTitle,
+        zh.tablebase.notLoadedDetail,
       ));
       return;
     }
@@ -431,12 +437,12 @@ export class Sanpao15App {
     const container = document.createElement("div");
     container.className = "status-grid";
     container.append(
-      this.statusItem("Status", complete ? "Complete 0..15" : "Partial", complete ? "drawing" : "warning"),
-      this.statusItem("Source", this.tablebase.sourceName),
-      this.statusItem("Layers", layers.join(", ")),
-      this.statusItem("Encoding", encodings || "unknown"),
-      this.statusItem("Ruleset", `0x${this.tablebase.rulesetHash.toString(16).toUpperCase()}`),
-      this.statusItem("Read mode", "random .s15res byte reads"),
+      this.statusItem(zh.labels.status, complete ? zh.tablebase.complete : zh.tablebase.partial, complete ? "drawing" : "warning"),
+      this.statusItem(zh.labels.source, this.tablebase.sourceName),
+      this.statusItem(zh.labels.layers, layers.join(", ")),
+      this.statusItem(zh.labels.encoding, encodings || zh.outcome.Unknown),
+      this.statusItem(zh.labels.ruleset, `0x${this.tablebase.rulesetHash.toString(16).toUpperCase()}`),
+      this.statusItem(zh.labels.readMode, zh.tablebase.randomRead),
     );
     this.tablebaseStatusEl.replaceChildren(container);
   }
@@ -450,26 +456,26 @@ export class Sanpao15App {
   private async queryTablebase(): Promise<void> {
     if (!this.tablebase) {
       this.tablebaseResultEl.replaceChildren(this.renderEmptyState(
-        "No lookup yet",
-        "Load a tablebase first. Querying will not load full layers into memory.",
+        zh.tablebase.noLookupTitle,
+        zh.tablebase.noLookupDetail,
       ));
       this.render();
       return;
     }
 
-    this.tablebaseResultEl.textContent = "Reading tablebase bytes...";
+    this.tablebaseResultEl.textContent = zh.tablebase.reading;
     try {
       const result = await recommendMoves(this.tablebase, this.position);
       this.tablebaseResult = result;
       this.recommendedMoves = result.recommendedMoves.map((move) => move.move);
       this.tablebaseResultEl.replaceChildren(this.renderTablebaseResult(result));
-      this.showFeedback(`Lookup updated: ${result.outcome}.`);
+      this.showFeedback(zh.tablebase.lookupUpdated(result.outcome));
       this.render();
     } catch (error) {
       this.tablebaseResult = null;
       this.recommendedMoves = [];
-      this.tablebaseResultEl.textContent = error instanceof Error ? error.message : String(error);
-      this.showFeedback("Tablebase lookup failed.");
+      this.tablebaseResultEl.textContent = localizeErrorMessage(error instanceof Error ? error.message : String(error));
+      this.showFeedback(zh.tablebase.lookupFailed);
       this.render();
     }
   }
@@ -481,11 +487,11 @@ export class Sanpao15App {
     const summary = document.createElement("div");
     summary.className = "tablebase-summary summary-band";
     summary.append(
-      this.summaryStat("Outcome", outcomeBadge(result.outcome)),
-      this.summaryStat("Soldiers", String(result.soldierCount)),
-      this.summaryStat("Dense index", result.denseIndex.toString()),
-      this.summaryStat("Legal moves", String(result.moves.length)),
-      this.summaryStat("Recommended", String(result.recommendedMoves.length)),
+      this.summaryStat(zh.labels.outcome, outcomeBadge(result.outcome)),
+      this.summaryStat(zh.labels.soldiers, String(result.soldierCount)),
+      this.summaryStat(zh.labels.denseIndex, result.denseIndex.toString()),
+      this.summaryStat(zh.labels.legalMoves, String(result.moves.length)),
+      this.summaryStat(zh.labels.recommended, String(result.recommendedMoves.length)),
     );
     container.append(summary);
 
@@ -493,14 +499,14 @@ export class Sanpao15App {
       const section = document.createElement("section");
       section.className = `move-group ${group}`;
       const title = document.createElement("h3");
-      title.textContent = group;
+      title.textContent = classificationText(group);
       section.append(title);
 
       const moves = result.moves.filter((move) => move.classification === group);
       if (moves.length === 0) {
         const empty = document.createElement("p");
         empty.className = "empty-group";
-        empty.textContent = "none";
+        empty.textContent = zh.labels.none;
         section.append(empty);
       } else {
         const list = document.createElement("ul");
@@ -509,10 +515,10 @@ export class Sanpao15App {
           item.className = "move-row";
           const moveMain = document.createElement("span");
           moveMain.className = "move-main";
-          moveMain.textContent = moveText(move.move);
+          moveMain.textContent = formatMove(move.move);
           const detail = document.createElement("span");
           detail.className = "move-detail";
-          detail.textContent = `k=${move.successorSoldierCount} i=${move.successorIndex.toString()}`;
+          detail.textContent = `${zh.labels.soldiers}=${move.successorSoldierCount}，${zh.labels.denseIndex}=${move.successorIndex.toString()}`;
           item.append(moveMain, outcomeBadge(move.successorOutcome), classificationBadge(move.classification), detail);
           if (result.recommendedMoves.includes(move)) {
             item.classList.add("recommended");
@@ -530,12 +536,12 @@ export class Sanpao15App {
   private async exploreLine(): Promise<void> {
     this.stopAutoplay();
     const maxPlies = Number(this.maxPliesInputEl.value);
-    this.lineResultEl.textContent = "Exploring WDL line...";
+    this.lineResultEl.textContent = zh.line.exploring;
     const result = await exploreWdlLine(this.tablebase, this.position, maxPlies);
     this.lineResult = result;
     this.activeLinePly = 0;
     this.lineResultEl.replaceChildren(this.renderLineResult(result));
-    this.showFeedback(result.error ? result.error : `Line explored: ${result.stopReason}.`);
+    this.showFeedback(result.error ? localizeErrorMessage(result.error) : zh.line.explored(result.stopReason));
     this.renderPlaybackStatus();
     this.render();
   }
@@ -547,17 +553,17 @@ export class Sanpao15App {
     const summary = document.createElement("div");
     summary.className = "line-summary summary-band";
     summary.append(
-      this.summaryStat("Start", outcomeBadge(result.startOutcome)),
-      this.summaryStat("Stop", stopReasonBadge(result.stopReason)),
-      this.summaryStat("Cycle", result.cycleStartPly !== null ? String(result.cycleStartPly) : "none"),
-      this.summaryStat(result.error ? "Error" : "Plies", result.error ?? String(result.plies.length)),
+      this.summaryStat(zh.labels.start, outcomeBadge(result.startOutcome)),
+      this.summaryStat(zh.labels.stop, stopReasonBadge(result.stopReason)),
+      this.summaryStat(zh.labels.cycle, result.cycleStartPly !== null ? String(result.cycleStartPly) : zh.labels.none),
+      this.summaryStat(result.error ? zh.labels.error : zh.labels.plies, result.error ? localizeErrorMessage(result.error) : String(result.plies.length)),
     );
     container.append(summary);
 
     if (result.stopReason === "maxPlies") {
       const note = document.createElement("p");
       note.className = "panel-note warning-note";
-      note.textContent = "This is a WDL sample line, not shortest play.";
+      note.textContent = zh.line.maxPliesNote;
       container.append(note);
     }
 
@@ -576,12 +582,12 @@ export class Sanpao15App {
       button.type = "button";
       button.className = "line-ply-button";
       button.append(
-        this.lineCell("ply", String(ply.ply)),
-        this.lineCell("side", sideLabel(ply.sideToMove)),
-        this.lineCell("move", moveText(ply.chosenMove)),
-        this.lineCell("successor", ply.successorOutcome),
-        this.lineCell("class", ply.classification),
-        this.lineCell("soldiers", `k=${ply.soldierCount}`),
+        this.lineCell("ply", zh.line.cells.ply, String(ply.ply)),
+        this.lineCell("side", zh.line.cells.side, sideText(ply.sideToMove)),
+        this.lineCell("move", zh.line.cells.move, formatMove(ply.chosenMove)),
+        this.lineCell("successor", zh.line.cells.successor, outcomeText(ply.successorOutcome)),
+        this.lineCell("class", zh.line.cells.class, classificationText(ply.classification)),
+        this.lineCell("soldiers", zh.line.cells.soldiers, String(ply.soldierCount)),
       );
       button.addEventListener("click", () => this.jumpToLinePly(ply.ply));
       item.append(button);
@@ -589,11 +595,11 @@ export class Sanpao15App {
         const details = document.createElement("details");
         details.className = "alternatives";
         const summaryText = document.createElement("summary");
-        summaryText.textContent = `${ply.alternatives.length - 1} alternatives`;
+        summaryText.textContent = zh.line.alternatives(ply.alternatives.length - 1);
         const altList = document.createElement("ul");
         for (const alternative of ply.alternatives.slice(1)) {
           const altItem = document.createElement("li");
-          altItem.textContent = `${moveText(alternative.move)} -> ${alternative.successorOutcome} (${alternative.classification})`;
+          altItem.textContent = `${formatMove(alternative.move)} -> ${outcomeText(alternative.successorOutcome)}（${classificationText(alternative.classification)}）`;
           altList.append(altItem);
         }
         details.append(summaryText, altList);
@@ -667,13 +673,13 @@ export class Sanpao15App {
 
   private renderPlaybackStatus(): void {
     if (!this.lineResult) {
-      this.playbackStatusEl.textContent = "No line explored.";
+      this.playbackStatusEl.textContent = zh.labels.noLine;
       return;
     }
     this.playbackStatusEl.textContent = [
-      `Active ply: ${this.activeLinePly}`,
-      `Stop reason: ${this.lineResult.stopReason}`,
-      this.autoplayTimer === null ? "Autoplay: off" : "Autoplay: on",
+      `${zh.labels.activePly}：${this.activeLinePly}`,
+      `${zh.labels.stop}：${stopReasonText(this.lineResult.stopReason)}`,
+      `${zh.labels.autoplay}：${this.autoplayTimer === null ? zh.labels.off : zh.labels.on}`,
     ].join("\n");
   }
 
@@ -685,15 +691,16 @@ export class Sanpao15App {
     } catch {
       // Keeping the input populated is a sufficient fallback for non-secure origins.
     }
+    this.showFeedback(zh.feedback.copied);
   }
 
   private pasteNotationFromInput(): void {
     try {
       const next = parsePositionNotation(this.pasteInputEl.value);
       this.setPosition(next, null, true);
-      this.showFeedback("Position pasted.");
+      this.showFeedback(zh.feedback.pasted);
     } catch (error) {
-      this.showFeedback(error instanceof Error ? error.message : String(error), true);
+      this.showFeedback(localizeErrorMessage(error instanceof Error ? error.message : String(error)), true);
     }
   }
 
@@ -707,7 +714,7 @@ export class Sanpao15App {
       this.clearPositionDerivedOutput();
       this.lineResult = null;
       this.activeLinePly = 0;
-      this.showFeedback(`Moved ${moveText(move)}.`);
+      this.showFeedback(zh.feedback.moved(formatMove(move)));
       this.render();
       this.renderPlaybackStatus();
       void this.queryTablebaseIfLoaded();
@@ -720,14 +727,14 @@ export class Sanpao15App {
         : this.position.soldiers.has(square);
     if (!ownPiece || terminalOutcome(this.position) !== "Unknown") {
       this.clearSelection();
-      this.showFeedback(terminalOutcome(this.position) !== "Unknown" ? "Terminal position: no move can be made." : "Select a piece for the side to move.");
+      this.showFeedback(terminalOutcome(this.position) !== "Unknown" ? zh.feedback.terminal : zh.feedback.selectOwnPiece);
       this.render();
       return;
     }
 
     this.selectedSquare = square;
     this.selectedMoves = generateLegalMoves(this.position).filter((candidate) => candidate.from === square);
-    this.showFeedback(this.selectedMoves.length === 0 ? "That piece has no legal move." : `${this.selectedMoves.length} legal target(s).`);
+    this.showFeedback(this.selectedMoves.length === 0 ? zh.feedback.noLegalMove : zh.feedback.legalTargets(this.selectedMoves.length));
     this.render();
   }
 
@@ -757,9 +764,9 @@ export class Sanpao15App {
 
   private renderHeaderStatus(): void {
     this.headerStatusEl.replaceChildren(
-      badge("sanpao15-min-four-soldiers", "neutral"),
+      badge(zh.rulesetBadge, "neutral"),
       outcomeBadge(this.tablebaseResult?.outcome ?? terminalOutcome(this.position)),
-      badge(this.tablebase ? `tablebase ${this.tablebase.layers.size}/16` : "tablebase not loaded", this.tablebase ? "drawing" : "warning"),
+      badge(this.tablebase ? zh.tablebase.loadedBadge(this.tablebase.layers.size) : zh.tablebase.notLoadedBadge, this.tablebase ? "drawing" : "warning"),
     );
   }
 
@@ -798,9 +805,9 @@ export class Sanpao15App {
     return item;
   }
 
-  private lineCell(label: string, value: string): HTMLElement {
+  private lineCell(className: string, label: string, value: string): HTMLElement {
     const cell = document.createElement("span");
-    cell.className = `line-cell ${label}`;
+    cell.className = `line-cell ${className}`;
     const small = document.createElement("small");
     small.textContent = label;
     const strong = document.createElement("strong");
@@ -832,32 +839,32 @@ export class Sanpao15App {
     const notation = document.createElement("code");
     notation.textContent = initialNotation;
     const meaning = document.createElement("p");
-    meaning.textContent = "The standard initial position is Draw. Cannon has exactly one drawing first move; every other legal first move enters SoldierWin.";
+    meaning.textContent = zh.initial.meaning;
     const actions = document.createElement("div");
     actions.className = "card-actions";
     actions.append(
-      this.makeButton("Reset to initial", () => this.reset()),
-      this.makeButton("Show drawing move", () => {
+      this.makeButton(zh.actions.resetInitial, () => this.reset()),
+      this.makeButton(zh.actions.showDrawingMove, () => {
         this.spotlightMove = drawingFirstMove;
-        this.showFeedback("Drawing first move highlighted: 22->12 captures 12.");
+        this.showFeedback(zh.initial.highlighted);
         this.render();
       }),
-      this.makeButton("Explore drawing line", () => {
+      this.makeButton(zh.actions.exploreDrawingLine, () => {
         this.reset();
         window.setTimeout(() => {
           void this.exploreLine();
         }, 0);
       }),
-      this.makeButton("Copy position", () => {
+      this.makeButton(zh.actions.copyInitial, () => {
         this.pasteInputEl.value = initialNotation;
         void navigator.clipboard?.writeText(initialNotation);
-        this.showFeedback("Initial position copied.");
+        this.showFeedback(zh.initial.copied);
       }),
     );
     container.append(
-      this.summaryStat("Position", notation),
-      this.summaryStat("Result", outcomeBadge("Draw")),
-      this.summaryStat("Only drawing first move", "22->12 captures 12"),
+      this.summaryStat(zh.initial.position, notation),
+      this.summaryStat(zh.labels.result, outcomeBadge("Draw")),
+      this.summaryStat(zh.initial.onlyMove, zh.initial.onlyMoveText),
       meaning,
       actions,
     );
@@ -865,15 +872,13 @@ export class Sanpao15App {
   }
 
   private renderHelp(): void {
-    this.helpEl.innerHTML = `
-      <ul class="help-list">
-        <li>Cannons move one orthogonal step to an empty square.</li>
-        <li>Cannons capture by jumping over one empty square to a soldier.</li>
-        <li>Soldiers move one orthogonal step to an empty square and do not capture.</li>
-        <li>soldierCount &lt; 4 is CannonWin.</li>
-        <li>No cannon legal move is SoldierWin.</li>
-        <li>The dense tablebase is outcome-only WDL. It has no DTW, DTC, or shortest-play data.</li>
-      </ul>
-    `;
+    const list = document.createElement("ul");
+    list.className = "help-list";
+    for (const item of zh.help) {
+      const li = document.createElement("li");
+      li.textContent = item;
+      list.append(li);
+    }
+    this.helpEl.replaceChildren(list);
   }
 }

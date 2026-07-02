@@ -1,6 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="Cannon piece">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="炮">
   <circle cx="64" cy="64" r="58" fill="#fff4f1" stroke="#8c1d18" stroke-width="8"/>
-  <circle cx="64" cy="64" r="42" fill="none" stroke="#c44f42" stroke-width="3" stroke-dasharray="8 6"/>
-  <path d="M39 75h50v13H39zM47 42h34l8 28H39z" fill="#8c1d18"/>
-  <path d="M52 35h24v12H52z" fill="#c44f42"/>
+  <circle cx="64" cy="64" r="45" fill="#fffaf7" stroke="#c44f42" stroke-width="3"/>
+  <circle cx="64" cy="64" r="52" fill="none" stroke="#e3a097" stroke-width="2" stroke-dasharray="5 7"/>
+  <text x="64" y="77" text-anchor="middle" font-family="KaiTi, STKaiti, SimSun, serif" font-size="54" font-weight="700" fill="#8c1d18">炮</text>
 </svg>

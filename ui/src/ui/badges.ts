@@ -1,4 +1,5 @@
-import { sideLabel, type Outcome, type Side } from "../engine";
+import type { Outcome, Side } from "../engine";
+import { classificationText, outcomeText, sideText, stopReasonText } from "../i18n/zh";
 import type { MoveClassification } from "../tablebase/recommend";
 
 export type BadgeTone =
@@ -26,18 +27,18 @@ export function outcomeBadge(outcome: Outcome): HTMLSpanElement {
         : outcome === "Draw"
           ? "drawing"
           : "neutral";
-  return badge(outcome, tone);
+  return badge(outcomeText(outcome), tone);
 }
 
 export function sideBadge(side: Side): HTMLSpanElement {
-  return badge(sideLabel(side), side === "cannon" ? "cannon" : "soldier");
+  return badge(sideText(side), side === "cannon" ? "cannon" : "soldier");
 }
 
 export function classificationBadge(classification: MoveClassification): HTMLSpanElement {
-  return badge(classification, classification);
+  return badge(classificationText(classification), classification);
 }
 
 export function stopReasonBadge(reason: string): HTMLSpanElement {
   const tone = reason === "cycle" || reason === "maxPlies" ? "warning" : "neutral";
-  return badge(reason, tone);
+  return badge(stopReasonText(reason), tone);
 }

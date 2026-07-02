@@ -180,7 +180,7 @@ async function openWithFileInput(directoryMode: boolean): Promise<TablebaseDirec
       try {
         const files = Array.from(input.files ?? []);
         input.remove();
-        resolve(await buildTablebaseDirectory(files, "selected files"));
+        resolve(await buildTablebaseDirectory(files, "所选分层文件"));
       } catch (error) {
         input.remove();
         reject(error);
