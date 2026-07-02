@@ -1,0 +1,115 @@
+#include "test_common.h"
+
+#include <filesystem>
+#include <fstream>
+
+#include "sanpao15/dense_index.h"
+#include "sanpao15/material_target_distance.h"
+#include "sanpao15/table.h"
+
+using namespace sanpao15;
+
+namespace {
+
+std::filesystem::path tempDir(const char* name) {
+    const std::filesystem::path dir = std::filesystem::temp_directory_path() / name;
+    std::filesystem::remove_all(dir);
+    std::filesystem::create_directories(dir);
+    return dir;
+}
+
+void writeByteAt(const std::filesystem::path& path, std::streamoff offset, uint8_t value) {
+    std::fstream file(path, std::ios::binary | std::ios::in | std::ios::out);
+    file.seekp(offset);
+    file.put(static_cast<char>(value));
+}
+
+}  // namespace
+
+SANPAO15_TEST(mtdEntryEncodeDecodeRoundtrip) {
+    const MtdEntry entry{7, 254};
+    const uint16_t encoded = encodeMtdEntry(entry);
+    SANPAO15_REQUIRE(encoded == static_cast<uint16_t>(7u | (254u << 4u)));
+    SANPAO15_REQUIRE(decodeMtdEntry(encoded) == entry);
+    SANPAO15_REQUIRE(saturatedAdd1(0) == 1);
+    SANPAO15_REQUIRE(saturatedAdd1(253) == 254);
+    SANPAO15_REQUIRE(saturatedAdd1(254) == MtdSaturatedDistance);
+    SANPAO15_REQUIRE(saturatedAdd1(255) == MtdSaturatedDistance);
+}
+
+SANPAO15_TEST(packedMtdTableSupportsOddStateCounts) {
+    PackedMtdTable12 table(5);
+    table.set(0, MtdEntry{0, 0});
+    table.set(1, MtdEntry{1, 10});
+    table.set(2, MtdEntry{2, 20});
+    table.set(3, MtdEntry{3, 30});
+    table.set(4, MtdEntry{4, 40});
+    SANPAO15_REQUIRE(table.bytes() == 8);
+    SANPAO15_REQUIRE(table.get(0) == (MtdEntry{0, 0}));
+    SANPAO15_REQUIRE(table.get(1) == (MtdEntry{1, 10}));
+    SANPAO15_REQUIRE(table.get(2) == (MtdEntry{2, 20}));
+    SANPAO15_REQUIRE(table.get(3) == (MtdEntry{3, 30}));
+    SANPAO15_REQUIRE(table.get(4) == (MtdEntry{4, 40}));
+}
+
+SANPAO15_TEST(mtdHeaderAndPayloadRoundtrip) {
+    const std::filesystem::path dir = tempDir("sanpao15-mtd-roundtrip");
+    const std::filesystem::path path = mtdLayerPath(dir, 4);
+    PackedMtdTable12 table(denseStateCount(4), MtdEntry{4, 0});
+    table.set(1, MtdEntry{3, 12});
+    table.set(table.size() - 1, MtdEntry{2, 254});
+
+    saveMtdTable(table, 4, path, StandardRulesetHash);
+    const MtdFileInfo info = validateMtdFile(path, StandardRulesetHash, 4);
+    SANPAO15_REQUIRE(info.version == 1);
+    SANPAO15_REQUIRE(info.rulesetHash == StandardRulesetHash);
+    SANPAO15_REQUIRE(info.soldierCount == 4);
+    SANPAO15_REQUIRE(info.stateCount == denseStateCount(4));
+    SANPAO15_REQUIRE(info.payloadBytes == mtdPayloadBytes(denseStateCount(4)));
+
+    const PackedMtdTable12 loaded = loadMtdTable(path, StandardRulesetHash, 4);
+    SANPAO15_REQUIRE(loaded.get(1) == (MtdEntry{3, 12}));
+    SANPAO15_REQUIRE(loaded.get(loaded.size() - 1) == (MtdEntry{2, 254}));
+
+    const MtdInspectStats stats = inspectMtdTable(path);
+    SANPAO15_REQUIRE(stats.materialTargetCounts[4] == denseStateCount(4) - 2);
+    SANPAO15_REQUIRE(stats.materialTargetCounts[3] == 1);
+    SANPAO15_REQUIRE(stats.materialTargetCounts[2] == 1);
+    SANPAO15_REQUIRE(stats.maxExactDistance == 254);
+    SANPAO15_REQUIRE(stats.saturatedDistanceCount == 0);
+    std::filesystem::remove_all(dir);
+}
+
+SANPAO15_TEST(mtdValidationRejectsWrongRulesetAndInvalidPayload) {
+    const std::filesystem::path dir = tempDir("sanpao15-mtd-invalid");
+    const std::filesystem::path path = mtdLayerPath(dir, 0);
+    PackedMtdTable12 table(denseStateCount(0), MtdEntry{0, 0});
+    saveMtdTable(table, 0, path, StandardRulesetHash);
+    sanpao15::test::requireThrows([&] {
+        (void)validateMtdFile(path, StandardRulesetHash + 1u, 0);
+    }, "wrong ruleset hash should be rejected");
+
+    writeByteAt(path, 44, 0x01u);
+    sanpao15::test::requireThrows([&] {
+        (void)validateMtdFile(path, StandardRulesetHash, 0);
+    }, "materialTarget > k should be rejected");
+    std::filesystem::remove_all(dir);
+}
+
+SANPAO15_TEST(mtdBaseLayersUseCurrentMaterialAndZeroDistance) {
+    for (int k = 0; k <= 3; ++k) {
+        PackedMtdTable12 table(denseStateCount(k), MtdEntry{static_cast<uint8_t>(k), 0});
+        SANPAO15_REQUIRE(table.get(0).materialTarget == k);
+        SANPAO15_REQUIRE(table.get(0).targetDistance == 0);
+        SANPAO15_REQUIRE(table.get(table.size() - 1).materialTarget == k);
+        SANPAO15_REQUIRE(table.get(table.size() - 1).targetDistance == 0);
+    }
+}
+
+SANPAO15_TEST(mtdLookupMissingLayerReportsError) {
+    const std::filesystem::path dir = tempDir("sanpao15-mtd-missing");
+    sanpao15::test::requireThrows([&] {
+        (void)lookupMtdEntryAt(dir, 0, 0);
+    }, "missing MTD layer should throw");
+    std::filesystem::remove_all(dir);
+}

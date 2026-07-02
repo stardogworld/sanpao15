@@ -31,6 +31,7 @@ add_library(sanpao15_solver
     solver/src/external_keyset.cpp
     solver/src/layered.cpp
     solver/src/lowk_tablebase.cpp
+    solver/src/material_target_distance.cpp
     solver/src/partitioned_keyset.cpp
     solver/src/retrograde.cpp
     solver/src/solver.cpp
@@ -81,6 +82,7 @@ add_executable(sanpao15_tests
     tests/test_layered.cpp
     tests/test_lowk_tablebase.cpp
     tests/test_local_backend.cpp
+    tests/test_material_target_distance.cpp
     tests/test_main.cpp
     tests/test_movegen.cpp
     tests/test_notation.cpp

@@ -9,6 +9,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <tuple>
 #include <vector>
 
 #include "sanpao15/bitboard.h"
@@ -20,6 +21,7 @@
 #include "sanpao15/layered.h"
 #include "sanpao15/local_backend.h"
 #include "sanpao15/lowk_tablebase.h"
+#include "sanpao15/material_target_distance.h"
 #include "sanpao15/notation.h"
 #include "sanpao15/partitioned_keyset.h"
 #include "sanpao15/rules.h"
@@ -81,6 +83,11 @@ struct CliOptions {
     bool verifyLayer = false;
     bool queryTablebase = false;
     bool exploreTablebase = false;
+    bool solveMtdLayer = false;
+    bool solveMtdRange = false;
+    bool verifyMtdLayer = false;
+    bool inspectMtd = false;
+    bool queryMtd = false;
     bool queryMoves = false;
     bool jsonOutput = false;
     bool serveUi = false;
@@ -99,6 +106,8 @@ struct CliOptions {
     bool overwrite = false;
     bool rangeResume = false;
     bool cleanTemp = false;
+    bool wdlDirProvided = false;
+    bool mtdDirProvided = false;
     uint64_t maxStates = MvpStateLimit;
     uint64_t maxStatesPerLayer = 0;
     uint64_t dedupChunkSize = 1000000;
@@ -120,6 +129,8 @@ struct CliOptions {
     int denseLayer = 0;
     int lowKMax = 0;
     int solveLayerK = 0;
+    int solveMtdLayerK = 0;
+    int verifyMtdLayerK = 0;
     int rangeStartLayer = 0;
     int rangeEndLayer = 0;
     int preflightStartLayer = 0;
@@ -167,6 +178,10 @@ struct CliOptions {
     std::optional<std::filesystem::path> verifyLowKDir;
     std::optional<std::filesystem::path> queryTablebaseDir;
     std::optional<std::filesystem::path> exploreTablebaseDir;
+    std::optional<std::filesystem::path> wdlDir;
+    std::optional<std::filesystem::path> mtdDir;
+    std::optional<std::filesystem::path> inspectMtdPath;
+    std::optional<std::filesystem::path> queryMtdDir;
     std::optional<std::filesystem::path> serveTablebaseDir;
     std::optional<std::filesystem::path> serveUiDir;
     std::string serveHost = "127.0.0.1";
@@ -222,6 +237,11 @@ void printUsage() {
         << "                  [--moves] [--json]\n"
         << "  sanpao15_cli --explore-tablebase DIR --position \"SSSSS/SSSSS/SSSSS/...../.CCC. c\"\n"
         << "                  [--max-plies N] [--json]\n"
+        << "  sanpao15_cli --solve-mtd-layer K --wdl-dir DIR --mtd-dir DIR [--overwrite]\n"
+        << "  sanpao15_cli --solve-mtd-range START END --wdl-dir DIR --mtd-dir DIR [--resume|--overwrite]\n"
+        << "  sanpao15_cli --verify-mtd-layer K --wdl-dir DIR --mtd-dir DIR [--sample N]\n"
+        << "  sanpao15_cli --inspect-mtd FILE\n"
+        << "  sanpao15_cli --query-mtd DIR --wdl-dir DIR --position TEXT [--moves] [--json]\n"
         << "  sanpao15_cli --serve-ui [--tablebase-dir DIR] [--host HOST] [--port PORT]\n"
         << "                  [--ui-dir DIR] [--open]\n"
         << "  sanpao15_cli --analyze \"SSSSS/SSSSS/SSSSS/...../.CCC. c\" [--limit N|--full]\n"
@@ -279,7 +299,7 @@ void printUsage() {
         << "  --key N         Key for --lookup-partition.\n"
         << "  --benchmark-partition DIR  Benchmark partition contains() lookups.\n"
         << "  --benchmark-mode MODE  existing, missing, or mixed. Default: existing.\n"
-        << "  --sample N      Sample count for --benchmark-partition or --dense-move-stats. Default: 100000.\n"
+        << "  --sample N      Sample count for benchmark and verify modes. Default varies by mode.\n"
         << "  --probe-layer-edges DIR  Probe generated edge membership from a layer partition.\n"
         << "  --next-seed-partition DIR  Next lower seed partition for capture edge membership.\n"
         << "  --sample-states N  Sample count for --probe-layer-edges. Default: 100000.\n"
@@ -306,6 +326,13 @@ void printUsage() {
         << "  --preflight-json FILE  Output JSON path for --preflight-layer-range. Default: out-dir/preflight.json.\n"
         << "  --query-tablebase DIR  Random-read complete dense .s15res layers for a position outcome.\n"
         << "  --explore-tablebase DIR  Random-read .s15res layers to sample one WDL-preserving line.\n"
+        << "  --solve-mtd-layer K  Solve one material-target-distance .s15mtd layer.\n"
+        << "  --solve-mtd-range START END  Solve material-target-distance layers START..END.\n"
+        << "  --verify-mtd-layer K  Verify one .s15mtd layer against WDL-preserving MTD rules.\n"
+        << "  --inspect-mtd FILE  Inspect one .s15mtd file.\n"
+        << "  --query-mtd DIR  Query material target and guarantee distance from .s15mtd files.\n"
+        << "  --wdl-dir DIR    Dense WDL .s15res tablebase directory for MTD commands.\n"
+        << "  --mtd-dir DIR    Material target distance .s15mtd output/input directory.\n"
         << "  --position TEXT  Position notation for --query-tablebase or --explore-tablebase.\n"
         << "  --moves        Include legal successor outcomes and WDL recommendation groups.\n"
         << "  --max-plies N  Maximum plies for --explore-tablebase. Default: 100.\n"
@@ -721,6 +748,12 @@ CliOptions parseArgs(int argc, char** argv) {
             }
             options.solveLayerK = parseLayerIndex(argv[++i]);
             options.solveLayer = true;
+        } else if (arg == "--solve-mtd-layer") {
+            if (i + 1 >= argc) {
+                throw std::invalid_argument("--solve-mtd-layer requires a layer index");
+            }
+            options.solveMtdLayerK = parseLayerIndex(argv[++i]);
+            options.solveMtdLayer = true;
         } else if (arg == "--solve-layer-range") {
             if (i + 2 >= argc) {
                 throw std::invalid_argument("--solve-layer-range requires START and END layer indexes");
@@ -728,6 +761,13 @@ CliOptions parseArgs(int argc, char** argv) {
             options.rangeStartLayer = parseLayerIndex(argv[++i]);
             options.rangeEndLayer = parseLayerIndex(argv[++i]);
             options.solveLayerRange = true;
+        } else if (arg == "--solve-mtd-range") {
+            if (i + 2 >= argc) {
+                throw std::invalid_argument("--solve-mtd-range requires START and END layer indexes");
+            }
+            options.rangeStartLayer = parseLayerIndex(argv[++i]);
+            options.rangeEndLayer = parseLayerIndex(argv[++i]);
+            options.solveMtdRange = true;
         } else if (arg == "--preflight-layer-range") {
             if (i + 2 >= argc) {
                 throw std::invalid_argument("--preflight-layer-range requires START and END layer indexes");
@@ -764,6 +804,12 @@ CliOptions parseArgs(int argc, char** argv) {
             }
             options.queryTablebaseDir = std::filesystem::path(argv[++i]);
             options.queryTablebase = true;
+        } else if (arg == "--query-mtd") {
+            if (i + 1 >= argc) {
+                throw std::invalid_argument("--query-mtd requires a directory path");
+            }
+            options.queryMtdDir = std::filesystem::path(argv[++i]);
+            options.queryMtd = true;
         } else if (arg == "--explore-tablebase") {
             if (i + 1 >= argc) {
                 throw std::invalid_argument("--explore-tablebase requires a directory path");
@@ -779,6 +825,18 @@ CliOptions parseArgs(int argc, char** argv) {
             options.queryMoves = true;
         } else if (arg == "--json") {
             options.jsonOutput = true;
+        } else if (arg == "--wdl-dir") {
+            if (i + 1 >= argc) {
+                throw std::invalid_argument("--wdl-dir requires a directory path");
+            }
+            options.wdlDir = std::filesystem::path(argv[++i]);
+            options.wdlDirProvided = true;
+        } else if (arg == "--mtd-dir") {
+            if (i + 1 >= argc) {
+                throw std::invalid_argument("--mtd-dir requires a directory path");
+            }
+            options.mtdDir = std::filesystem::path(argv[++i]);
+            options.mtdDirProvided = true;
         } else if (arg == "--serve-ui") {
             options.serveUi = true;
         } else if (arg == "--tablebase-dir") {
@@ -833,6 +891,18 @@ CliOptions parseArgs(int argc, char** argv) {
             }
             options.verifyLayerPath = std::filesystem::path(argv[++i]);
             options.verifyLayer = true;
+        } else if (arg == "--verify-mtd-layer") {
+            if (i + 1 >= argc) {
+                throw std::invalid_argument("--verify-mtd-layer requires a layer index");
+            }
+            options.verifyMtdLayerK = parseLayerIndex(argv[++i]);
+            options.verifyMtdLayer = true;
+        } else if (arg == "--inspect-mtd") {
+            if (i + 1 >= argc) {
+                throw std::invalid_argument("--inspect-mtd requires a file path");
+            }
+            options.inspectMtdPath = std::filesystem::path(argv[++i]);
+            options.inspectMtd = true;
         } else if (arg == "--max-k") {
             if (i + 1 >= argc) {
                 throw std::invalid_argument("--max-k requires a layer index");
@@ -916,7 +986,12 @@ CliOptions parseArgs(int argc, char** argv) {
         static_cast<int>(options.preflightLayerRange) +
         static_cast<int>(options.verifyLayer) +
         static_cast<int>(options.queryTablebase) +
-        static_cast<int>(options.exploreTablebase);
+        static_cast<int>(options.exploreTablebase) +
+        static_cast<int>(options.solveMtdLayer) +
+        static_cast<int>(options.solveMtdRange) +
+        static_cast<int>(options.verifyMtdLayer) +
+        static_cast<int>(options.inspectMtd) +
+        static_cast<int>(options.queryMtd);
     if (validationModeCount + partitionModeCount + migrationModeCount + partitionedResumeModeCount + denseModeCount +
         static_cast<int>(options.serveUi) > 1) {
         throw std::invalid_argument("choose only one validate/inspect/partition/dense tablebase mode");
@@ -944,6 +1019,7 @@ CliOptions parseArgs(int argc, char** argv) {
             options.migrateOutputProvided || options.cleanupStaleRuns ||
             options.outDirProvided || options.outResProvided || options.lowerResProvided ||
             options.maxKProvided || options.resEncodingProvided || options.overwrite ||
+            options.wdlDirProvided || options.mtdDirProvided ||
             options.queryPositionNotation.has_value() || options.queryMoves || options.jsonOutput ||
             options.maxPliesProvided || options.benchmarkSampleProvided) {
             throw std::invalid_argument("--serve-ui cannot be combined with solve, stats, probe, validate, partition, query, or table output options");
@@ -956,11 +1032,16 @@ CliOptions parseArgs(int argc, char** argv) {
     if (denseModeCount != 0) {
         const bool disallowedFull = options.full && !options.denseMoveStats;
         const bool disallowedSample =
-            options.benchmarkSampleProvided && !options.denseMoveStats && !options.verifyLowK && !options.verifyLayer;
-        const bool disallowedOverwrite = options.partitionOverwrite && !options.solveLayer && !options.solveLayerRange;
+            options.benchmarkSampleProvided && !options.denseMoveStats && !options.verifyLowK && !options.verifyLayer && !options.verifyMtdLayer;
+        const bool disallowedOverwrite = options.partitionOverwrite && !options.solveLayer && !options.solveLayerRange &&
+            !options.solveMtdLayer && !options.solveMtdRange;
         const bool disallowedCleanTemp = options.cleanTemp && !options.solveLayerRange;
-        const bool disallowedRangeResume = options.rangeResume && !options.solveLayerRange;
+        const bool disallowedRangeResume = options.rangeResume && !options.solveLayerRange && !options.solveMtdRange;
         const bool disallowedMaxPlies = options.maxPliesProvided && !options.exploreTablebase;
+        const bool disallowedWdlDir = options.wdlDirProvided &&
+            !options.solveMtdLayer && !options.solveMtdRange && !options.verifyMtdLayer && !options.queryMtd;
+        const bool disallowedMtdDir = options.mtdDirProvided &&
+            !options.solveMtdLayer && !options.solveMtdRange && !options.verifyMtdLayer;
         if (options.buildLayersDir.has_value() || options.statsOnly || options.probe || options.analysisNotation.has_value() ||
             options.saveTablePath.has_value() || options.loadTablePath.has_value() || disallowedFull ||
             options.limitProvided || options.noPred || options.maxStatesPerLayerProvided ||
@@ -976,27 +1057,28 @@ CliOptions parseArgs(int argc, char** argv) {
             options.partitionCacheBucketsProvided || options.benchmarkModeProvided || disallowedSample ||
             options.lookupKeyProvided || options.sampleStatesProvided || options.nextSeedPartitionDir.has_value() ||
             disallowedOverwrite || disallowedCleanTemp || disallowedRangeResume ||
-            options.migrateOutputProvided || options.cleanupStaleRuns || disallowedMaxPlies) {
+            options.migrateOutputProvided || options.cleanupStaleRuns || disallowedMaxPlies ||
+            disallowedWdlDir || disallowedMtdDir) {
             throw std::invalid_argument("dense tablebase modes cannot be combined with build, solve, stats, probe, validate, partition, migration, or repair options");
         }
     }
-    if (options.queryTablebase && !options.queryPositionNotation.has_value()) {
-        throw std::invalid_argument("--query-tablebase requires --position TEXT");
+    if ((options.queryTablebase || options.queryMtd) && !options.queryPositionNotation.has_value()) {
+        throw std::invalid_argument("--query-tablebase and --query-mtd require --position TEXT");
     }
     if (options.exploreTablebase && !options.queryPositionNotation.has_value()) {
         throw std::invalid_argument("--explore-tablebase requires --position TEXT");
     }
-    if (options.queryPositionNotation.has_value() && !options.queryTablebase && !options.exploreTablebase) {
-        throw std::invalid_argument("--position is only valid with --query-tablebase or --explore-tablebase");
+    if (options.queryPositionNotation.has_value() && !options.queryTablebase && !options.exploreTablebase && !options.queryMtd) {
+        throw std::invalid_argument("--position is only valid with --query-tablebase, --explore-tablebase, or --query-mtd");
     }
-    if (options.queryMoves && !options.queryTablebase) {
-        throw std::invalid_argument("--moves is only valid with --query-tablebase");
+    if (options.queryMoves && !options.queryTablebase && !options.queryMtd) {
+        throw std::invalid_argument("--moves is only valid with --query-tablebase or --query-mtd");
     }
     if (options.maxPliesProvided && !options.exploreTablebase) {
         throw std::invalid_argument("--max-plies is only valid with --explore-tablebase");
     }
-    if (options.jsonOutput && !options.queryTablebase && !options.exploreTablebase) {
-        throw std::invalid_argument("--json is only valid with --query-tablebase or --explore-tablebase");
+    if (options.jsonOutput && !options.queryTablebase && !options.exploreTablebase && !options.queryMtd) {
+        throw std::invalid_argument("--json is only valid with --query-tablebase, --explore-tablebase, or --query-mtd");
     }
     if (options.solveLowK && options.lowKMax > 3) {
         throw std::invalid_argument("--solve-lowk supports only K in 0..3 in this prototype");
@@ -1044,20 +1126,30 @@ CliOptions parseArgs(int argc, char** argv) {
     if (options.maxKProvided && !options.verifyLowK) {
         throw std::invalid_argument("--max-k is only valid with --verify-lowk");
     }
-    if ((options.solveLowK || options.solveLowKStreaming || options.solveLayer || options.solveLayerRange) &&
+    if ((options.solveLowK || options.solveLowKStreaming || options.solveLayer || options.solveLayerRange ||
+         options.solveMtdLayer || options.solveMtdRange) &&
         options.benchmarkSampleProvided) {
-        throw std::invalid_argument("--sample is only valid with --benchmark-partition, --dense-move-stats, --verify-lowk, or --verify-layer");
+        throw std::invalid_argument("--sample is only valid with --benchmark-partition, --dense-move-stats, --verify-lowk, --verify-layer, or --verify-mtd-layer");
     }
-    if (options.solveLayerRange && options.rangeStartLayer > options.rangeEndLayer) {
-        throw std::invalid_argument("--solve-layer-range START must be less than or equal to END");
+    if ((options.solveMtdLayer || options.solveMtdRange || options.verifyMtdLayer || options.queryMtd) && !options.wdlDir.has_value()) {
+        throw std::invalid_argument("MTD commands require --wdl-dir DIR");
+    }
+    if ((options.solveMtdLayer || options.solveMtdRange || options.verifyMtdLayer) && !options.mtdDir.has_value()) {
+        throw std::invalid_argument("--solve-mtd-layer, --solve-mtd-range, and --verify-mtd-layer require --mtd-dir DIR");
+    }
+    if (options.queryMtd && !options.queryMtdDir.has_value()) {
+        throw std::invalid_argument("--query-mtd requires an MTD directory");
+    }
+    if ((options.solveLayerRange || options.solveMtdRange) && options.rangeStartLayer > options.rangeEndLayer) {
+        throw std::invalid_argument("range START must be less than or equal to END");
     }
     if (options.preflightLayerRange && options.preflightStartLayer > options.preflightEndLayer) {
         throw std::invalid_argument("--preflight-layer-range START must be less than or equal to END");
     }
-    if (options.solveLayerRange && options.rangeResume && options.overwrite) {
+    if ((options.solveLayerRange || options.solveMtdRange) && options.rangeResume && options.overwrite) {
         throw std::invalid_argument("--resume and --overwrite cannot be used together");
     }
-    if ((options.verifyLowK || options.verifyLayer) && options.resEncodingProvided) {
+    if ((options.verifyLowK || options.verifyLayer || options.verifyMtdLayer) && options.resEncodingProvided) {
         throw std::invalid_argument("--encoding is not used by verify modes");
     }
     if (options.denseMoveStats && options.denseLayer >= 2 && !options.benchmarkSampleProvided && !options.full) {
@@ -1109,8 +1201,9 @@ CliOptions parseArgs(int argc, char** argv) {
         throw std::invalid_argument("--dry-run and --layer are only valid with closure repair, migration, or partitioned resume");
     }
     if (options.partitionOverwrite && !options.partitionKeysetInput.has_value() &&
-        !options.migrateClosureCheckpoint && !options.solveLayer && !options.solveLayerRange) {
-        throw std::invalid_argument("--overwrite is only valid with --partition-keyset, --migrate-closure-checkpoint, --solve-layer, or --solve-layer-range");
+        !options.migrateClosureCheckpoint && !options.solveLayer && !options.solveLayerRange &&
+        !options.solveMtdLayer && !options.solveMtdRange) {
+        throw std::invalid_argument("--overwrite is only valid with --partition-keyset, --migrate-closure-checkpoint, --solve-layer, --solve-layer-range, --solve-mtd-layer, or --solve-mtd-range");
     }
     if (options.partitionKeysetInput.has_value() && !options.partitionOutputDir.has_value()) {
         throw std::invalid_argument("--partition-keyset requires --partition-output");
@@ -1137,8 +1230,8 @@ CliOptions parseArgs(int argc, char** argv) {
         throw std::invalid_argument("--lookup-partition requires --key");
     }
     if (options.benchmarkSampleProvided && !options.benchmarkPartitionDir.has_value() &&
-        !options.denseMoveStats && !options.verifyLowK && !options.verifyLayer) {
-        throw std::invalid_argument("--sample is only valid with --benchmark-partition, --dense-move-stats, --verify-lowk, or --verify-layer");
+        !options.denseMoveStats && !options.verifyLowK && !options.verifyLayer && !options.verifyMtdLayer) {
+        throw std::invalid_argument("--sample is only valid with --benchmark-partition, --dense-move-stats, --verify-lowk, --verify-layer, or --verify-mtd-layer");
     }
     const bool externalLayerOptionProvided =
         options.buildLayerExternalProvided || options.layerWorkDir.has_value() || options.seedFile.has_value() ||
@@ -1738,6 +1831,233 @@ void printInspectRes(const std::filesystem::path& path) {
 void printValidateRes(const std::filesystem::path& path) {
     printDenseResultInfo(validateDenseResultFile(path, StandardRulesetHash));
     std::cout << "Status: valid\n";
+}
+
+void printMtdLayerResult(const MtdLayerSolveResult& layer) {
+    std::cout << "Layer " << layer.soldierCount << "\n";
+    std::cout << "State count: " << formatInteger(layer.stateCount) << "\n";
+    std::cout << "Encoding: " << mtdEncodingToString(MtdEncoding::Packed12Material4Distance8) << "\n";
+    std::cout << "Max exact distance: " << static_cast<int>(layer.maxExactDistance) << "\n";
+    std::cout << "Saturated distance count: " << formatInteger(layer.saturatedDistanceCount) << "\n";
+    std::cout << "Stage material time: " << formatDuration(layer.stageMaterialSeconds) << "\n";
+    std::cout << "Stage distance time: " << formatDuration(layer.stageDistanceSeconds) << "\n";
+    std::cout << "Total time: " << formatDuration(layer.totalSeconds) << "\n";
+    std::cout << "Estimated memory: " << formatInteger(layer.estimatedMemoryBytes)
+              << " (" << formatBytes(layer.estimatedMemoryBytes) << ")\n";
+    std::cout << "Queue peak: " << formatInteger(layer.queuePeak) << "\n";
+    std::cout << "Material iterations: " << formatInteger(layer.materialIterations) << "\n";
+    std::cout << "Distance iterations: " << formatInteger(layer.distanceIterations) << "\n";
+    std::cout << "Output file: " << layer.outputPath.string() << "\n";
+    std::cout << "Stats JSON file: " << layer.statsPath.string() << "\n";
+    std::cout << "Output bytes: " << formatInteger(layer.outputBytes)
+              << " (" << formatBytes(layer.outputBytes) << ")\n";
+    std::cout << "Material target distribution:\n";
+    for (size_t i = 0; i < layer.materialTargetCounts.size(); ++i) {
+        if (layer.materialTargetCounts[i] != 0) {
+            std::cout << "  " << i << ": " << formatInteger(layer.materialTargetCounts[i]) << "\n";
+        }
+    }
+    std::cout << "Cannon max captures distribution:\n";
+    for (size_t i = 0; i < layer.cannonMaxCapturesCounts.size(); ++i) {
+        if (layer.cannonMaxCapturesCounts[i] != 0) {
+            std::cout << "  " << i << ": " << formatInteger(layer.cannonMaxCapturesCounts[i]) << "\n";
+        }
+    }
+}
+
+void printSolveMtdLayer(const CliOptions& options) {
+    MtdLayerSolveOptions solveOptions;
+    solveOptions.soldierCount = options.solveMtdLayerK;
+    solveOptions.wdlDir = *options.wdlDir;
+    solveOptions.mtdDir = *options.mtdDir;
+    solveOptions.overwrite = options.overwrite;
+    const MtdLayerSolveResult result = solveMtdLayer(solveOptions);
+    std::cout << "Material target distance layer solve\n";
+    std::cout << "WDL dir: " << options.wdlDir->string() << "\n";
+    std::cout << "MTD dir: " << options.mtdDir->string() << "\n";
+    std::cout << "Overwrite: " << (options.overwrite ? "yes" : "no") << "\n\n";
+    printMtdLayerResult(result);
+    std::cout << "Status: solved\n";
+}
+
+void printSolveMtdRange(const CliOptions& options) {
+    MtdRangeSolveOptions rangeOptions;
+    rangeOptions.startLayer = options.rangeStartLayer;
+    rangeOptions.endLayer = options.rangeEndLayer;
+    rangeOptions.wdlDir = *options.wdlDir;
+    rangeOptions.mtdDir = *options.mtdDir;
+    rangeOptions.overwrite = options.overwrite;
+    rangeOptions.resume = options.rangeResume;
+    const MtdRangeSolveResult result = solveMtdRange(rangeOptions);
+    std::cout << "Material target distance range solve\n";
+    std::cout << "WDL dir: " << result.wdlDir.string() << "\n";
+    std::cout << "MTD dir: " << result.mtdDir.string() << "\n";
+    std::cout << "Start layer: " << result.startLayer << "\n";
+    std::cout << "End layer: " << result.endLayer << "\n";
+    std::cout << "Resume: " << (rangeOptions.resume ? "yes" : "no") << "\n";
+    std::cout << "Overwrite: " << (rangeOptions.overwrite ? "yes" : "no") << "\n\n";
+    for (const MtdLayerSolveResult& layer : result.layers) {
+        printMtdLayerResult(layer);
+        std::cout << "\n";
+    }
+    std::cout << "Total time: " << formatDuration(result.totalSeconds) << "\n";
+    std::cout << "Total output bytes: " << formatInteger(result.totalOutputBytes)
+              << " (" << formatBytes(result.totalOutputBytes) << ")\n";
+    std::cout << "Status: solved\n";
+}
+
+void printInspectMtd(const std::filesystem::path& path) {
+    const MtdInspectStats stats = inspectMtdTable(path);
+    const MtdFileInfo& info = stats.info;
+    std::cout << "Material target distance file\n";
+    std::cout << "Magic: S15MTD1\\0\n";
+    std::cout << "Version: " << info.version << "\n";
+    std::cout << "Ruleset hash: " << info.rulesetHash << "\n";
+    if (info.rulesetHash == StandardRulesetHash) {
+        std::cout << "Ruleset: " << RulesetName << "\n";
+        std::cout << "Ruleset summary: " << RulesetSummary << "\n";
+    }
+    std::cout << "Soldier count: " << info.soldierCount << "\n";
+    std::cout << "State count: " << formatInteger(info.stateCount) << "\n";
+    std::cout << "Encoding: " << mtdEncodingToString(info.encoding) << "\n";
+    std::cout << "Payload bytes: " << formatInteger(info.payloadBytes)
+              << " (" << formatBytes(info.payloadBytes) << ")\n";
+    std::cout << "File size: " << formatInteger(info.fileSize)
+              << " (" << formatBytes(info.fileSize) << ")\n";
+    std::cout << "Min material target: " << static_cast<int>(stats.minMaterialTarget) << "\n";
+    std::cout << "Max material target: " << static_cast<int>(stats.maxMaterialTarget) << "\n";
+    std::cout << "Max exact distance: " << static_cast<int>(stats.maxExactDistance) << "\n";
+    std::cout << "Saturated distance count: " << formatInteger(stats.saturatedDistanceCount) << "\n";
+    std::cout << "Material target distribution:\n";
+    for (size_t i = 0; i < stats.materialTargetCounts.size(); ++i) {
+        if (stats.materialTargetCounts[i] != 0) {
+            std::cout << "  " << i << ": " << formatInteger(stats.materialTargetCounts[i]) << "\n";
+        }
+    }
+    std::cout << "Cannon max captures distribution:\n";
+    for (size_t i = 0; i < stats.cannonMaxCapturesCounts.size(); ++i) {
+        if (stats.cannonMaxCapturesCounts[i] != 0) {
+            std::cout << "  " << i << ": " << formatInteger(stats.cannonMaxCapturesCounts[i]) << "\n";
+        }
+    }
+    std::cout << "Distance distribution summary:\n";
+    for (size_t i = 0; i < stats.distanceCounts.size(); ++i) {
+        if (stats.distanceCounts[i] != 0) {
+            std::cout << "  " << mtdDistanceToString(static_cast<uint8_t>(i)) << ": "
+                      << formatInteger(stats.distanceCounts[i]) << "\n";
+        }
+    }
+    std::cout << "Status: inspected\n";
+}
+
+void printVerifyMtdLayer(const CliOptions& options) {
+    MtdLayerVerifyOptions verifyOptions;
+    verifyOptions.soldierCount = options.verifyMtdLayerK;
+    verifyOptions.wdlDir = *options.wdlDir;
+    verifyOptions.mtdDir = *options.mtdDir;
+    verifyOptions.sampleLimit = options.benchmarkSampleProvided ? options.benchmarkSample : 10000;
+    const MtdLayerVerifyResult result = verifyMtdLayer(verifyOptions);
+    std::cout << "Verify material target distance layer\n";
+    std::cout << "WDL dir: " << options.wdlDir->string() << "\n";
+    std::cout << "MTD dir: " << options.mtdDir->string() << "\n";
+    std::cout << "Layer: " << result.soldierCount << "\n";
+    std::cout << "State count: " << formatInteger(result.stateCount) << "\n";
+    std::cout << "Sample limit: "
+              << (verifyOptions.sampleLimit == 0 ? std::string("full") : formatInteger(verifyOptions.sampleLimit))
+              << "\n";
+    std::cout << "Sampled states: " << formatInteger(result.sampledStates) << "\n";
+    std::cout << "Checked transitions: " << formatInteger(result.checkedTransitions) << "\n";
+    std::cout << "materialTarget==k distance-zero states: " << formatInteger(result.materialTargetKDistanceZero) << "\n";
+    std::cout << "Max exact distance: " << static_cast<int>(result.maxExactDistance) << "\n";
+    std::cout << "Saturated distance count: " << formatInteger(result.saturatedDistanceCount) << "\n";
+    std::cout << "Status: valid\n";
+}
+
+void printMtdMoveText(const MtdMoveInfo& move, const std::string& indent) {
+    std::cout << indent << moveToString(move.move)
+              << " -> layer " << move.successorSoldierCount
+              << " index " << formatInteger(move.successorIndex)
+              << " outcome " << outcomeToString(move.successorOutcome)
+              << " materialTarget " << static_cast<int>(move.successorMtd.materialTarget)
+              << " targetDistance " << mtdDistanceToString(move.successorMtd.targetDistance)
+              << " wdlPreserving " << (move.wdlPreserving ? "yes" : "no")
+              << " materialOptimal " << (move.materialOptimal ? "yes" : "no")
+              << "\n";
+}
+
+void printMtdMoveJson(const MtdMoveInfo& move, const std::string& indent) {
+    std::cout << indent << "{\n";
+    std::cout << indent << "  \"move\": \"" << jsonEscape(moveToString(move.move)) << "\",\n";
+    std::cout << indent << "  \"from\": " << move.move.from << ",\n";
+    std::cout << indent << "  \"to\": " << move.move.to << ",\n";
+    std::cout << indent << "  \"capture\": " << (move.move.capture ? "true" : "false") << ",\n";
+    std::cout << indent << "  \"capturedSquare\": " << move.move.capturedSquare << ",\n";
+    std::cout << indent << "  \"successorPosition\": \"" << jsonEscape(positionToNotation(move.successor)) << "\",\n";
+    std::cout << indent << "  \"successorOutcome\": \"" << outcomeToString(move.successorOutcome) << "\",\n";
+    std::cout << indent << "  \"successorMaterialTarget\": " << static_cast<int>(move.successorMtd.materialTarget) << ",\n";
+    std::cout << indent << "  \"successorTargetDistance\": \"" << mtdDistanceToString(move.successorMtd.targetDistance) << "\",\n";
+    std::cout << indent << "  \"wdlPreserving\": " << (move.wdlPreserving ? "true" : "false") << ",\n";
+    std::cout << indent << "  \"materialOptimal\": " << (move.materialOptimal ? "true" : "false") << "\n";
+    std::cout << indent << "}";
+}
+
+void printMtdQueryJson(const MtdQueryResult& result, const std::filesystem::path& mtdDir, const std::filesystem::path& wdlDir) {
+    std::cout << "{\n";
+    std::cout << "  \"position\": \"" << jsonEscape(positionToNotation(result.position)) << "\",\n";
+    std::cout << "  \"mtdDir\": \"" << jsonEscape(mtdDir.string()) << "\",\n";
+    std::cout << "  \"wdlDir\": \"" << jsonEscape(wdlDir.string()) << "\",\n";
+    std::cout << "  \"ruleset\": \"" << RulesetName << "\",\n";
+    std::cout << "  \"rulesetHash\": \"" << formatHex64(StandardRulesetHash) << "\",\n";
+    std::cout << "  \"soldierCount\": " << result.soldierCount << ",\n";
+    std::cout << "  \"denseIndex\": " << result.denseIndex << ",\n";
+    std::cout << "  \"outcome\": \"" << outcomeToString(result.outcome) << "\",\n";
+    std::cout << "  \"materialTarget\": " << static_cast<int>(result.mtd.materialTarget) << ",\n";
+    std::cout << "  \"cannonMaxCaptures\": " << result.cannonMaxCaptures << ",\n";
+    std::cout << "  \"soldierSaved\": " << result.soldierSaved << ",\n";
+    std::cout << "  \"targetDistance\": \"" << mtdDistanceToString(result.mtd.targetDistance) << "\",\n";
+    std::cout << "  \"moves\": [\n";
+    for (size_t i = 0; i < result.moves.size(); ++i) {
+        printMtdMoveJson(result.moves[i], "    ");
+        std::cout << (i + 1 == result.moves.size() ? "\n" : ",\n");
+    }
+    std::cout << "  ]\n";
+    std::cout << "}\n";
+}
+
+void printMtdQueryText(const MtdQueryResult& result, const std::filesystem::path& mtdDir, const std::filesystem::path& wdlDir, bool includeMoves) {
+    std::cout << "Material target distance query\n";
+    std::cout << "MTD dir: " << mtdDir.string() << "\n";
+    std::cout << "WDL dir: " << wdlDir.string() << "\n";
+    std::cout << "Ruleset: " << RulesetName << " " << formatHex64(StandardRulesetHash) << "\n";
+    std::cout << "Position: " << positionToNotation(result.position) << "\n";
+    std::cout << "Soldier count: " << result.soldierCount << "\n";
+    std::cout << "Dense index: " << formatInteger(result.denseIndex) << "\n";
+    std::cout << "WDL outcome: " << outcomeToString(result.outcome) << "\n";
+    std::cout << "Material target: " << static_cast<int>(result.mtd.materialTarget) << "\n";
+    std::cout << "Cannon max captures: " << result.cannonMaxCaptures << "\n";
+    std::cout << "Soldier saved: " << result.soldierSaved << "\n";
+    std::cout << "Target distance: " << mtdDistanceToString(result.mtd.targetDistance) << "\n";
+    if (includeMoves) {
+        std::cout << "Legal move count: " << formatInteger(static_cast<uint64_t>(result.moves.size())) << "\n";
+        for (const MtdMoveInfo& move : result.moves) {
+            printMtdMoveText(move, "  ");
+        }
+    }
+    std::cout << "Status: queried\n";
+}
+
+void printQueryMtd(const CliOptions& options) {
+    MtdQueryOptions queryOptions;
+    queryOptions.mtdDir = *options.queryMtdDir;
+    queryOptions.wdlDir = *options.wdlDir;
+    queryOptions.position = parsePositionNotation(*options.queryPositionNotation);
+    queryOptions.includeMoves = options.queryMoves || options.jsonOutput;
+    const MtdQueryResult result = queryMtd(queryOptions);
+    if (options.jsonOutput) {
+        printMtdQueryJson(result, *options.queryMtdDir, *options.wdlDir);
+        return;
+    }
+    printMtdQueryText(result, *options.queryMtdDir, *options.wdlDir, options.queryMoves);
 }
 
 void printDenseSuccessors(const CliOptions& options) {
@@ -3289,6 +3609,26 @@ int main(int argc, char** argv) {
         }
         if (options.verifyLayer) {
             printVerifyLayer(options);
+            return 0;
+        }
+        if (options.solveMtdLayer) {
+            printSolveMtdLayer(options);
+            return 0;
+        }
+        if (options.solveMtdRange) {
+            printSolveMtdRange(options);
+            return 0;
+        }
+        if (options.verifyMtdLayer) {
+            printVerifyMtdLayer(options);
+            return 0;
+        }
+        if (options.inspectMtd) {
+            printInspectMtd(*options.inspectMtdPath);
+            return 0;
+        }
+        if (options.queryMtd) {
+            printQueryMtd(options);
             return 0;
         }
         if (options.queryTablebase) {

@@ -131,6 +131,10 @@ Useful CLI modes:
 .\build\sanpao15_cli.exe --query-tablebase build\prod-layers --position "SSSSS/SSSSS/SSSSS/...../.CCC. c" --moves --json
 .\build\sanpao15_cli.exe --explore-tablebase build\prod-layers --position "SSSSS/SSSSS/SSSSS/...../.CCC. c" --max-plies 100
 .\build\sanpao15_cli.exe --explore-tablebase build\prod-layers --position "SSSSS/SSSSS/SSSSS/...../.CCC. c" --max-plies 100 --json
+.\build\sanpao15_cli.exe --solve-mtd-range 0 4 --wdl-dir build\prod-layers --mtd-dir build\material-target-distance --resume
+.\build\sanpao15_cli.exe --verify-mtd-layer 4 --wdl-dir build\prod-layers --mtd-dir build\material-target-distance --sample 10000
+.\build\sanpao15_cli.exe --inspect-mtd build\material-target-distance\layer-04.s15mtd
+.\build\sanpao15_cli.exe --query-mtd build\material-target-distance --wdl-dir build\prod-layers --position "SSSS./...../...../...../.CCC. c" --moves
 .\build-release\sanpao15_cli.exe --serve-ui --tablebase-dir build\prod-layers --ui-dir ui\dist --port 8787
 .\build\sanpao15_cli.exe --limit 50000
 .\build\sanpao15_cli.exe --full
@@ -289,6 +293,12 @@ to only the outcome byte needed for the current position. With `--moves`, each
 legal successor is read the same way and classified from the side to move:
 winning, drawing, or losing. This is outcome-only WDL guidance; `.s15res` does
 not contain distance, DTW, or fastest-win data.
+
+Material-target-distance `.s15mtd` files are a second-level dense tablebase
+prototype layered on top of WDL. They preserve the WDL result first, then report
+`materialTarget`, `cannonMaxCaptures`, `soldierSaved`, and adversarial
+`targetDistance` in plies. The current prototype solves and verifies `k=0..4`;
+see `docs/material-target-distance-tablebase.md`.
 
 `--explore-tablebase` samples one deterministic WDL line using the same
 random-read `.s15res` lookup. It chooses moves that preserve the current WDL

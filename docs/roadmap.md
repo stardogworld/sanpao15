@@ -54,6 +54,8 @@
 - Dry-run production ranges with `--preflight-layer-range START END --out-dir DIR`, checking valid/invalid/missing `.s15res` files, lower-layer availability, stats JSON, disk, RAM, queue, and time estimates without solving.
 - Use a `uint32_t` queue and `uint32_t` predecessor-index buffer in the production dense layer path while keeping public dense indexes as `uint64_t`.
 - Query complete dense `.s15res` tablebase directories with `--query-tablebase`, including WDL-only move recommendations and JSON output.
+- Write, inspect, verify, and query prototype material-target-distance `.s15mtd` files with packed 12-bit `materialTarget` and `targetDistance` entries.
+- Solve material-target-distance prototype layers `k=0..4`; Release `k=4` completed in 03:26 with no saturated distances and passed sampled verification.
 - Query local dense `.s15res` files from the UI by random-reading only target outcome bytes.
 - Serve the UI from a read-only local C++ backend with automatic `/api/status` detection, backend random-read `.s15res` lookup, and browser file picker fallback.
 - Explore one deterministic WDL-only line with `--explore-tablebase --max-plies`, JSON output, cycle detection, and random `.s15res` reads.
@@ -72,6 +74,8 @@
 ## Next Steps
 
 - Run range `0..5` using resume.
+- Run a material-target-distance performance pass before widening beyond `k=4`.
+- Benchmark material-target-distance `k=5` and `k=6` only after the performance pass.
 - Run `--preflight-layer-range 0 15` before widening production ranges, then rerun it after each completed range slice.
 - Consider a cautious `k=6` benchmark after range `0..5` is validated.
 - Evaluate file-backed or mmap dense outcome tables for larger layers.

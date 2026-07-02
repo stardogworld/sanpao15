@@ -30,6 +30,7 @@ Makefile
 *.s15run
 *.s15bucket
 *.s15res
+*.s15mtd
 *.solve.json
 manifest.json
 preflight.json
