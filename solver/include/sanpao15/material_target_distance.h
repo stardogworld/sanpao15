@@ -19,7 +19,7 @@ enum class MtdEncoding : uint32_t {
 
 struct MtdEntry {
     uint8_t materialTarget = 0;
-    uint8_t targetDistance = 0;
+    uint8_t guaranteeDistance = 0;
 
     friend bool operator==(const MtdEntry& lhs, const MtdEntry& rhs) = default;
 };
@@ -70,6 +70,7 @@ struct MtdLayerSolveResult {
     uint64_t outputBytes = 0;
     std::filesystem::path outputPath;
     std::filesystem::path statsPath;
+    std::array<uint64_t, 4> outcomeCounts{};
     std::array<uint64_t, 16> materialTargetCounts{};
     std::array<uint64_t, 16> cannonMaxCapturesCounts{};
     std::array<uint64_t, 256> distanceCounts{};
@@ -137,6 +138,7 @@ struct MtdMoveInfo {
     MtdEntry successorMtd;
     bool wdlPreserving = false;
     bool materialOptimal = false;
+    bool distanceOptimal = false;
 };
 
 struct MtdQueryOptions {

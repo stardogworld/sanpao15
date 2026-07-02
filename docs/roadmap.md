@@ -54,8 +54,8 @@
 - Dry-run production ranges with `--preflight-layer-range START END --out-dir DIR`, checking valid/invalid/missing `.s15res` files, lower-layer availability, stats JSON, disk, RAM, queue, and time estimates without solving.
 - Use a `uint32_t` queue and `uint32_t` predecessor-index buffer in the production dense layer path while keeping public dense indexes as `uint64_t`.
 - Query complete dense `.s15res` tablebase directories with `--query-tablebase`, including WDL-only move recommendations and JSON output.
-- Write, inspect, verify, and query prototype material-target-distance `.s15mtd` files with packed 12-bit `materialTarget` and `targetDistance` entries.
-- Solve material-target-distance prototype layers `k=0..4`; Release `k=4` completed in 03:26 with no saturated distances and passed sampled verification.
+- Write, inspect, verify, and query outcome-aware v2 material-target-distance `.s15mtd` files with packed 12-bit `materialTarget` and `guaranteeDistance` entries.
+- Solve material-target-distance prototype layers `k=0..4`; Release `k=4` completed in 01:27 with no saturated distances and passed full verification.
 - Query local dense `.s15res` files from the UI by random-reading only target outcome bytes.
 - Serve the UI from a read-only local C++ backend with automatic `/api/status` detection, backend random-read `.s15res` lookup, and browser file picker fallback.
 - Explore one deterministic WDL-only line with `--explore-tablebase --max-plies`, JSON output, cycle detection, and random `.s15res` reads.

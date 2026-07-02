@@ -13,9 +13,11 @@ to a dense integer in `[0, stateCount(k))`.
 
 The result table can then store only outcomes in dense-index order.
 
-The companion material-target-distance prototype stores secondary material
-guidance in `.s15mtd` files. It is deliberately separate from `.s15res`: WDL
-outcome remains the first objective and the `.s15res` format is unchanged. See
+The companion material-target-distance prototype stores secondary guidance in
+`.s15mtd` files. It is deliberately separate from `.s15res`: WDL outcome remains
+the first objective and the `.s15res` format is unchanged. Version 2 is
+outcome-aware: CannonWin/SoldierWin distances are forced-win distances, while
+Draw keeps material-target semantics. See
 `docs/material-target-distance-tablebase.md`.
 
 ## Layer Size
@@ -152,7 +154,8 @@ Do not commit generated `.s15res` files.
 
 Do not commit generated `.s15mtd` files either. They use dense index order like
 `.s15res`, but store 12-bit entries containing `materialTarget` and
-`targetDistance`.
+`guaranteeDistance`. Header version 2 is outcome-aware; obsolete version 1
+prototype files are rejected by current readers.
 
 `inspect-res` reads only the header and file size. `validate-res` additionally
 scans the payload and rejects invalid byte-encoded outcomes. Packed 2-bit

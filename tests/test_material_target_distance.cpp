@@ -4,6 +4,7 @@
 #include <fstream>
 
 #include "sanpao15/dense_index.h"
+#include "sanpao15/lowk_tablebase.h"
 #include "sanpao15/material_target_distance.h"
 #include "sanpao15/table.h"
 
@@ -61,7 +62,7 @@ SANPAO15_TEST(mtdHeaderAndPayloadRoundtrip) {
 
     saveMtdTable(table, 4, path, StandardRulesetHash);
     const MtdFileInfo info = validateMtdFile(path, StandardRulesetHash, 4);
-    SANPAO15_REQUIRE(info.version == 1);
+    SANPAO15_REQUIRE(info.version == 2);
     SANPAO15_REQUIRE(info.rulesetHash == StandardRulesetHash);
     SANPAO15_REQUIRE(info.soldierCount == 4);
     SANPAO15_REQUIRE(info.stateCount == denseStateCount(4));
@@ -77,6 +78,19 @@ SANPAO15_TEST(mtdHeaderAndPayloadRoundtrip) {
     SANPAO15_REQUIRE(stats.materialTargetCounts[2] == 1);
     SANPAO15_REQUIRE(stats.maxExactDistance == 254);
     SANPAO15_REQUIRE(stats.saturatedDistanceCount == 0);
+    std::filesystem::remove_all(dir);
+}
+
+SANPAO15_TEST(mtdVersion1PrototypeFilesAreRejected) {
+    const std::filesystem::path dir = tempDir("sanpao15-mtd-v1-obsolete");
+    const std::filesystem::path path = mtdLayerPath(dir, 0);
+    PackedMtdTable12 table(denseStateCount(0), MtdEntry{0, 0});
+    saveMtdTable(table, 0, path, StandardRulesetHash);
+
+    writeByteAt(path, 8, 1u);
+    sanpao15::test::requireThrows([&] {
+        (void)validateMtdFile(path, StandardRulesetHash, 0);
+    }, "prototype MTD semantic version 1 should be rejected");
     std::filesystem::remove_all(dir);
 }
 
@@ -96,13 +110,33 @@ SANPAO15_TEST(mtdValidationRejectsWrongRulesetAndInvalidPayload) {
     std::filesystem::remove_all(dir);
 }
 
+SANPAO15_TEST(mtdSolveRejectsUnknownWdl) {
+    const std::filesystem::path dir = tempDir("sanpao15-mtd-unknown-wdl");
+    const std::filesystem::path wdlDir = dir / "wdl";
+    const std::filesystem::path mtdDir = dir / "mtd";
+    std::filesystem::create_directories(wdlDir);
+    std::filesystem::create_directories(mtdDir);
+    createEmptyDenseResultFile(0, lowKLayerResultPath(wdlDir, 0), DenseResultEncoding::Packed2Bit, StandardRulesetHash);
+
+    MtdLayerSolveOptions options;
+    options.soldierCount = 0;
+    options.wdlDir = wdlDir;
+    options.mtdDir = mtdDir;
+    options.overwrite = true;
+    options.writeStatsJson = false;
+    sanpao15::test::requireThrows([&] {
+        (void)solveMtdLayer(options);
+    }, "MTD solve should reject Unknown WDL outcomes");
+    std::filesystem::remove_all(dir);
+}
+
 SANPAO15_TEST(mtdBaseLayersUseCurrentMaterialAndZeroDistance) {
     for (int k = 0; k <= 3; ++k) {
         PackedMtdTable12 table(denseStateCount(k), MtdEntry{static_cast<uint8_t>(k), 0});
         SANPAO15_REQUIRE(table.get(0).materialTarget == k);
-        SANPAO15_REQUIRE(table.get(0).targetDistance == 0);
+        SANPAO15_REQUIRE(table.get(0).guaranteeDistance == 0);
         SANPAO15_REQUIRE(table.get(table.size() - 1).materialTarget == k);
-        SANPAO15_REQUIRE(table.get(table.size() - 1).targetDistance == 0);
+        SANPAO15_REQUIRE(table.get(table.size() - 1).guaranteeDistance == 0);
     }
 }
 

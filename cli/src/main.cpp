@@ -1837,6 +1837,12 @@ void printMtdLayerResult(const MtdLayerSolveResult& layer) {
     std::cout << "Layer " << layer.soldierCount << "\n";
     std::cout << "State count: " << formatInteger(layer.stateCount) << "\n";
     std::cout << "Encoding: " << mtdEncodingToString(MtdEncoding::Packed12Material4Distance8) << "\n";
+    std::cout << "Semantic version: 2 outcome-aware-material-target-distance\n";
+    std::cout << "Outcome distribution:\n";
+    std::cout << "  CannonWin: " << formatInteger(layer.outcomeCounts[static_cast<size_t>(Outcome::CannonWin)]) << "\n";
+    std::cout << "  SoldierWin: " << formatInteger(layer.outcomeCounts[static_cast<size_t>(Outcome::SoldierWin)]) << "\n";
+    std::cout << "  Draw: " << formatInteger(layer.outcomeCounts[static_cast<size_t>(Outcome::Draw)]) << "\n";
+    std::cout << "  Unknown: " << formatInteger(layer.outcomeCounts[static_cast<size_t>(Outcome::Unknown)]) << "\n";
     std::cout << "Max exact distance: " << static_cast<int>(layer.maxExactDistance) << "\n";
     std::cout << "Saturated distance count: " << formatInteger(layer.saturatedDistanceCount) << "\n";
     std::cout << "Stage material time: " << formatDuration(layer.stageMaterialSeconds) << "\n";
@@ -1979,9 +1985,10 @@ void printMtdMoveText(const MtdMoveInfo& move, const std::string& indent) {
               << " index " << formatInteger(move.successorIndex)
               << " outcome " << outcomeToString(move.successorOutcome)
               << " materialTarget " << static_cast<int>(move.successorMtd.materialTarget)
-              << " targetDistance " << mtdDistanceToString(move.successorMtd.targetDistance)
+              << " guaranteeDistance " << mtdDistanceToString(move.successorMtd.guaranteeDistance)
               << " wdlPreserving " << (move.wdlPreserving ? "yes" : "no")
               << " materialOptimal " << (move.materialOptimal ? "yes" : "no")
+              << " distanceOptimal " << (move.distanceOptimal ? "yes" : "no")
               << "\n";
 }
 
@@ -1995,9 +2002,10 @@ void printMtdMoveJson(const MtdMoveInfo& move, const std::string& indent) {
     std::cout << indent << "  \"successorPosition\": \"" << jsonEscape(positionToNotation(move.successor)) << "\",\n";
     std::cout << indent << "  \"successorOutcome\": \"" << outcomeToString(move.successorOutcome) << "\",\n";
     std::cout << indent << "  \"successorMaterialTarget\": " << static_cast<int>(move.successorMtd.materialTarget) << ",\n";
-    std::cout << indent << "  \"successorTargetDistance\": \"" << mtdDistanceToString(move.successorMtd.targetDistance) << "\",\n";
+    std::cout << indent << "  \"successorGuaranteeDistance\": \"" << mtdDistanceToString(move.successorMtd.guaranteeDistance) << "\",\n";
     std::cout << indent << "  \"wdlPreserving\": " << (move.wdlPreserving ? "true" : "false") << ",\n";
-    std::cout << indent << "  \"materialOptimal\": " << (move.materialOptimal ? "true" : "false") << "\n";
+    std::cout << indent << "  \"materialOptimal\": " << (move.materialOptimal ? "true" : "false") << ",\n";
+    std::cout << indent << "  \"distanceOptimal\": " << (move.distanceOptimal ? "true" : "false") << "\n";
     std::cout << indent << "}";
 }
 
@@ -2008,13 +2016,15 @@ void printMtdQueryJson(const MtdQueryResult& result, const std::filesystem::path
     std::cout << "  \"wdlDir\": \"" << jsonEscape(wdlDir.string()) << "\",\n";
     std::cout << "  \"ruleset\": \"" << RulesetName << "\",\n";
     std::cout << "  \"rulesetHash\": \"" << formatHex64(StandardRulesetHash) << "\",\n";
+    std::cout << "  \"semanticVersion\": 2,\n";
+    std::cout << "  \"semanticName\": \"outcome-aware-material-target-distance\",\n";
     std::cout << "  \"soldierCount\": " << result.soldierCount << ",\n";
     std::cout << "  \"denseIndex\": " << result.denseIndex << ",\n";
     std::cout << "  \"outcome\": \"" << outcomeToString(result.outcome) << "\",\n";
     std::cout << "  \"materialTarget\": " << static_cast<int>(result.mtd.materialTarget) << ",\n";
     std::cout << "  \"cannonMaxCaptures\": " << result.cannonMaxCaptures << ",\n";
     std::cout << "  \"soldierSaved\": " << result.soldierSaved << ",\n";
-    std::cout << "  \"targetDistance\": \"" << mtdDistanceToString(result.mtd.targetDistance) << "\",\n";
+    std::cout << "  \"guaranteeDistance\": \"" << mtdDistanceToString(result.mtd.guaranteeDistance) << "\",\n";
     std::cout << "  \"moves\": [\n";
     for (size_t i = 0; i < result.moves.size(); ++i) {
         printMtdMoveJson(result.moves[i], "    ");
@@ -2029,14 +2039,28 @@ void printMtdQueryText(const MtdQueryResult& result, const std::filesystem::path
     std::cout << "MTD dir: " << mtdDir.string() << "\n";
     std::cout << "WDL dir: " << wdlDir.string() << "\n";
     std::cout << "Ruleset: " << RulesetName << " " << formatHex64(StandardRulesetHash) << "\n";
+    std::cout << "Semantic version: 2 outcome-aware-material-target-distance\n";
     std::cout << "Position: " << positionToNotation(result.position) << "\n";
     std::cout << "Soldier count: " << result.soldierCount << "\n";
     std::cout << "Dense index: " << formatInteger(result.denseIndex) << "\n";
     std::cout << "WDL outcome: " << outcomeToString(result.outcome) << "\n";
-    std::cout << "Material target: " << static_cast<int>(result.mtd.materialTarget) << "\n";
-    std::cout << "Cannon max captures: " << result.cannonMaxCaptures << "\n";
-    std::cout << "Soldier saved: " << result.soldierSaved << "\n";
-    std::cout << "Target distance: " << mtdDistanceToString(result.mtd.targetDistance) << "\n";
+    if (result.outcome == Outcome::CannonWin) {
+        std::cout << "Guarantee distance: " << mtdDistanceToString(result.mtd.guaranteeDistance) << " ply\n";
+        std::cout << "Meaning: cannon can force a win within this many plies\n";
+        std::cout << "Terminal target: soldierCount < 4 or other rules terminal CannonWin\n";
+        std::cout << "Terminal material target: " << static_cast<int>(result.mtd.materialTarget) << "\n";
+    } else if (result.outcome == Outcome::SoldierWin) {
+        std::cout << "Guarantee distance: " << mtdDistanceToString(result.mtd.guaranteeDistance) << " ply\n";
+        std::cout << "Meaning: soldiers can force cannon encirclement within this many plies\n";
+        std::cout << "Terminal target: cannon has no legal moves\n";
+        std::cout << "Terminal material target: " << static_cast<int>(result.mtd.materialTarget) << "\n";
+    } else if (result.outcome == Outcome::Draw) {
+        std::cout << "Material target: " << static_cast<int>(result.mtd.materialTarget) << "\n";
+        std::cout << "Cannon max captures: " << result.cannonMaxCaptures << "\n";
+        std::cout << "Soldier saved: " << result.soldierSaved << "\n";
+        std::cout << "Guarantee distance: " << mtdDistanceToString(result.mtd.guaranteeDistance) << " ply\n";
+        std::cout << "Meaning: adversarial delay to reach the draw material target under material-optimal play\n";
+    }
     if (includeMoves) {
         std::cout << "Legal move count: " << formatInteger(static_cast<uint64_t>(result.moves.size())) << "\n";
         for (const MtdMoveInfo& move : result.moves) {
