@@ -44,8 +44,26 @@ target_include_directories(sanpao15_solver
 
 target_link_libraries(sanpao15_solver PUBLIC sanpao15_core)
 
+add_library(sanpao15_backend
+    backend/src/local_backend.cpp
+)
+
+target_include_directories(sanpao15_backend
+    PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/backend/include
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/third_party/cpp-httplib
+)
+
+target_link_libraries(sanpao15_backend PUBLIC sanpao15_core sanpao15_solver)
+
+if(WIN32)
+    target_compile_definitions(sanpao15_backend PRIVATE _WIN32_WINNT=0x0A00)
+    target_link_libraries(sanpao15_backend PUBLIC ws2_32)
+endif()
+
 add_executable(sanpao15_cli cli/src/main.cpp)
-target_link_libraries(sanpao15_cli PRIVATE sanpao15_core sanpao15_solver)
+target_link_libraries(sanpao15_cli PRIVATE sanpao15_core sanpao15_solver sanpao15_backend)
 
 enable_testing()
 
@@ -62,6 +80,7 @@ add_executable(sanpao15_tests
     tests/test_edge_probe.cpp
     tests/test_layered.cpp
     tests/test_lowk_tablebase.cpp
+    tests/test_local_backend.cpp
     tests/test_main.cpp
     tests/test_movegen.cpp
     tests/test_notation.cpp
@@ -72,6 +91,6 @@ add_executable(sanpao15_tests
     tests/test_terminal.cpp
 )
 
-target_link_libraries(sanpao15_tests PRIVATE sanpao15_core sanpao15_solver)
+target_link_libraries(sanpao15_tests PRIVATE sanpao15_core sanpao15_solver sanpao15_backend)
 
 add_test(NAME sanpao15_tests COMMAND sanpao15_tests)

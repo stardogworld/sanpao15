@@ -55,6 +55,7 @@
 - Use a `uint32_t` queue and `uint32_t` predecessor-index buffer in the production dense layer path while keeping public dense indexes as `uint64_t`.
 - Query complete dense `.s15res` tablebase directories with `--query-tablebase`, including WDL-only move recommendations and JSON output.
 - Query local dense `.s15res` files from the UI by random-reading only target outcome bytes.
+- Serve the UI from a read-only local C++ backend with automatic `/api/status` detection, backend random-read `.s15res` lookup, and browser file picker fallback.
 - Explore one deterministic WDL-only line with `--explore-tablebase --max-plies`, JSON output, cycle detection, and random `.s15res` reads.
 - Play WDL-only lines in the UI with max-plies, previous/next, autoplay, click-to-jump plies, last-move highlighting, recommended-move highlighting, undo/redo/reset, and copy/paste notation.
 - Polish the tablebase UI with board-first desktop/mobile layout, outcome/status badges, readable WDL line rows, feedback for invalid actions, and an Initial Position panel for the known Draw start and `22->12 captures 12` drawing move.
@@ -80,6 +81,7 @@
 - Keep the partitioned reachability line available for standard-initial-position experiments.
 - Add training/play modes on top of the polished Chinese WDL tablebase UI.
 - Add URL-shareable positions for the arbitrary-position analyzer.
+- Polish local backend packaging and startup ergonomics.
 - Publish a reproducible full tablebase artifact plan for `.s15res` outputs.
 - Improve partitioned closure performance with a direct per-bucket candidate collector if needed.
 - Design layer-local CSR edge files.

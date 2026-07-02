@@ -1,8 +1,8 @@
 import type { Move, Outcome, Position, Side } from "../engine";
 import type { TablebaseRecommendationResult } from "../tablebase/recommend";
-import type { TablebaseDirectory } from "../tablebase/denseResult";
-import { recommendMoves, type MoveClassification, type RecommendedMove } from "../tablebase/recommend";
+import { type MoveClassification, type RecommendedMove } from "../tablebase/recommend";
 import { validatePosition, type PositionValidation } from "../editor/validation";
+import type { TablebaseProvider } from "../tablebase/provider";
 
 export interface MoveOutcomeInfo {
   move: Move;
@@ -63,16 +63,16 @@ export interface PositionAnalysisResult {
 }
 
 export async function analyzeBestMoves(
-  tablebase: TablebaseDirectory | null,
+  tablebase: TablebaseProvider | null,
   position: Position,
 ): Promise<PositionAnalysisResult> {
-  const validation = validatePosition(position, tablebase);
+  const validation = tablebase?.validate(position) ?? validatePosition(position, null);
   if (!validation.canQuery || !tablebase) {
     return { validation, recommendation: null, summary: null };
   }
 
   try {
-    const recommendation = await recommendMoves(tablebase, position);
+    const recommendation = await tablebase.recommend(position);
     return {
       validation,
       recommendation,

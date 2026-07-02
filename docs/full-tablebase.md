@@ -140,6 +140,7 @@ Useful CLI commands:
 .\build\sanpao15_cli.exe --query-tablebase build\prod-layers --position "SSSSS/SSSSS/SSSSS/...../.CCC. c" --moves
 .\build\sanpao15_cli.exe --query-tablebase build\prod-layers --position "SSSSS/SSSSS/SSSSS/...../.CCC. c" --moves --json
 .\build\sanpao15_cli.exe --explore-tablebase build\prod-layers --position "SSSSS/SSSSS/SSSSS/...../.CCC. c" --max-plies 100
+.\build-release\sanpao15_cli.exe --serve-ui --tablebase-dir build\prod-layers --ui-dir ui\dist --port 8787
 ```
 
 Do not commit generated `.s15res` files.
@@ -188,6 +189,21 @@ dense index, current WDL outcome, best WDL moves, grouped legal moves,
 cannon-to-move versus soldier-to-move comparison, and successor-outcome labels
 on legal target squares. This remains WDL-only guidance and still performs
 random `.s15res` byte reads rather than loading full layers.
+
+For local desktop use, `--serve-ui` starts a read-only C++ HTTP backend and
+serves the static UI from `--ui-dir`:
+
+```powershell
+.\build-release\sanpao15_cli.exe --serve-ui --tablebase-dir build\prod-layers --ui-dir ui\dist --port 8787
+```
+
+The backend defaults to `127.0.0.1:8787`. It validates `layer-00.s15res` through
+`layer-15.s15res` metadata at startup and caches only the metadata. Query,
+recommendation, side-comparison, and line-explorer API calls still random-read
+individual `.s15res` bytes. Static file service is limited to `--ui-dir` and
+rejects path traversal; the API exposes no arbitrary file-read, write, delete,
+or tablebase mutation endpoint. If the backend is absent, the UI keeps the
+browser directory/file picker fallback.
 
 ## Dense Successor Indexing
 

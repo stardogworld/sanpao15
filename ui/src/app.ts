@@ -39,13 +39,18 @@ import {
 import {
   openTablebaseDirectory,
   openTablebaseFiles,
-  type TablebaseDirectory,
 } from "./tablebase/denseResult";
 import { type MoveClassification, type TablebaseRecommendationResult } from "./tablebase/recommend";
 import {
-  exploreWdlLine,
   type WdlLineExplorerResult,
 } from "./tablebase/lineExplorer";
+import {
+  BrowserFileTablebaseProvider,
+  detectBackendStatus,
+  detectBackendProvider,
+  type TablebaseProvider,
+  type TablebaseStatus,
+} from "./tablebase/provider";
 import {
   badge,
   classificationBadge,
@@ -101,7 +106,8 @@ export class Sanpao15App {
   private readonly helpEl = document.createElement("div");
   private readonly autoQueryInputEl = document.createElement("input");
 
-  private tablebase: TablebaseDirectory | null = null;
+  private tablebase: TablebaseProvider | null = null;
+  private tablebaseStatus: TablebaseStatus | null = null;
   private tablebaseResult: TablebaseRecommendationResult | null = null;
   private currentSummary: BestMoveSummary | null = null;
   private currentValidation: PositionValidation = validatePosition(this.position, null);
@@ -300,6 +306,7 @@ export class Sanpao15App {
     this.render();
     this.renderPlaybackStatus();
     this.scheduleAnalysis();
+    void this.detectBackendOnStartup();
   }
 
   private requireElement(selector: string): HTMLElement {
@@ -474,8 +481,26 @@ export class Sanpao15App {
     this.hoveredMove = null;
   }
 
+  private async detectBackendOnStartup(): Promise<void> {
+    const provider = await detectBackendProvider();
+    if (provider && !this.tablebase) {
+      this.tablebase = provider;
+      this.tablebaseStatus = await provider.status();
+      this.showFeedback("本地后端已连接，表库已自动加载。");
+      this.renderTablebaseStatus();
+      await this.refreshAnalysisNow();
+      return;
+    }
+    if (!this.tablebase) {
+      this.tablebaseStatus = await detectBackendStatus();
+      if (this.tablebaseStatus && !this.tablebaseStatus.complete) {
+        this.renderTablebaseStatus();
+      }
+    }
+  }
+
   private scheduleAnalysis(): void {
-    this.currentValidation = validatePosition(this.position, this.tablebase);
+    this.currentValidation = this.tablebase?.validate(this.position) ?? validatePosition(this.position, null);
     this.renderSummaryPanels();
     if (!this.autoQuery) {
       this.bestMoveEl.replaceChildren(this.renderEmptyState("自动查表已关闭", "当前结果可能不是最新，请点击“查询当前局面”。"));
@@ -495,7 +520,7 @@ export class Sanpao15App {
       this.analysisTimer = null;
     }
     const requestId = ++this.analysisRequestId;
-    this.currentValidation = validatePosition(this.position, this.tablebase);
+    this.currentValidation = this.tablebase?.validate(this.position) ?? validatePosition(this.position, null);
     this.renderSummaryPanels();
     if (!this.currentValidation.canQuery) {
       this.tablebaseResult = null;
@@ -510,8 +535,8 @@ export class Sanpao15App {
 
     this.bestMoveEl.textContent = zh.tablebase.reading;
     const [analysis, comparison] = await Promise.all([
-      analyzeBestMoves(this.tablebase, this.position),
-      compareSides(this.tablebase, this.position),
+      this.tablebase?.analyze(this.position) ?? analyzeBestMoves(null, this.position),
+      this.tablebase?.compareSides(this.position) ?? compareSides(null, this.position),
     ]);
     if (requestId !== this.analysisRequestId) {
       return;
@@ -702,12 +727,14 @@ export class Sanpao15App {
   private async selectTablebase(): Promise<void> {
     this.tablebaseStatusEl.textContent = zh.tablebase.selectingDirectory;
     try {
-      this.tablebase = await openTablebaseDirectory();
+      this.tablebase = new BrowserFileTablebaseProvider(await openTablebaseDirectory());
+      this.tablebaseStatus = await this.tablebase.status();
       this.showFeedback(zh.tablebase.loaded);
       this.renderTablebaseStatus();
       await this.refreshAnalysisNow();
     } catch (error) {
       this.tablebase = null;
+      this.tablebaseStatus = null;
       this.tablebaseStatusEl.textContent = localizeErrorMessage(error instanceof Error ? error.message : String(error));
       this.scheduleAnalysis();
     }
@@ -716,12 +743,14 @@ export class Sanpao15App {
   private async selectTablebaseFiles(): Promise<void> {
     this.tablebaseStatusEl.textContent = zh.tablebase.selectingFiles;
     try {
-      this.tablebase = await openTablebaseFiles();
+      this.tablebase = new BrowserFileTablebaseProvider(await openTablebaseFiles());
+      this.tablebaseStatus = await this.tablebase.status();
       this.showFeedback(zh.tablebase.filesLoaded);
       this.renderTablebaseStatus();
       await this.refreshAnalysisNow();
     } catch (error) {
       this.tablebase = null;
+      this.tablebaseStatus = null;
       this.tablebaseStatusEl.textContent = localizeErrorMessage(error instanceof Error ? error.message : String(error));
       this.scheduleAnalysis();
     }
@@ -729,25 +758,39 @@ export class Sanpao15App {
 
   private renderTablebaseStatus(): void {
     if (!this.tablebase) {
+      if (this.tablebaseStatus?.mode === "local-backend") {
+        const detail = this.tablebaseStatus.error ?? "后端表库未完整加载，可改用浏览器文件模式。";
+        this.tablebaseStatusEl.replaceChildren(this.renderEmptyState("后端表库未完整加载", detail));
+        return;
+      }
       this.tablebaseStatusEl.replaceChildren(this.renderEmptyState(
         zh.tablebase.notLoadedTitle,
         zh.tablebase.notLoadedDetail,
       ));
       return;
     }
-    const layers = Array.from(this.tablebase.layers.keys()).sort((left, right) => left - right);
-    const encodings = Array.from(new Set(Array.from(this.tablebase.layers.values()).map((layer) => layer.encoding))).join(", ");
-    const complete = layers.length === 16 && layers[0] === 0 && layers[layers.length - 1] === 15;
+    const status = this.tablebaseStatus;
+    if (!status) {
+      this.tablebaseStatusEl.replaceChildren(this.renderEmptyState("表库状态未知", "正在检测本地后端或等待选择文件。"));
+      return;
+    }
+    const complete = status.complete;
     const container = document.createElement("div");
     container.className = "status-grid";
     container.append(
       this.statusItem(zh.labels.status, complete ? zh.tablebase.complete : zh.tablebase.partial, complete ? "drawing" : "warning"),
-      this.statusItem(zh.labels.source, this.tablebase.sourceName),
-      this.statusItem(zh.labels.layers, layers.join(", ")),
-      this.statusItem(zh.labels.encoding, encodings || zh.outcome.Unknown),
-      this.statusItem(zh.labels.ruleset, `0x${this.tablebase.rulesetHash.toString(16).toUpperCase()}`),
-      this.statusItem(zh.labels.readMode, zh.tablebase.randomRead),
+      this.statusItem(zh.labels.source, this.tablebase.kind === "backend" ? "本地后端" : status.sourceName),
+      this.statusItem(zh.labels.layers, `${status.loadedLayers.length}/16`),
+      this.statusItem(zh.labels.encoding, status.encoding || zh.outcome.Unknown),
+      this.statusItem(zh.labels.ruleset, status.rulesetHash ?? status.rulesetName ?? "-"),
+      this.statusItem(zh.labels.readMode, this.tablebase.kind === "backend" ? "后端随机读取 .s15res" : zh.tablebase.randomRead),
     );
+    if (this.tablebase.kind === "backend") {
+      const note = document.createElement("p");
+      note.className = "panel-note full-row";
+      note.textContent = "本地后端已连接，UI 会自动查表；仍可使用上方按钮切换到浏览器文件模式。";
+      container.append(note);
+    }
     this.tablebaseStatusEl.replaceChildren(container);
   }
 
@@ -755,7 +798,16 @@ export class Sanpao15App {
     this.stopAutoplay();
     const maxPlies = Number(this.maxPliesInputEl.value);
     this.lineResultEl.textContent = zh.line.exploring;
-    const result = await exploreWdlLine(this.tablebase, this.position, maxPlies);
+    const result = this.tablebase
+      ? await this.tablebase.explore(this.position, maxPlies)
+      : {
+          start: this.position,
+          startOutcome: "Unknown" as const,
+          plies: [],
+          stopReason: "missingTablebase" as const,
+          cycleStartPly: null,
+          error: "Select a tablebase directory or layer files first.",
+        };
     this.lineResult = result;
     this.activeLinePly = 0;
     this.lineResultEl.replaceChildren(this.renderLineResult(result));
@@ -1001,7 +1053,7 @@ export class Sanpao15App {
       badge(zh.rulesetBadge, "neutral"),
       badge(this.mode === "analysis" ? "分析模式" : "编辑模式", this.mode === "analysis" ? "drawing" : "warning"),
       this.currentSummary ? outcomeBadge(this.currentSummary.outcome) : badge(this.currentValidation.canQuery ? "待查询" : "不可查", this.currentValidation.canQuery ? "neutral" : "warning"),
-      badge(this.tablebase ? zh.tablebase.loadedBadge(this.tablebase.layers.size) : zh.tablebase.notLoadedBadge, this.tablebase ? "drawing" : "warning"),
+      badge(this.tablebase ? zh.tablebase.loadedBadge(this.tablebaseStatus?.loadedLayers.length ?? 0) : zh.tablebase.notLoadedBadge, this.tablebase ? "drawing" : "warning"),
     );
   }
 

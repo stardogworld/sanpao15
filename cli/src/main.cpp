@@ -18,6 +18,7 @@
 #include "sanpao15/edge_probe.h"
 #include "sanpao15/external_closure.h"
 #include "sanpao15/layered.h"
+#include "sanpao15/local_backend.h"
 #include "sanpao15/lowk_tablebase.h"
 #include "sanpao15/notation.h"
 #include "sanpao15/partitioned_keyset.h"
@@ -82,6 +83,12 @@ struct CliOptions {
     bool exploreTablebase = false;
     bool queryMoves = false;
     bool jsonOutput = false;
+    bool serveUi = false;
+    bool hostProvided = false;
+    bool portProvided = false;
+    bool uiDirProvided = false;
+    bool tablebaseDirProvided = false;
+    bool openBrowser = false;
     bool maxPliesProvided = false;
     bool allowK4 = false;
     bool outDirProvided = false;
@@ -118,6 +125,7 @@ struct CliOptions {
     int preflightStartLayer = 0;
     int preflightEndLayer = 0;
     int maxPlies = 100;
+    int servePort = 8787;
     uint64_t denseIndexValue = 0;
     GraphBackend graphBackend = GraphBackend::Csr;
     PartitionMethod partitionMethod = PartitionMethod::Splitmix64Mod;
@@ -159,6 +167,9 @@ struct CliOptions {
     std::optional<std::filesystem::path> verifyLowKDir;
     std::optional<std::filesystem::path> queryTablebaseDir;
     std::optional<std::filesystem::path> exploreTablebaseDir;
+    std::optional<std::filesystem::path> serveTablebaseDir;
+    std::optional<std::filesystem::path> serveUiDir;
+    std::string serveHost = "127.0.0.1";
     std::optional<std::string> queryPositionNotation;
     std::optional<std::string> analysisNotation;
     std::optional<std::filesystem::path> saveTablePath;
@@ -211,6 +222,8 @@ void printUsage() {
         << "                  [--moves] [--json]\n"
         << "  sanpao15_cli --explore-tablebase DIR --position \"SSSSS/SSSSS/SSSSS/...../.CCC. c\"\n"
         << "                  [--max-plies N] [--json]\n"
+        << "  sanpao15_cli --serve-ui [--tablebase-dir DIR] [--host HOST] [--port PORT]\n"
+        << "                  [--ui-dir DIR] [--open]\n"
         << "  sanpao15_cli --analyze \"SSSSS/SSSSS/SSSSS/...../.CCC. c\" [--limit N|--full]\n"
         << "  sanpao15_cli --load-table FILE --analyze \"SSSSS/SSSSS/SSSSS/...../.CCC. c\"\n\n"
         << "Options:\n"
@@ -297,6 +310,12 @@ void printUsage() {
         << "  --moves        Include legal successor outcomes and WDL recommendation groups.\n"
         << "  --max-plies N  Maximum plies for --explore-tablebase. Default: 100.\n"
         << "  --json         Emit JSON for --query-tablebase or --explore-tablebase.\n"
+        << "  --serve-ui     Serve the UI and read-only local tablebase HTTP API.\n"
+        << "  --tablebase-dir DIR  Dense tablebase directory for --serve-ui.\n"
+        << "  --host HOST    Host for --serve-ui. Default: 127.0.0.1.\n"
+        << "  --port PORT    Port for --serve-ui. Default: 8787.\n"
+        << "  --ui-dir DIR   Static UI dist directory for --serve-ui. Default: ui/dist if present.\n"
+        << "  --open         Open the local --serve-ui URL in the default browser.\n"
         << "  --resume       Skip existing valid range layers.\n"
         << "  --clean-temp   Remove stale layer-NN.s15res.tmp files for the selected range before solving.\n"
         << "  --external-seed-dedup  Use external sorted runs for next-layer seed dedup.\n"
@@ -760,6 +779,38 @@ CliOptions parseArgs(int argc, char** argv) {
             options.queryMoves = true;
         } else if (arg == "--json") {
             options.jsonOutput = true;
+        } else if (arg == "--serve-ui") {
+            options.serveUi = true;
+        } else if (arg == "--tablebase-dir") {
+            if (i + 1 >= argc) {
+                throw std::invalid_argument("--tablebase-dir requires a directory path");
+            }
+            options.serveTablebaseDir = std::filesystem::path(argv[++i]);
+            options.tablebaseDirProvided = true;
+        } else if (arg == "--host") {
+            if (i + 1 >= argc) {
+                throw std::invalid_argument("--host requires a value");
+            }
+            options.serveHost = argv[++i];
+            options.hostProvided = true;
+        } else if (arg == "--port") {
+            if (i + 1 >= argc) {
+                throw std::invalid_argument("--port requires a value");
+            }
+            const uint64_t value = parseLimit(argv[++i]);
+            if (value == 0 || value > 65535) {
+                throw std::invalid_argument("--port must be in 1..65535");
+            }
+            options.servePort = static_cast<int>(value);
+            options.portProvided = true;
+        } else if (arg == "--ui-dir") {
+            if (i + 1 >= argc) {
+                throw std::invalid_argument("--ui-dir requires a directory path");
+            }
+            options.serveUiDir = std::filesystem::path(argv[++i]);
+            options.uiDirProvided = true;
+        } else if (arg == "--open") {
+            options.openBrowser = true;
         } else if (arg == "--max-plies") {
             if (i + 1 >= argc) {
                 throw std::invalid_argument("--max-plies requires a value");
@@ -866,8 +917,37 @@ CliOptions parseArgs(int argc, char** argv) {
         static_cast<int>(options.verifyLayer) +
         static_cast<int>(options.queryTablebase) +
         static_cast<int>(options.exploreTablebase);
-    if (validationModeCount + partitionModeCount + migrationModeCount + partitionedResumeModeCount + denseModeCount > 1) {
+    if (validationModeCount + partitionModeCount + migrationModeCount + partitionedResumeModeCount + denseModeCount +
+        static_cast<int>(options.serveUi) > 1) {
         throw std::invalid_argument("choose only one validate/inspect/partition/dense tablebase mode");
+    }
+    if ((options.tablebaseDirProvided || options.hostProvided || options.portProvided ||
+         options.uiDirProvided || options.openBrowser) && !options.serveUi) {
+        throw std::invalid_argument("--tablebase-dir, --host, --port, --ui-dir, and --open are only valid with --serve-ui");
+    }
+    if (options.serveUi) {
+        if (options.buildLayersDir.has_value() || options.statsOnly || options.probe || options.analysisNotation.has_value() ||
+            options.saveTablePath.has_value() || options.loadTablePath.has_value() || options.full ||
+            options.limitProvided || options.noPred || options.maxStatesPerLayerProvided ||
+            options.startLayerProvided || options.stopAfterLayerProvided || options.externalLayerClosure || options.externalSeedDedup ||
+            options.partitionedClosure || options.closurePartitionBucketsProvided || options.closurePartitionMethodProvided ||
+            options.dedupChunkSizeProvided || options.tempDir.has_value() || options.keepTemp ||
+            options.resumeClosure || options.checkpointIntervalProvided ||
+            options.buildLayerExternalProvided || options.layerWorkDir.has_value() || options.seedFile.has_value() ||
+            options.outputLayerFile.has_value() || options.outputNextSeedFile.has_value() ||
+            options.maxIterations != 0 || options.maxExpandedStates != 0 ||
+            options.repairLayerProvided || options.repairDryRun || options.expandedBudgetProvided ||
+            options.partitionOutputDir.has_value() || options.partitionBucketsProvided || options.partitionMethodProvided ||
+            options.partitionCacheBucketsProvided || options.benchmarkModeProvided ||
+            options.lookupKeyProvided || options.sampleStatesProvided || options.nextSeedPartitionDir.has_value() ||
+            options.partitionOverwrite || options.cleanTemp || options.rangeResume ||
+            options.migrateOutputProvided || options.cleanupStaleRuns ||
+            options.outDirProvided || options.outResProvided || options.lowerResProvided ||
+            options.maxKProvided || options.resEncodingProvided || options.overwrite ||
+            options.queryPositionNotation.has_value() || options.queryMoves || options.jsonOutput ||
+            options.maxPliesProvided || options.benchmarkSampleProvided) {
+            throw std::invalid_argument("--serve-ui cannot be combined with solve, stats, probe, validate, partition, query, or table output options");
+        }
     }
     if (options.resEncodingProvided && !options.createEmptyRes && !options.solveLowK &&
         !options.solveLowKStreaming && !options.solveLayer && !options.solveLayerRange && !options.preflightLayerRange) {
@@ -3088,6 +3168,16 @@ int main(int argc, char** argv) {
         if (options.help) {
             printUsage();
             return 0;
+        }
+        if (options.serveUi) {
+            LocalBackendOptions backendOptions;
+            backendOptions.host = options.serveHost;
+            backendOptions.port = options.servePort;
+            backendOptions.tablebaseDir = options.serveTablebaseDir;
+            backendOptions.uiDir = options.serveUiDir;
+            backendOptions.executablePath = std::filesystem::path(argv[0]);
+            backendOptions.openBrowser = options.openBrowser;
+            return serveLocalTablebaseBackend(backendOptions);
         }
         if (options.validateLayerPath.has_value()) {
             printValidateLayer(*options.validateLayerPath);

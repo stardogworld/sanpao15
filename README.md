@@ -131,6 +131,7 @@ Useful CLI modes:
 .\build\sanpao15_cli.exe --query-tablebase build\prod-layers --position "SSSSS/SSSSS/SSSSS/...../.CCC. c" --moves --json
 .\build\sanpao15_cli.exe --explore-tablebase build\prod-layers --position "SSSSS/SSSSS/SSSSS/...../.CCC. c" --max-plies 100
 .\build\sanpao15_cli.exe --explore-tablebase build\prod-layers --position "SSSSS/SSSSS/SSSSS/...../.CCC. c" --max-plies 100 --json
+.\build-release\sanpao15_cli.exe --serve-ui --tablebase-dir build\prod-layers --ui-dir ui\dist --port 8787
 .\build\sanpao15_cli.exe --limit 50000
 .\build\sanpao15_cli.exe --full
 .\build\sanpao15_cli.exe --analyze "SSSSS/SSSSS/SSSSS/...../.CCC. c" --limit 10000
@@ -295,6 +296,21 @@ result when possible, detects cycles, stops at `--max-plies`, and reports
 `terminal`, `cycle`, `maxPlies`, `noLegalMoves`, `missingTablebase`, or
 `lookupError`. It does not solve, regenerate, or load the full tablebase.
 
+The CLI can also serve the browser UI and a read-only local tablebase API:
+
+```powershell
+.\build-release\sanpao15_cli.exe --serve-ui --tablebase-dir build\prod-layers --ui-dir ui\dist --port 8787
+```
+
+`--serve-ui` defaults to `--host 127.0.0.1` and `--port 8787`. If
+`--tablebase-dir` is omitted it tries `SANPAO15_TABLEBASE_DIR`,
+`build/prod-layers`, `prod-layers`, and executable-adjacent `tablebase` /
+`prod-layers`. The backend validates layer metadata at startup, caches only
+metadata, and random-reads the needed `.s15res` byte per request. The API is
+read-only: `/api/status`, `/api/query`, `/api/recommend`,
+`/api/compare-sides`, and `/api/explore`. It has no arbitrary path-read or
+tablebase write/delete endpoint.
+
 Layer-local edge probe:
 
 ```powershell
@@ -355,6 +371,12 @@ directory such as `build\prod-layers`, or select `layer-00.s15res` through
 target header/outcome byte for the current position and each legal successor;
 it does not load the full 4.7GB outcome set. Recommended moves are grouped as
 `保持胜势`, `保持和棋`, or `走向败局` using the same WDL-only rule as the CLI.
+
+When the UI is opened from `sanpao15_cli --serve-ui`, it first probes
+`/api/status`. If the local backend reports a complete tablebase, the UI
+automatically uses backend mode and the user does not need to select layer
+files. Browser file selection remains available as a fallback when the backend
+is absent or unavailable.
 
 The `路线探索` panel samples and plays back one WDL-only line from the current
 position. It supports max-plies control, previous/next, 700ms autoplay,

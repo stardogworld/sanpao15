@@ -1,6 +1,9 @@
 import type { Position } from "../engine";
-import type { TablebaseDirectory } from "../tablebase/denseResult";
 import { denseIndex } from "../tablebase/denseIndex";
+
+export interface LayerAvailability {
+  hasLayer(soldierCount: number): boolean;
+}
 
 export interface PositionValidation {
   ok: boolean;
@@ -18,7 +21,7 @@ export function layerFileName(soldierCount: number): string {
 
 export function validatePosition(
   position: Position,
-  tablebase: TablebaseDirectory | null,
+  tablebase: LayerAvailability | null,
 ): PositionValidation {
   const cannonCount = position.cannons.size;
   const soldierCount = position.soldiers.size;
@@ -80,7 +83,7 @@ export function validatePosition(
     };
   }
 
-  if (!tablebase.layers.has(soldierCount)) {
+  if (!tablebase.hasLayer(soldierCount)) {
     return {
       ok: true,
       canQuery: false,

@@ -1,8 +1,8 @@
 import type { Position, Side } from "../engine";
 import { clonePosition } from "../engine";
-import type { TablebaseDirectory } from "../tablebase/denseResult";
 import { analyzeBestMoves, type BestMoveSummary } from "./bestMove";
 import type { PositionValidation } from "../editor/validation";
+import type { TablebaseProvider } from "../tablebase/provider";
 
 export interface SideComparisonEntry {
   side: Side;
@@ -23,7 +23,7 @@ function withSide(position: Position, side: Side): Position {
 }
 
 export async function compareSides(
-  tablebase: TablebaseDirectory | null,
+  tablebase: TablebaseProvider | null,
   position: Position,
 ): Promise<SideComparisonResult> {
   const cannon = await analyzeBestMoves(tablebase, withSide(position, "cannon"));
