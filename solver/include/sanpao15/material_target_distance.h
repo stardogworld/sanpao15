@@ -188,7 +188,7 @@ MtdLayerWriteStats writeMtdTableFromArrays(
     const std::filesystem::path& path,
     int soldierCount,
     const std::vector<uint8_t>& material,
-    const std::vector<uint8_t>& distance,
+    const std::vector<uint16_t>& distance,
     uint64_t rulesetHash);
 PackedMtdTable12 loadMtdTable(
     const std::filesystem::path& path,

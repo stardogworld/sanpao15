@@ -131,7 +131,7 @@ SANPAO15_TEST(mtdStreamingWriterRoundtripAndStats) {
     const std::filesystem::path path = mtdLayerPath(dir, 0);
     const uint64_t stateCount = denseStateCount(0);
     std::vector<uint8_t> material(static_cast<size_t>(stateCount), 0);
-    std::vector<uint8_t> distance(static_cast<size_t>(stateCount), 0);
+    std::vector<uint16_t> distance(static_cast<size_t>(stateCount), 0);
     distance[0] = 7;
     distance[1] = MtdSaturatedDistance;
 
@@ -154,11 +154,24 @@ SANPAO15_TEST(mtdStreamingWriterRejectsUnassignedMaterial) {
     const std::filesystem::path path = mtdLayerPath(dir, 0);
     const uint64_t stateCount = denseStateCount(0);
     std::vector<uint8_t> material(static_cast<size_t>(stateCount), 0);
-    std::vector<uint8_t> distance(static_cast<size_t>(stateCount), 0);
+    std::vector<uint16_t> distance(static_cast<size_t>(stateCount), 0);
     material[0] = 0xffu;
     sanpao15::test::requireThrows([&] {
         (void)writeMtdTableFromArrays(path, 0, material, distance, StandardRulesetHash);
     }, "streaming MTD writer should reject unassigned material");
+    std::filesystem::remove_all(dir);
+}
+
+SANPAO15_TEST(mtdStreamingWriterRejectsUnsolvedDistance) {
+    const std::filesystem::path dir = tempDir("sanpao15-mtd-streaming-unsolved-distance");
+    const std::filesystem::path path = mtdLayerPath(dir, 0);
+    const uint64_t stateCount = denseStateCount(0);
+    std::vector<uint8_t> material(static_cast<size_t>(stateCount), 0);
+    std::vector<uint16_t> distance(static_cast<size_t>(stateCount), 0);
+    distance[0] = 256;
+    sanpao15::test::requireThrows([&] {
+        (void)writeMtdTableFromArrays(path, 0, material, distance, StandardRulesetHash);
+    }, "streaming MTD writer should reject unsolved distance");
     std::filesystem::remove_all(dir);
 }
 

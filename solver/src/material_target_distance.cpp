@@ -28,7 +28,7 @@ constexpr std::array<char, 8> MtdMagic{'S', '1', '5', 'M', 'T', 'D', '1', '\0'};
 constexpr uint32_t MtdVersion = 2;
 constexpr uint64_t MtdHeaderBytes = 44;
 constexpr uint8_t UnassignedMaterial = 0xffu;
-constexpr uint8_t UnsolvedDistance = 0xffu;
+constexpr uint16_t UnsolvedDistance = 0x100u;
 
 void writeU8(std::ostream& output, uint8_t value) {
     output.put(static_cast<char>(value));
@@ -261,12 +261,16 @@ Outcome successorOutcomeFor(
 MtdEntry successorMtdFor(
     const DenseSuccessor& successor,
     const std::vector<uint8_t>& currentMaterial,
-    const std::vector<uint8_t>& currentDistance,
+    const std::vector<uint16_t>& currentDistance,
     const PackedMtdTable12* lowerMtd) {
     if (successor.kind == DenseSuccessorKind::SameLayer) {
+        const uint16_t distance = currentDistance[static_cast<size_t>(successor.toIndex)];
+        if (distance > MtdSaturatedDistance) {
+            throw std::logic_error("same-layer MTD successor distance is unsolved");
+        }
         return MtdEntry{
             currentMaterial[static_cast<size_t>(successor.toIndex)],
-            currentDistance[static_cast<size_t>(successor.toIndex)],
+            static_cast<uint8_t>(distance),
         };
     }
     if (lowerMtd == nullptr) {
@@ -343,7 +347,7 @@ uint8_t computeDistanceForState(
     const PackedOutcomeTable2Bit* lowerWdl,
     const PackedMtdTable12* lowerMtd,
     const std::vector<uint8_t>& currentMaterial,
-    const std::vector<uint8_t>& currentDistance,
+    const std::vector<uint16_t>& currentDistance,
     std::vector<DenseSuccessor>& successors) {
     if (materialTarget == soldierCount) {
         return 0;
@@ -403,7 +407,7 @@ void solveWinningOutcomeMtd(
     const PackedOutcomeTable2Bit* lowerWdl,
     const PackedMtdTable12* lowerMtd,
     std::vector<uint8_t>& material,
-    std::vector<uint8_t>& distance,
+    std::vector<uint16_t>& distance,
     uint64_t& queuePeak,
     uint64_t& iterations) {
     const uint64_t stateCount = denseStateCount(k);
@@ -427,7 +431,7 @@ void solveWinningOutcomeMtd(
         if (finalized[static_cast<size_t>(index)] != 0) {
             return;
         }
-        uint8_t& currentDistance = distance[static_cast<size_t>(index)];
+        uint16_t& currentDistance = distance[static_cast<size_t>(index)];
         uint8_t& currentMaterial = material[static_cast<size_t>(index)];
         const bool winnerToMove = side == winner;
         bool shouldSchedule = false;
@@ -456,7 +460,7 @@ void solveWinningOutcomeMtd(
             }
         }
         if (shouldSchedule || forceEnqueue) {
-            enqueue(currentDistance, index);
+            enqueue(static_cast<uint8_t>(currentDistance), index);
         }
     };
 
@@ -557,7 +561,7 @@ void solveWinningOutcomeMtd(
             const Position child = positionFromDenseIndex(k, childIndex);
             const Outcome childOutcome = currentWdl.getUnchecked(childIndex);
             const Side parentSide = opposite(child.side);
-            const uint8_t candidateDistance = saturatedAdd1(distance[static_cast<size_t>(childIndex)]);
+            const uint8_t candidateDistance = saturatedAdd1(static_cast<uint8_t>(distance[static_cast<size_t>(childIndex)]));
             const uint8_t candidateMaterial = material[static_cast<size_t>(childIndex)];
             generateDensePredecessorIndicesFromPosition(k, childIndex, child, predecessorIndices);
             for (uint32_t parentIndex : predecessorIndices) {
@@ -613,7 +617,7 @@ void solveWinningOutcomeMtd(
 }
 
 uint64_t estimateMtdMemoryBytes(int soldierCount, uint64_t stateCount, const PackedMtdTable12* lowerMtd) {
-    uint64_t total = stateCount * 2u;  // material + distance working arrays
+    uint64_t total = stateCount * 3u;  // material + uint16 distance working arrays
     total += denseResultPayloadBytes(stateCount, DenseResultEncoding::Packed2Bit);
     if (soldierCount >= MinSoldiersForSoldierSurvival) {
         total += stateCount * 3u;  // threshold truth, soldier remaining, and queue scratch headroom
@@ -887,7 +891,7 @@ MtdLayerWriteStats writeMtdTableFromArrays(
     const std::filesystem::path& path,
     int soldierCount,
     const std::vector<uint8_t>& material,
-    const std::vector<uint8_t>& distance,
+    const std::vector<uint16_t>& distance,
     uint64_t rulesetHash) {
     requireLayer(soldierCount);
     const uint64_t stateCount = denseStateCount(soldierCount);
@@ -924,11 +928,14 @@ MtdLayerWriteStats writeMtdTableFromArrays(
 
     const auto entryAt = [&](uint64_t index) {
         const uint8_t materialTarget = material[static_cast<size_t>(index)];
-        const uint8_t guaranteeDistance = distance[static_cast<size_t>(index)];
+        const uint16_t storedDistance = distance[static_cast<size_t>(index)];
         if (materialTarget == UnassignedMaterial) {
             throw std::runtime_error("MTD writer found unassigned material target");
         }
-        const MtdEntry entry{materialTarget, guaranteeDistance};
+        if (storedDistance > MtdSaturatedDistance) {
+            throw std::runtime_error("MTD writer found unsolved guarantee distance");
+        }
+        const MtdEntry entry{materialTarget, static_cast<uint8_t>(storedDistance)};
         validateEntryForLayer(entry, soldierCount);
         ++stats.materialTargetCounts[entry.materialTarget];
         ++stats.cannonMaxCapturesCounts[static_cast<size_t>(soldierCount - entry.materialTarget)];
@@ -1144,7 +1151,7 @@ MtdLayerSolveResult solveMtdLayer(const MtdLayerSolveOptions& options) {
     }
 
     std::vector<uint8_t> material(static_cast<size_t>(stateCount), UnassignedMaterial);
-    std::vector<uint8_t> distance(static_cast<size_t>(stateCount), UnsolvedDistance);
+    std::vector<uint16_t> distance(static_cast<size_t>(stateCount), UnsolvedDistance);
     std::vector<DenseSuccessor> successors;
     uint64_t queuePeak = 0;
 
@@ -1153,7 +1160,7 @@ MtdLayerSolveResult solveMtdLayer(const MtdLayerSolveOptions& options) {
     uint64_t winIterations = 0;
     if (k < MinSoldiersForSoldierSurvival) {
         std::fill(material.begin(), material.end(), static_cast<uint8_t>(k));
-        std::fill(distance.begin(), distance.end(), uint8_t{0});
+        std::fill(distance.begin(), distance.end(), uint16_t{0});
     } else {
         solveWinningOutcomeMtd(
             k,
@@ -1351,7 +1358,7 @@ MtdLayerSolveResult solveMtdLayer(const MtdLayerSolveOptions& options) {
             if (finalized[static_cast<size_t>(index)] != 0) {
                 return;
             }
-            uint8_t& current = distance[static_cast<size_t>(index)];
+            uint16_t& current = distance[static_cast<size_t>(index)];
             bool shouldSchedule = false;
             if (hasCandidate[static_cast<size_t>(index)] == 0) {
                 hasCandidate[static_cast<size_t>(index)] = 1;
@@ -1371,7 +1378,7 @@ MtdLayerSolveResult solveMtdLayer(const MtdLayerSolveOptions& options) {
             if (!shouldSchedule && !forceEnqueue) {
                 return;
             }
-            enqueueDistance(current, index);
+            enqueueDistance(static_cast<uint8_t>(current), index);
         };
 
         for (uint64_t index = 0; index < stateCount; ++index) {
@@ -1397,15 +1404,14 @@ MtdLayerSolveResult solveMtdLayer(const MtdLayerSolveOptions& options) {
                 if (childOutcome != Outcome::Draw) {
                     continue;
                 }
-                const MtdEntry child = successorMtdFor(
-                    successor,
-                    material,
-                    distance,
-                    lowerMtd.has_value() ? &*lowerMtd : nullptr);
-                if (child.materialTarget != target) {
-                    continue;
-                }
                 if (successor.kind == DenseSuccessorKind::CaptureToLowerLayer) {
+                    if (!lowerMtd.has_value()) {
+                        throw std::logic_error("draw distance capture requires lower MTD layer");
+                    }
+                    const MtdEntry child = lowerMtd->getUnchecked(successor.toIndex);
+                    if (child.materialTarget != target) {
+                        continue;
+                    }
                     hasKnownOptimal = true;
                     const uint8_t candidate = saturatedAdd1(child.guaranteeDistance);
                     if (pos.side == Side::Cannon) {
@@ -1414,6 +1420,9 @@ MtdLayerSolveResult solveMtdLayer(const MtdLayerSolveOptions& options) {
                         knownDistance = std::max(knownDistance, candidate);
                     }
                 } else {
+                    if (material[static_cast<size_t>(successor.toIndex)] != target) {
+                        continue;
+                    }
                     ++unresolvedSameLayer;
                 }
             }
@@ -1457,7 +1466,7 @@ MtdLayerSolveResult solveMtdLayer(const MtdLayerSolveOptions& options) {
                 }
                 const Position child = positionFromDenseIndex(k, childIndex);
                 const Side parentSide = opposite(child.side);
-                const uint8_t candidate = saturatedAdd1(distance[static_cast<size_t>(childIndex)]);
+                    const uint8_t candidate = saturatedAdd1(static_cast<uint8_t>(distance[static_cast<size_t>(childIndex)]));
                 generateDensePredecessorIndicesFromPosition(k, childIndex, child, predecessorIndices);
                 for (uint32_t parentIndex : predecessorIndices) {
                     if (finalized[static_cast<size_t>(parentIndex)] != 0 ||
@@ -1477,7 +1486,7 @@ MtdLayerSolveResult solveMtdLayer(const MtdLayerSolveOptions& options) {
                             distance[static_cast<size_t>(parentIndex)] = candidate;
                         } else {
                             distance[static_cast<size_t>(parentIndex)] =
-                                std::max(distance[static_cast<size_t>(parentIndex)], candidate);
+                                std::max<uint16_t>(distance[static_cast<size_t>(parentIndex)], candidate);
                         }
                         --unresolved;
                         if (unresolved == 0) {
