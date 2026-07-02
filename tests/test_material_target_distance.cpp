@@ -61,7 +61,7 @@ SANPAO15_TEST(mtdHeaderAndPayloadRoundtrip) {
     table.set(table.size() - 1, MtdEntry{2, 254});
 
     saveMtdTable(table, 4, path, StandardRulesetHash);
-    const MtdFileInfo info = validateMtdFile(path, StandardRulesetHash, 4);
+    const MtdFileInfo info = validateMtdFileFull(path, StandardRulesetHash, 4);
     SANPAO15_REQUIRE(info.version == 2);
     SANPAO15_REQUIRE(info.rulesetHash == StandardRulesetHash);
     SANPAO15_REQUIRE(info.soldierCount == 4);
@@ -78,6 +78,22 @@ SANPAO15_TEST(mtdHeaderAndPayloadRoundtrip) {
     SANPAO15_REQUIRE(stats.materialTargetCounts[2] == 1);
     SANPAO15_REQUIRE(stats.maxExactDistance == 254);
     SANPAO15_REQUIRE(stats.saturatedDistanceCount == 0);
+    std::filesystem::remove_all(dir);
+}
+
+SANPAO15_TEST(mtdHeaderOnlyValidationDoesNotScanPayload) {
+    const std::filesystem::path dir = tempDir("sanpao15-mtd-header-only");
+    const std::filesystem::path path = mtdLayerPath(dir, 0);
+    PackedMtdTable12 table(denseStateCount(0), MtdEntry{0, 0});
+    saveMtdTable(table, 0, path, StandardRulesetHash);
+
+    writeByteAt(path, 44, 0x01u);
+    const MtdFileInfo info = validateMtdHeaderOnly(path, StandardRulesetHash, 0);
+    SANPAO15_REQUIRE(info.version == 2);
+    SANPAO15_REQUIRE(info.soldierCount == 0);
+    sanpao15::test::requireThrows([&] {
+        (void)validateMtdFileFull(path, StandardRulesetHash, 0);
+    }, "full MTD validation should reject invalid payload entries");
     std::filesystem::remove_all(dir);
 }
 
@@ -107,6 +123,64 @@ SANPAO15_TEST(mtdValidationRejectsWrongRulesetAndInvalidPayload) {
     sanpao15::test::requireThrows([&] {
         (void)validateMtdFile(path, StandardRulesetHash, 0);
     }, "materialTarget > k should be rejected");
+    std::filesystem::remove_all(dir);
+}
+
+SANPAO15_TEST(mtdStreamingWriterRoundtripAndStats) {
+    const std::filesystem::path dir = tempDir("sanpao15-mtd-streaming-writer");
+    const std::filesystem::path path = mtdLayerPath(dir, 0);
+    const uint64_t stateCount = denseStateCount(0);
+    std::vector<uint8_t> material(static_cast<size_t>(stateCount), 0);
+    std::vector<uint8_t> distance(static_cast<size_t>(stateCount), 0);
+    distance[0] = 7;
+    distance[1] = MtdSaturatedDistance;
+
+    const MtdLayerWriteStats stats = writeMtdTableFromArrays(path, 0, material, distance, StandardRulesetHash);
+    SANPAO15_REQUIRE(stats.stateCount == stateCount);
+    SANPAO15_REQUIRE(stats.outputBytes == 44 + mtdPayloadBytes(stateCount));
+    SANPAO15_REQUIRE(stats.materialTargetCounts[0] == stateCount);
+    SANPAO15_REQUIRE(stats.distanceCounts[7] == 1);
+    SANPAO15_REQUIRE(stats.saturatedDistanceCount == 1);
+    SANPAO15_REQUIRE(stats.maxExactDistance == 7);
+
+    const PackedMtdTable12 loaded = loadMtdTable(path, StandardRulesetHash, 0);
+    SANPAO15_REQUIRE(loaded.get(0) == (MtdEntry{0, 7}));
+    SANPAO15_REQUIRE(loaded.get(1) == (MtdEntry{0, MtdSaturatedDistance}));
+    std::filesystem::remove_all(dir);
+}
+
+SANPAO15_TEST(mtdStreamingWriterRejectsUnassignedMaterial) {
+    const std::filesystem::path dir = tempDir("sanpao15-mtd-streaming-invalid");
+    const std::filesystem::path path = mtdLayerPath(dir, 0);
+    const uint64_t stateCount = denseStateCount(0);
+    std::vector<uint8_t> material(static_cast<size_t>(stateCount), 0);
+    std::vector<uint8_t> distance(static_cast<size_t>(stateCount), 0);
+    material[0] = 0xffu;
+    sanpao15::test::requireThrows([&] {
+        (void)writeMtdTableFromArrays(path, 0, material, distance, StandardRulesetHash);
+    }, "streaming MTD writer should reject unassigned material");
+    std::filesystem::remove_all(dir);
+}
+
+SANPAO15_TEST(mtdRangeResumeUsesHeaderOnlyValidation) {
+    const std::filesystem::path dir = tempDir("sanpao15-mtd-range-resume-header-only");
+    const std::filesystem::path mtdDir = dir / "mtd";
+    const std::filesystem::path path = mtdLayerPath(mtdDir, 0);
+    PackedMtdTable12 table(denseStateCount(0), MtdEntry{0, 0});
+    saveMtdTable(table, 0, path, StandardRulesetHash);
+    writeByteAt(path, 44, 0x01u);
+
+    MtdRangeSolveOptions options;
+    options.startLayer = 0;
+    options.endLayer = 0;
+    options.wdlDir = dir / "wdl";
+    options.mtdDir = mtdDir;
+    options.resume = true;
+    const MtdRangeSolveResult result = solveMtdRange(options);
+    SANPAO15_REQUIRE(result.layers.size() == 1);
+    SANPAO15_REQUIRE(result.layers[0].soldierCount == 0);
+    SANPAO15_REQUIRE(result.layers[0].stateCount == denseStateCount(0));
+    SANPAO15_REQUIRE(result.layers[0].outputBytes == 44 + mtdPayloadBytes(denseStateCount(0)));
     std::filesystem::remove_all(dir);
 }
 

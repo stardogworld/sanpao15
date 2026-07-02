@@ -150,6 +150,20 @@ byte2 = (v1 >> 4) & 0xff
 Payload size is `ceil(stateCount * 12 / 8)`. Odd `stateCount` values are
 supported; unused high bits in the final byte must remain zero.
 
+## Validation Modes
+
+MTD validation is split into two paths:
+
+```text
+validateMtdHeaderOnly  checks magic, version, ruleset hash, layer, shape, and file size
+validateMtdFileFull    loads and scans the packed payload
+```
+
+`--solve-mtd-range --resume` uses header-only validation for existing
+`.s15mtd` files. This avoids accidentally scanning multi-GiB payloads while
+resuming a range, but it also means resume is not a full semantic verification.
+Use `--verify-mtd-layer` for payload and WDL-preserving semantic checks.
+
 ## Solver Shape
 
 The v2 prototype solves each layer in outcome-aware phases:
@@ -170,6 +184,12 @@ WDL = CannonWin
 materialTarget = k
 guaranteeDistance = 0
 ```
+
+The production solve path writes packed12 output directly from the solved
+material and distance arrays. It no longer constructs a second resident
+`PackedMtdTable12` for the current layer before writing. The legacy
+`saveMtdTable(PackedMtdTable12, ...)` API remains for tests and small-table
+utilities.
 
 ## CLI
 
@@ -249,12 +269,21 @@ The full dense tablebase has `18,787,540,800` states. Full MTD payload is:
 ```
 
 WDL plus MTD payload is about `30.62 GiB`, before temporary working memory.
+Large MTD production runs require a 64-bit build. The current single-threaded
+solver keeps public counts and byte sizes in `uint64_t`, keeps checked
+`uint32_t` queue indexes for currently addressable dense layers, and treats
+distance `255` as saturated `>=255`, not an exact ply count.
+
+Streaming packed12 output reduces peak memory by removing the current-layer
+packed output table. For the largest layer, `k=11`, this removes about
+`mtdPayloadBytes(denseStateCount(11)) = 4,867,480,800` bytes, roughly
+`4.53 GiB`, from the solve-time resident set estimate.
+
 The recommended next steps are:
 
 ```text
-1. correctness and structural optimization
-2. threaded performance pass
-3. cautious k=5/k=6 benchmark
-4. production range planning
-5. backend/UI MTD query integration
+1. threaded performance pass
+2. cautious k=5/k=6 benchmark
+3. production range planning
+4. backend/UI MTD query integration
 ```

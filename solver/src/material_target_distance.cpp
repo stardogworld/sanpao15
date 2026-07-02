@@ -167,18 +167,6 @@ void validateEntryForLayer(MtdEntry entry, int soldierCount) {
     }
 }
 
-void validatePayload(const PackedMtdTable12& table, int soldierCount) {
-    for (uint64_t index = 0; index < table.size(); ++index) {
-        validateEntryForLayer(table.getUnchecked(index), soldierCount);
-    }
-    if (table.size() % 2u == 1u && !table.payload().empty()) {
-        const uint8_t unusedNibble = static_cast<uint8_t>((table.payload().back() >> 4u) & 0x0fu);
-        if (unusedNibble != 0) {
-            throw std::runtime_error(".s15mtd packed payload has non-zero unused odd-entry bits");
-        }
-    }
-}
-
 std::string jsonEscape(const std::string& text) {
     std::string escaped;
     escaped.reserve(text.size());
@@ -427,15 +415,21 @@ void solveWinningOutcomeMtd(
     std::vector<DenseSuccessor> successors;
     std::vector<uint32_t> predecessorIndices;
     predecessorIndices.reserve(32);
+    uint64_t pendingQueueEntries = 0;
 
-    const auto schedule = [&](uint64_t index, uint8_t candidateDistance, uint8_t candidateMaterial, bool forceEnqueue = false) {
+    const auto enqueue = [&](uint8_t bucketIndex, uint64_t index) {
+        buckets[bucketIndex].push_back(checkedMtdQueueIndex(index));
+        ++pendingQueueEntries;
+        queuePeak = std::max(queuePeak, pendingQueueEntries);
+    };
+
+    const auto schedule = [&](uint64_t index, Side side, uint8_t candidateDistance, uint8_t candidateMaterial, bool forceEnqueue = false) {
         if (finalized[static_cast<size_t>(index)] != 0) {
             return;
         }
         uint8_t& currentDistance = distance[static_cast<size_t>(index)];
         uint8_t& currentMaterial = material[static_cast<size_t>(index)];
-        const Position pos = positionFromDenseIndex(k, index);
-        const bool winnerToMove = pos.side == winner;
+        const bool winnerToMove = side == winner;
         bool shouldSchedule = false;
         if (hasCandidate[static_cast<size_t>(index)] == 0) {
             hasCandidate[static_cast<size_t>(index)] = 1;
@@ -462,12 +456,7 @@ void solveWinningOutcomeMtd(
             }
         }
         if (shouldSchedule || forceEnqueue) {
-            buckets[currentDistance].push_back(checkedMtdQueueIndex(index));
-            uint64_t pending = 0;
-            for (const auto& bucket : buckets) {
-                pending += static_cast<uint64_t>(bucket.size());
-            }
-            queuePeak = std::max(queuePeak, pending);
+            enqueue(currentDistance, index);
         }
     };
 
@@ -484,7 +473,7 @@ void solveWinningOutcomeMtd(
             material[static_cast<size_t>(index)] = static_cast<uint8_t>(k);
             distance[static_cast<size_t>(index)] = 0;
             hasCandidate[static_cast<size_t>(index)] = 1;
-            buckets[0].push_back(checkedMtdQueueIndex(index));
+            enqueue(0, index);
             continue;
         }
 
@@ -527,7 +516,7 @@ void solveWinningOutcomeMtd(
         }
         if (pos.side == winner) {
             if (hasKnownChild) {
-                schedule(index, knownDistance, knownMaterial);
+                schedule(index, pos.side, knownDistance, knownMaterial);
             }
         } else {
             if (unresolvedSameLayerChildren > std::numeric_limits<uint8_t>::max()) {
@@ -542,6 +531,7 @@ void solveWinningOutcomeMtd(
             if (unresolvedSameLayerChildren == 0) {
                 schedule(
                     index,
+                    pos.side,
                     hasKnownChild ? knownDistance : MtdSaturatedDistance,
                     hasKnownChild ? knownMaterial : static_cast<uint8_t>(k),
                     true);
@@ -553,6 +543,9 @@ void solveWinningOutcomeMtd(
         std::vector<uint32_t>& bucket = buckets[bucketIndex];
         for (size_t head = 0; head < bucket.size(); ++head) {
             const uint32_t childIndex = bucket[head];
+            if (pendingQueueEntries > 0) {
+                --pendingQueueEntries;
+            }
             if (currentWdl.getUnchecked(childIndex) != outcome ||
                 finalized[static_cast<size_t>(childIndex)] != 0 ||
                 distance[static_cast<size_t>(childIndex)] != bucketIndex) {
@@ -576,7 +569,7 @@ void solveWinningOutcomeMtd(
                     continue;
                 }
                 if (parentSide == winner) {
-                    schedule(parentIndex, candidateDistance, candidateMaterial);
+                    schedule(parentIndex, parentSide, candidateDistance, candidateMaterial);
                 } else {
                     uint8_t& unresolved = loserUnresolved[static_cast<size_t>(parentIndex)];
                     if (unresolved == 0) {
@@ -595,6 +588,7 @@ void solveWinningOutcomeMtd(
                     if (unresolved == 0) {
                         schedule(
                             parentIndex,
+                            parentSide,
                             distance[static_cast<size_t>(parentIndex)],
                             material[static_cast<size_t>(parentIndex)],
                             true);
@@ -621,7 +615,6 @@ void solveWinningOutcomeMtd(
 uint64_t estimateMtdMemoryBytes(int soldierCount, uint64_t stateCount, const PackedMtdTable12* lowerMtd) {
     uint64_t total = stateCount * 2u;  // material + distance working arrays
     total += denseResultPayloadBytes(stateCount, DenseResultEncoding::Packed2Bit);
-    total += mtdPayloadBytes(stateCount);
     if (soldierCount >= MinSoldiersForSoldierSurvival) {
         total += stateCount * 3u;  // threshold truth, soldier remaining, and queue scratch headroom
         total += stateCount * sizeof(uint32_t);
@@ -712,23 +705,15 @@ void writeMtdStatsJson(const MtdLayerSolveResult& result) {
     std::filesystem::rename(tempPath, result.statsPath);
 }
 
-void fillStatsFromTable(MtdLayerSolveResult& result, const PackedMtdTable12& table) {
+void fillStatsFromWriteStats(MtdLayerSolveResult& result, const MtdLayerWriteStats& stats) {
     result.materialTargetCounts.fill(0);
     result.cannonMaxCapturesCounts.fill(0);
     result.distanceCounts.fill(0);
-    result.maxExactDistance = 0;
-    result.saturatedDistanceCount = 0;
-    for (uint64_t index = 0; index < table.size(); ++index) {
-        const MtdEntry entry = table.getUnchecked(index);
-        ++result.materialTargetCounts[entry.materialTarget];
-        ++result.cannonMaxCapturesCounts[static_cast<size_t>(result.soldierCount - entry.materialTarget)];
-        ++result.distanceCounts[entry.guaranteeDistance];
-        if (entry.guaranteeDistance == MtdSaturatedDistance) {
-            ++result.saturatedDistanceCount;
-        } else {
-            result.maxExactDistance = std::max(result.maxExactDistance, entry.guaranteeDistance);
-        }
-    }
+    result.materialTargetCounts = stats.materialTargetCounts;
+    result.cannonMaxCapturesCounts = stats.cannonMaxCapturesCounts;
+    result.distanceCounts = stats.distanceCounts;
+    result.maxExactDistance = stats.maxExactDistance;
+    result.saturatedDistanceCount = stats.saturatedDistanceCount;
 }
 
 void validateWdlLayer(const std::filesystem::path& wdlDir, int soldierCount) {
@@ -898,6 +883,88 @@ void saveMtdTable(
     }
 }
 
+MtdLayerWriteStats writeMtdTableFromArrays(
+    const std::filesystem::path& path,
+    int soldierCount,
+    const std::vector<uint8_t>& material,
+    const std::vector<uint8_t>& distance,
+    uint64_t rulesetHash) {
+    requireLayer(soldierCount);
+    const uint64_t stateCount = denseStateCount(soldierCount);
+    if (stateCount > static_cast<uint64_t>(std::numeric_limits<size_t>::max())) {
+        throw std::overflow_error("MTD layer is too large for this platform");
+    }
+    if (material.size() != static_cast<size_t>(stateCount) || distance.size() != static_cast<size_t>(stateCount)) {
+        throw std::invalid_argument("MTD material/distance arrays do not match soldier-count layer size");
+    }
+
+    const std::filesystem::path parent = path.parent_path();
+    if (!parent.empty()) {
+        std::filesystem::create_directories(parent);
+    }
+    std::ofstream output(path, std::ios::binary);
+    if (!output) {
+        throw std::runtime_error("failed to open .s15mtd for writing: " + path.string());
+    }
+
+    const uint64_t payloadBytes = mtdPayloadBytes(stateCount);
+    writeMtdHeader(output, MtdFileInfo{
+        MtdVersion,
+        rulesetHash,
+        soldierCount,
+        stateCount,
+        MtdEncoding::Packed12Material4Distance8,
+        payloadBytes,
+        0,
+    });
+
+    MtdLayerWriteStats stats;
+    stats.stateCount = stateCount;
+    stats.outputBytes = MtdHeaderBytes + payloadBytes;
+
+    const auto entryAt = [&](uint64_t index) {
+        const uint8_t materialTarget = material[static_cast<size_t>(index)];
+        const uint8_t guaranteeDistance = distance[static_cast<size_t>(index)];
+        if (materialTarget == UnassignedMaterial) {
+            throw std::runtime_error("MTD writer found unassigned material target");
+        }
+        const MtdEntry entry{materialTarget, guaranteeDistance};
+        validateEntryForLayer(entry, soldierCount);
+        ++stats.materialTargetCounts[entry.materialTarget];
+        ++stats.cannonMaxCapturesCounts[static_cast<size_t>(soldierCount - entry.materialTarget)];
+        ++stats.distanceCounts[entry.guaranteeDistance];
+        if (entry.guaranteeDistance == MtdSaturatedDistance) {
+            ++stats.saturatedDistanceCount;
+        } else {
+            stats.maxExactDistance = std::max(stats.maxExactDistance, entry.guaranteeDistance);
+        }
+        return entry;
+    };
+
+    for (uint64_t index = 0; index < stateCount; index += 2u) {
+        const uint16_t first = encodeMtdEntry(entryAt(index));
+        if (index + 1u == stateCount) {
+            writeU8(output, static_cast<uint8_t>(first & 0xffu));
+            writeU8(output, static_cast<uint8_t>((first >> 8u) & 0x0fu));
+            break;
+        }
+        const uint16_t second = encodeMtdEntry(entryAt(index + 1u));
+        writeU8(output, static_cast<uint8_t>(first & 0xffu));
+        writeU8(output, static_cast<uint8_t>(((first >> 8u) & 0x0fu) | ((second & 0x0fu) << 4u)));
+        writeU8(output, static_cast<uint8_t>((second >> 4u) & 0xffu));
+    }
+    if (!output) {
+        throw std::runtime_error("failed to write .s15mtd payload: " + path.string());
+    }
+    output.close();
+    if (!output) {
+        throw std::runtime_error("failed to close .s15mtd: " + path.string());
+    }
+    const MtdFileInfo info = validateMtdHeaderOnly(path, rulesetHash, soldierCount);
+    stats.outputBytes = info.fileSize;
+    return stats;
+}
+
 PackedMtdTable12 loadMtdTable(
     const std::filesystem::path& path,
     uint64_t expectedRulesetHash,
@@ -912,7 +979,7 @@ PackedMtdTable12 loadMtdTable(
     rejectTrailingBytes(input);
     PackedMtdTable12 table(info.stateCount);
     table.mutablePayload() = std::move(payload);
-    validatePayload(table, info.soldierCount);
+    validateMtdPayload(table, info.soldierCount);
     return table;
 }
 
@@ -931,14 +998,45 @@ MtdFileInfo inspectMtdFile(const std::filesystem::path& path) {
     return info;
 }
 
-MtdFileInfo validateMtdFile(
+MtdFileInfo validateMtdHeaderOnly(
     const std::filesystem::path& path,
     uint64_t expectedRulesetHash,
     int expectedSoldierCount) {
     MtdFileInfo info = inspectMtdFile(path);
     validateExpectations(info, expectedRulesetHash, expectedSoldierCount);
+    return info;
+}
+
+void validateMtdPayload(const PackedMtdTable12& table, int soldierCount) {
+    requireLayer(soldierCount);
+    if (table.size() != denseStateCount(soldierCount)) {
+        throw std::runtime_error(".s15mtd payload state count does not match soldier-count layer");
+    }
+    for (uint64_t index = 0; index < table.size(); ++index) {
+        validateEntryForLayer(table.getUnchecked(index), soldierCount);
+    }
+    if (table.size() % 2u == 1u && !table.payload().empty()) {
+        const uint8_t unusedNibble = static_cast<uint8_t>((table.payload().back() >> 4u) & 0x0fu);
+        if (unusedNibble != 0) {
+            throw std::runtime_error(".s15mtd packed payload has non-zero unused odd-entry bits");
+        }
+    }
+}
+
+MtdFileInfo validateMtdFileFull(
+    const std::filesystem::path& path,
+    uint64_t expectedRulesetHash,
+    int expectedSoldierCount) {
+    MtdFileInfo info = validateMtdHeaderOnly(path, expectedRulesetHash, expectedSoldierCount);
     (void)loadMtdTable(path, expectedRulesetHash, expectedSoldierCount);
     return info;
+}
+
+MtdFileInfo validateMtdFile(
+    const std::filesystem::path& path,
+    uint64_t expectedRulesetHash,
+    int expectedSoldierCount) {
+    return validateMtdFileFull(path, expectedRulesetHash, expectedSoldierCount);
 }
 
 MtdInspectStats inspectMtdTable(const std::filesystem::path& path) {
@@ -1018,7 +1116,7 @@ MtdLayerSolveResult solveMtdLayer(const MtdLayerSolveOptions& options) {
     validateWdlLayer(options.wdlDir, options.soldierCount);
     if (options.soldierCount >= MinSoldiersForSoldierSurvival) {
         validateWdlLayer(options.wdlDir, options.soldierCount - 1);
-        (void)validateMtdFile(mtdLayerPath(options.mtdDir, options.soldierCount - 1), StandardRulesetHash, options.soldierCount - 1);
+        (void)validateMtdHeaderOnly(mtdLayerPath(options.mtdDir, options.soldierCount - 1), StandardRulesetHash, options.soldierCount - 1);
     }
 
     const std::filesystem::path outputPath = mtdLayerPath(options.mtdDir, options.soldierCount);
@@ -1077,19 +1175,23 @@ MtdLayerSolveResult solveMtdLayer(const MtdLayerSolveOptions& options) {
             distance,
             queuePeak,
             winIterations);
+        std::vector<uint8_t> thresholdTrue(static_cast<size_t>(stateCount), 0);
+        std::vector<uint8_t> remaining(static_cast<size_t>(stateCount), 0);
+        std::vector<uint32_t> queue;
+        std::vector<uint32_t> predecessorIndices;
+        queue.reserve(1024);
+        predecessorIndices.reserve(32);
         for (int threshold = 0; threshold < k; ++threshold) {
-            std::vector<uint8_t> thresholdTrue(static_cast<size_t>(stateCount), 0);
+            std::fill(thresholdTrue.begin(), thresholdTrue.end(), uint8_t{0});
             for (uint64_t index = 0; index < stateCount; ++index) {
                 if (currentWdl.getUnchecked(index) == Outcome::Draw &&
                     material[static_cast<size_t>(index)] != UnassignedMaterial) {
                     thresholdTrue[static_cast<size_t>(index)] = 1;
                 }
             }
-            std::vector<uint8_t> remaining(static_cast<size_t>(stateCount), 0);
-            std::vector<uint32_t> queue;
-            std::vector<uint32_t> predecessorIndices;
+            std::fill(remaining.begin(), remaining.end(), uint8_t{0});
+            queue.clear();
             size_t queueHead = 0;
-            predecessorIndices.reserve(32);
 
             const auto markTrue = [&](uint64_t index) {
                 uint8_t& value = thresholdTrue[static_cast<size_t>(index)];
@@ -1237,19 +1339,25 @@ MtdLayerSolveResult solveMtdLayer(const MtdLayerSolveOptions& options) {
         std::array<std::vector<uint32_t>, 256> buckets;
         std::vector<uint32_t> predecessorIndices;
         predecessorIndices.reserve(32);
+        uint64_t pendingQueueEntries = 0;
 
-        const auto scheduleDistance = [&](uint64_t index, uint8_t candidate, bool forceEnqueue = false) {
+        const auto enqueueDistance = [&](uint8_t bucketIndex, uint64_t index) {
+            buckets[bucketIndex].push_back(checkedMtdQueueIndex(index));
+            ++pendingQueueEntries;
+            queuePeak = std::max(queuePeak, pendingQueueEntries);
+        };
+
+        const auto scheduleDistance = [&](uint64_t index, Side side, uint8_t candidate, bool forceEnqueue = false) {
             if (finalized[static_cast<size_t>(index)] != 0) {
                 return;
             }
             uint8_t& current = distance[static_cast<size_t>(index)];
-            const Position pos = positionFromDenseIndex(k, index);
             bool shouldSchedule = false;
             if (hasCandidate[static_cast<size_t>(index)] == 0) {
                 hasCandidate[static_cast<size_t>(index)] = 1;
                 current = candidate;
                 shouldSchedule = true;
-            } else if (pos.side == Side::Cannon) {
+            } else if (side == Side::Cannon) {
                 if (candidate < current) {
                     current = candidate;
                     shouldSchedule = true;
@@ -1263,12 +1371,7 @@ MtdLayerSolveResult solveMtdLayer(const MtdLayerSolveOptions& options) {
             if (!shouldSchedule && !forceEnqueue) {
                 return;
             }
-            buckets[current].push_back(checkedMtdQueueIndex(index));
-            uint64_t pending = 0;
-            for (const auto& bucket : buckets) {
-                pending += static_cast<uint64_t>(bucket.size());
-            }
-            queuePeak = std::max(queuePeak, pending);
+            enqueueDistance(current, index);
         };
 
         for (uint64_t index = 0; index < stateCount; ++index) {
@@ -1320,7 +1423,7 @@ MtdLayerSolveResult solveMtdLayer(const MtdLayerSolveOptions& options) {
             soldierUnresolved[static_cast<size_t>(index)] = static_cast<uint8_t>(unresolvedSameLayer);
             if (pos.side == Side::Cannon) {
                 if (hasKnownOptimal) {
-                    scheduleDistance(index, knownDistance);
+                    scheduleDistance(index, pos.side, knownDistance);
                 }
             } else {
                 if (hasKnownOptimal) {
@@ -1328,7 +1431,7 @@ MtdLayerSolveResult solveMtdLayer(const MtdLayerSolveOptions& options) {
                     hasCandidate[static_cast<size_t>(index)] = 1;
                 }
                 if (unresolvedSameLayer == 0) {
-                    scheduleDistance(index, hasKnownOptimal ? knownDistance : MtdSaturatedDistance, true);
+                    scheduleDistance(index, pos.side, hasKnownOptimal ? knownDistance : MtdSaturatedDistance, true);
                 }
             }
         }
@@ -1337,6 +1440,9 @@ MtdLayerSolveResult solveMtdLayer(const MtdLayerSolveOptions& options) {
             std::vector<uint32_t>& bucket = buckets[bucketIndex];
             for (size_t head = 0; head < bucket.size(); ++head) {
                 const uint32_t childIndex = bucket[head];
+                if (pendingQueueEntries > 0) {
+                    --pendingQueueEntries;
+                }
                 if (finalized[static_cast<size_t>(childIndex)] != 0 ||
                     currentWdl.getUnchecked(childIndex) != Outcome::Draw ||
                     distance[static_cast<size_t>(childIndex)] != bucketIndex) {
@@ -1360,7 +1466,7 @@ MtdLayerSolveResult solveMtdLayer(const MtdLayerSolveOptions& options) {
                         continue;
                     }
                     if (parentSide == Side::Cannon) {
-                        scheduleDistance(parentIndex, candidate);
+                        scheduleDistance(parentIndex, parentSide, candidate);
                     } else {
                         uint8_t& unresolved = soldierUnresolved[static_cast<size_t>(parentIndex)];
                         if (unresolved == 0) {
@@ -1375,7 +1481,7 @@ MtdLayerSolveResult solveMtdLayer(const MtdLayerSolveOptions& options) {
                         }
                         --unresolved;
                         if (unresolved == 0) {
-                            scheduleDistance(parentIndex, distance[static_cast<size_t>(parentIndex)], true);
+                            scheduleDistance(parentIndex, parentSide, distance[static_cast<size_t>(parentIndex)], true);
                         }
                     }
                 }
@@ -1396,17 +1502,11 @@ MtdLayerSolveResult solveMtdLayer(const MtdLayerSolveOptions& options) {
     }
     const auto distanceFinish = std::chrono::steady_clock::now();
 
-    PackedMtdTable12 table(stateCount);
-    for (uint64_t index = 0; index < stateCount; ++index) {
-        table.setUnchecked(index, MtdEntry{material[static_cast<size_t>(index)], distance[static_cast<size_t>(index)]});
-    }
-
     const std::filesystem::path tmpPath = outputPath.string() + ".tmp";
     if (std::filesystem::exists(tmpPath)) {
         std::filesystem::remove(tmpPath);
     }
-    saveMtdTable(table, k, tmpPath, StandardRulesetHash);
-    (void)validateMtdFile(tmpPath, StandardRulesetHash, k);
+    const MtdLayerWriteStats writeStats = writeMtdTableFromArrays(tmpPath, k, material, distance, StandardRulesetHash);
     if (std::filesystem::exists(outputPath)) {
         std::filesystem::remove(outputPath);
     }
@@ -1427,7 +1527,7 @@ MtdLayerSolveResult solveMtdLayer(const MtdLayerSolveOptions& options) {
     result.distanceIterations = distanceIterations + winIterations;
     result.materialIterations = materialIterations;
     countWdlOutcomes(currentWdl, result.outcomeCounts);
-    fillStatsFromTable(result, table);
+    fillStatsFromWriteStats(result, writeStats);
     if (options.writeStatsJson) {
         writeMtdStatsJson(result);
     }
@@ -1460,19 +1560,13 @@ MtdRangeSolveResult solveMtdRange(const MtdRangeSolveOptions& options) {
     for (int k = options.startLayer; k <= options.endLayer; ++k) {
         const std::filesystem::path outputPath = mtdLayerPath(options.mtdDir, k);
         if (options.resume && std::filesystem::exists(outputPath)) {
-            const MtdInspectStats stats = inspectMtdTable(outputPath);
-            validateExpectations(stats.info, StandardRulesetHash, k);
+            const MtdFileInfo info = validateMtdHeaderOnly(outputPath, StandardRulesetHash, k);
             MtdLayerSolveResult layer;
             layer.soldierCount = k;
-            layer.stateCount = stats.info.stateCount;
+            layer.stateCount = info.stateCount;
             layer.outputPath = outputPath;
             layer.statsPath = mtdLayerStatsPath(options.mtdDir, k);
-            layer.outputBytes = stats.info.fileSize;
-            layer.materialTargetCounts = stats.materialTargetCounts;
-            layer.cannonMaxCapturesCounts = stats.cannonMaxCapturesCounts;
-            layer.distanceCounts = stats.distanceCounts;
-            layer.maxExactDistance = stats.maxExactDistance;
-            layer.saturatedDistanceCount = stats.saturatedDistanceCount;
+            layer.outputBytes = info.fileSize;
             result.totalOutputBytes += layer.outputBytes;
             result.layers.push_back(layer);
             continue;

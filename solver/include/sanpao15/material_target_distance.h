@@ -64,6 +64,16 @@ struct MtdInspectStats {
     std::array<uint64_t, 256> distanceCounts{};
 };
 
+struct MtdLayerWriteStats {
+    uint64_t stateCount = 0;
+    uint64_t outputBytes = 0;
+    std::array<uint64_t, 16> materialTargetCounts{};
+    std::array<uint64_t, 16> cannonMaxCapturesCounts{};
+    std::array<uint64_t, 256> distanceCounts{};
+    uint8_t maxExactDistance = 0;
+    uint64_t saturatedDistanceCount = 0;
+};
+
 struct MtdLayerSolveResult {
     int soldierCount = 0;
     uint64_t stateCount = 0;
@@ -174,11 +184,26 @@ void saveMtdTable(
     int soldierCount,
     const std::filesystem::path& path,
     uint64_t rulesetHash);
+MtdLayerWriteStats writeMtdTableFromArrays(
+    const std::filesystem::path& path,
+    int soldierCount,
+    const std::vector<uint8_t>& material,
+    const std::vector<uint8_t>& distance,
+    uint64_t rulesetHash);
 PackedMtdTable12 loadMtdTable(
     const std::filesystem::path& path,
     uint64_t expectedRulesetHash,
     int expectedSoldierCount);
 MtdFileInfo inspectMtdFile(const std::filesystem::path& path);
+MtdFileInfo validateMtdHeaderOnly(
+    const std::filesystem::path& path,
+    uint64_t expectedRulesetHash,
+    int expectedSoldierCount = -1);
+void validateMtdPayload(const PackedMtdTable12& table, int soldierCount);
+MtdFileInfo validateMtdFileFull(
+    const std::filesystem::path& path,
+    uint64_t expectedRulesetHash,
+    int expectedSoldierCount = -1);
 MtdFileInfo validateMtdFile(
     const std::filesystem::path& path,
     uint64_t expectedRulesetHash,

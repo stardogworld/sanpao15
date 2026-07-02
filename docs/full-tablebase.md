@@ -155,7 +155,11 @@ Do not commit generated `.s15res` files.
 Do not commit generated `.s15mtd` files either. They use dense index order like
 `.s15res`, but store 12-bit entries containing `materialTarget` and
 `guaranteeDistance`. Header version 2 is outcome-aware; obsolete version 1
-prototype files are rejected by current readers.
+prototype files are rejected by current readers. MTD resume uses header-only
+validation for existing `.s15mtd` files; use `--verify-mtd-layer` when full
+payload and semantic verification is required. The MTD solve path streams
+packed12 output from material/distance arrays instead of keeping a second
+current-layer packed table resident in memory.
 
 `inspect-res` reads only the header and file size. `validate-res` additionally
 scans the payload and rejects invalid byte-encoded outcomes. Packed 2-bit

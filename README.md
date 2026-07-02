@@ -419,3 +419,7 @@ ui/      TypeScript + HTML + CSS playable interface
 tests/   C++ unit tests
 docs/    rules, solver notes, table/external formats, roadmap
 ```
+
+## MTD Validation And Production Notes
+
+`.s15mtd` files use outcome-aware version 2 semantics. Version 1 prototype files are rejected. `--solve-mtd-range --resume` validates existing MTD layers with header-only checks so resume does not accidentally scan multi-GiB payloads; run `--verify-mtd-layer` for full payload and WDL-preserving semantic verification. The MTD solve path streams packed12 output from solved material/distance arrays, reducing peak memory by avoiding a second resident current-layer packed table. Large MTD production runs require a 64-bit build.
