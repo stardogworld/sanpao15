@@ -59,7 +59,8 @@
 - Split MTD validation into header-only and full-payload paths; range resume now skips existing `.s15mtd` layers with header-only validation, while `--verify-mtd-layer` remains the full semantic check.
 - Stream MTD packed12 output from material/distance arrays, avoiding a second resident current-layer `PackedMtdTable12`, and keep the single-threaded queue accounting O(1).
 - Add `--threads N` for MTD solve, range solve, verify, and inspect. The threaded pass parallelizes safe scans and initialization scans while keeping predecessor/worklist propagation single-threaded and requiring byte-identical output versus `--threads 1`.
-- Optimize MTD Draw material hot paths by merging WDL solved/outcome scans, skipping empty outcome phases, starting Draw thresholds at soldier count 4, replacing per-threshold truth copies with stamps, releasing merged thread-local buckets, and block-buffering packed12 writes.
+- Optimize MTD Draw material hot paths by merging WDL solved/outcome scans, skipping empty outcome phases, starting Draw thresholds at soldier count 4, replacing per-threshold truth copies with compact reachability flags, releasing merged thread-local buckets, and block-buffering packed12 writes.
+- Reduce MTD solver working memory with dense bitset flags and `uint8_t` distance values plus solved bits, preserving `.s15mtd` version 2 payload semantics where `255` means saturated rather than unsolved.
 - Query local dense `.s15res` files from the UI by random-reading only target outcome bytes.
 - Serve the UI from a read-only local C++ backend with automatic `/api/status` detection, backend random-read `.s15res` lookup, and browser file picker fallback.
 - Explore one deterministic WDL-only line with `--explore-tablebase --max-plies`, JSON output, cycle detection, and random `.s15res` reads.

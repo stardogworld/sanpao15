@@ -158,9 +158,11 @@ Do not commit generated `.s15mtd` files either. They use dense index order like
 prototype files are rejected by current readers. MTD resume uses header-only
 validation for existing `.s15mtd` files; use `--verify-mtd-layer` when full
 payload and semantic verification is required. The MTD solve path streams
-packed12 output from material/distance arrays instead of keeping a second
+packed12 output from material/distance work arrays instead of keeping a second
 current-layer packed table resident in memory, and the writer buffers packed12
-payload bytes in blocks without changing the `.s15mtd` format.
+payload bytes in blocks without changing the `.s15mtd` format. Internally, MTD
+distance scratch is `uint8_t` plus a solved bitset, so solved saturated `255`
+stays legal and unsolved is not encoded in the byte value.
 
 MTD solve, range solve, verify, and inspect accept `--threads N`. `--threads 1`
 is the deterministic baseline, `--threads 0` resolves to hardware concurrency,
@@ -173,8 +175,10 @@ threaded output against `--threads 1` with SHA256 before trusting a new range.
 
 Draw material thresholds begin at soldier count `4`, matching the ruleset
 terminal condition where `soldierCount < 4` is already `CannonWin`. The
-threshold attractor uses stamps for same-layer reachability instead of copying
-already assigned material states each round.
+threshold attractor uses a per-threshold bitset for same-layer reachability
+instead of copying already assigned material states each round. MTD
+`finalized` and `hasCandidate` flags are bitsets; unresolved child counters
+remain byte counters with overflow checks.
 
 `inspect-res` reads only the header and file size. `validate-res` additionally
 scans the payload and rejects invalid byte-encoded outcomes. Packed 2-bit

@@ -30,7 +30,6 @@ constexpr uint32_t MtdVersion = 2;
 constexpr uint64_t MtdHeaderBytes = 44;
 constexpr size_t MtdWriteBlockBytes = 8u * 1024u * 1024u;
 constexpr uint8_t UnassignedMaterial = 0xffu;
-constexpr uint16_t UnsolvedDistance = 0x100u;
 
 void writeU8(std::ostream& output, uint8_t value) {
     output.put(static_cast<char>(value));
@@ -247,6 +246,14 @@ bool isTerminalForMtdOutcome(const DenseTerminalInfo& terminal, Outcome outcome)
     return terminal.terminal && terminal.outcome == outcome;
 }
 
+uint64_t denseBitsetBytesForBits(uint64_t bitCount) {
+    const uint64_t wordCount = bitCount / 64u + (bitCount % 64u == 0 ? 0u : 1u);
+    if (wordCount > std::numeric_limits<uint64_t>::max() / sizeof(uint64_t)) {
+        throw std::overflow_error("dense bitset byte size overflows uint64_t");
+    }
+    return wordCount * sizeof(uint64_t);
+}
+
 Outcome successorOutcomeFor(
     const DenseSuccessor& successor,
     const PackedOutcomeTable2Bit& currentWdl,
@@ -263,17 +270,10 @@ Outcome successorOutcomeFor(
 MtdEntry successorMtdFor(
     const DenseSuccessor& successor,
     const std::vector<uint8_t>& currentMaterial,
-    const std::vector<uint16_t>& currentDistance,
+    const MtdDistanceWork& currentDistance,
     const PackedMtdTable12* lowerMtd) {
     if (successor.kind == DenseSuccessorKind::SameLayer) {
-        const uint16_t distance = currentDistance[static_cast<size_t>(successor.toIndex)];
-        if (distance > MtdSaturatedDistance) {
-            throw std::logic_error("same-layer MTD successor distance is unsolved");
-        }
-        return MtdEntry{
-            currentMaterial[static_cast<size_t>(successor.toIndex)],
-            static_cast<uint8_t>(distance),
-        };
+        return mtdEntryFromWorkArrays(currentMaterial, currentDistance, successor.toIndex);
     }
     if (lowerMtd == nullptr) {
         throw std::logic_error("capture successor requires lower MTD layer");
@@ -305,8 +305,7 @@ bool thresholdChildTrue(
     const PackedOutcomeTable2Bit* lowerWdl,
     const PackedMtdTable12* lowerMtd,
     const std::vector<uint8_t>& currentMaterial,
-    const std::vector<uint8_t>& thresholdStamp,
-    uint8_t currentStamp,
+    const DenseBitset& thresholdNewTrue,
     int threshold) {
     const Outcome childOutcome = successorOutcomeFor(successor, currentWdl, lowerWdl);
     if (!wdlPreserving(currentOutcome, childOutcome)) {
@@ -319,7 +318,7 @@ bool thresholdChildTrue(
         return lowerMtd->getUnchecked(successor.toIndex).materialTarget <= threshold;
     }
     return currentMaterial[static_cast<size_t>(successor.toIndex)] != UnassignedMaterial ||
-        thresholdStamp[static_cast<size_t>(successor.toIndex)] == currentStamp;
+        thresholdNewTrue.getUnchecked(successor.toIndex);
 }
 
 uint8_t computeDistanceForState(
@@ -331,7 +330,7 @@ uint8_t computeDistanceForState(
     const PackedOutcomeTable2Bit* lowerWdl,
     const PackedMtdTable12* lowerMtd,
     const std::vector<uint8_t>& currentMaterial,
-    const std::vector<uint16_t>& currentDistance,
+    const MtdDistanceWork& currentDistance,
     std::vector<DenseSuccessor>& successors) {
     if (materialTarget == soldierCount) {
         return 0;
@@ -373,15 +372,15 @@ void solveWinningOutcomeMtd(
     const PackedOutcomeTable2Bit* lowerWdl,
     const PackedMtdTable12* lowerMtd,
     std::vector<uint8_t>& material,
-    std::vector<uint16_t>& distance,
+    MtdDistanceWork& distance,
     uint64_t& queuePeak,
     uint64_t& iterations,
     uint32_t threads) {
     const uint64_t stateCount = denseStateCount(k);
     const uint32_t effectiveThreads = normalizeThreadCount(threads, stateCount);
     const Side winner = winnerForOutcome(outcome);
-    std::vector<uint8_t> finalized(static_cast<size_t>(stateCount), 0);
-    std::vector<uint8_t> hasCandidate(static_cast<size_t>(stateCount), 0);
+    DenseBitset finalized(stateCount);
+    DenseBitset hasCandidate(stateCount);
     std::vector<uint8_t> loserUnresolved(static_cast<size_t>(stateCount), 0);
     std::array<std::vector<uint32_t>, 256> buckets;
     std::vector<uint32_t> predecessorIndices;
@@ -395,39 +394,40 @@ void solveWinningOutcomeMtd(
     };
 
     const auto schedule = [&](uint64_t index, Side side, uint8_t candidateDistance, uint8_t candidateMaterial, bool forceEnqueue = false) {
-        if (finalized[static_cast<size_t>(index)] != 0) {
+        if (finalized.getUnchecked(index)) {
             return;
         }
-        uint16_t& currentDistance = distance[static_cast<size_t>(index)];
         uint8_t& currentMaterial = material[static_cast<size_t>(index)];
         const bool winnerToMove = side == winner;
         bool shouldSchedule = false;
-        if (hasCandidate[static_cast<size_t>(index)] == 0) {
-            hasCandidate[static_cast<size_t>(index)] = 1;
-            currentDistance = candidateDistance;
+        if (!hasCandidate.getUnchecked(index)) {
+            hasCandidate.setUnchecked(index);
+            distance.setUnchecked(index, candidateDistance);
             currentMaterial = candidateMaterial;
             shouldSchedule = true;
         } else if (winnerToMove) {
+            const uint8_t currentDistance = distance.getUnchecked(index);
             if (candidateDistance < currentDistance ||
                 (candidateDistance == currentDistance &&
                  ((winner == Side::Cannon && candidateMaterial < currentMaterial) ||
                   (winner == Side::Soldier && candidateMaterial > currentMaterial)))) {
-                currentDistance = candidateDistance;
+                distance.setUnchecked(index, candidateDistance);
                 currentMaterial = candidateMaterial;
                 shouldSchedule = true;
             }
         } else {
+            const uint8_t currentDistance = distance.getUnchecked(index);
             if (candidateDistance > currentDistance ||
                 (candidateDistance == currentDistance &&
                  ((winner == Side::Cannon && candidateMaterial > currentMaterial) ||
                   (winner == Side::Soldier && candidateMaterial < currentMaterial)))) {
-                currentDistance = candidateDistance;
+                distance.setUnchecked(index, candidateDistance);
                 currentMaterial = candidateMaterial;
                 shouldSchedule = true;
             }
         }
         if (shouldSchedule || forceEnqueue) {
-            enqueue(static_cast<uint8_t>(currentDistance), index);
+            enqueue(distance.getUnchecked(index), index);
         }
     };
 
@@ -445,14 +445,13 @@ void solveWinningOutcomeMtd(
                 continue;
             }
             material[static_cast<size_t>(index)] = static_cast<uint8_t>(k);
-            distance[static_cast<size_t>(index)] = UnsolvedDistance;
             const Position pos = positionFromDenseIndex(k, index);
             generateDenseSuccessorsFromPosition(k, index, pos, successors);
             const DenseTerminalInfo terminal = terminalOutcomeForPositionWithSuccessors(pos, successors);
             if (isTerminalForMtdOutcome(terminal, outcome)) {
                 material[static_cast<size_t>(index)] = static_cast<uint8_t>(k);
-                distance[static_cast<size_t>(index)] = 0;
-                hasCandidate[static_cast<size_t>(index)] = 1;
+                distance.setUncheckedAtomic(index, 0);
+                hasCandidate.setUncheckedAtomic(index);
                 enqueueInitial(0, index);
                 continue;
             }
@@ -496,8 +495,8 @@ void solveWinningOutcomeMtd(
             }
             if (pos.side == winner) {
                 if (hasKnownChild) {
-                    hasCandidate[static_cast<size_t>(index)] = 1;
-                    distance[static_cast<size_t>(index)] = knownDistance;
+                    hasCandidate.setUncheckedAtomic(index);
+                    distance.setUncheckedAtomic(index, knownDistance);
                     material[static_cast<size_t>(index)] = knownMaterial;
                     enqueueInitial(knownDistance, index);
                 }
@@ -509,14 +508,14 @@ void solveWinningOutcomeMtd(
             loserUnresolved[static_cast<size_t>(index)] = static_cast<uint8_t>(unresolvedSameLayerChildren);
             if (hasKnownChild) {
                 material[static_cast<size_t>(index)] = knownMaterial;
-                distance[static_cast<size_t>(index)] = knownDistance;
-                hasCandidate[static_cast<size_t>(index)] = 1;
+                distance.setUncheckedAtomic(index, knownDistance);
+                hasCandidate.setUncheckedAtomic(index);
             }
             if (unresolvedSameLayerChildren == 0) {
                 const uint8_t seedDistance = hasKnownChild ? knownDistance : MtdSaturatedDistance;
                 material[static_cast<size_t>(index)] = hasKnownChild ? knownMaterial : static_cast<uint8_t>(k);
-                distance[static_cast<size_t>(index)] = seedDistance;
-                hasCandidate[static_cast<size_t>(index)] = 1;
+                distance.setUncheckedAtomic(index, seedDistance);
+                hasCandidate.setUncheckedAtomic(index);
                 enqueueInitial(seedDistance, index);
             }
         }
@@ -542,22 +541,24 @@ void solveWinningOutcomeMtd(
                 --pendingQueueEntries;
             }
             if (currentWdl.getUnchecked(childIndex) != outcome ||
-                finalized[static_cast<size_t>(childIndex)] != 0 ||
-                distance[static_cast<size_t>(childIndex)] != bucketIndex) {
+                finalized.getUnchecked(childIndex) ||
+                !distance.isSolvedUnchecked(childIndex) ||
+                distance.getUnchecked(childIndex) != bucketIndex) {
                 continue;
             }
-            finalized[static_cast<size_t>(childIndex)] = 1;
+            finalized.setUnchecked(childIndex);
             ++iterations;
 
             const Position child = positionFromDenseIndex(k, childIndex);
             const Outcome childOutcome = currentWdl.getUnchecked(childIndex);
             const Side parentSide = opposite(child.side);
-            const uint8_t candidateDistance = saturatedAdd1(static_cast<uint8_t>(distance[static_cast<size_t>(childIndex)]));
+            const uint8_t childDistance = distance.getUnchecked(childIndex);
+            const uint8_t candidateDistance = saturatedAdd1(childDistance);
             const uint8_t candidateMaterial = material[static_cast<size_t>(childIndex)];
             generateDensePredecessorIndicesFromPosition(k, childIndex, child, predecessorIndices);
             for (uint32_t parentIndex : predecessorIndices) {
                 if (currentWdl.getUnchecked(parentIndex) != outcome ||
-                    finalized[static_cast<size_t>(parentIndex)] != 0) {
+                    finalized.getUnchecked(parentIndex)) {
                     continue;
                 }
                 if (!wdlPreserving(currentWdl.getUnchecked(parentIndex), childOutcome)) {
@@ -570,13 +571,13 @@ void solveWinningOutcomeMtd(
                     if (unresolved == 0) {
                         continue;
                     }
-                    if (hasCandidate[static_cast<size_t>(parentIndex)] == 0 ||
-                        candidateDistance > distance[static_cast<size_t>(parentIndex)] ||
-                        (candidateDistance == distance[static_cast<size_t>(parentIndex)] &&
+                    if (!hasCandidate.getUnchecked(parentIndex) ||
+                        candidateDistance > distance.getUnchecked(parentIndex) ||
+                        (candidateDistance == distance.getUnchecked(parentIndex) &&
                          ((winner == Side::Cannon && candidateMaterial > material[static_cast<size_t>(parentIndex)]) ||
                           (winner == Side::Soldier && candidateMaterial < material[static_cast<size_t>(parentIndex)])))) {
-                        hasCandidate[static_cast<size_t>(parentIndex)] = 1;
-                        distance[static_cast<size_t>(parentIndex)] = candidateDistance;
+                        hasCandidate.setUnchecked(parentIndex);
+                        distance.setUnchecked(parentIndex, candidateDistance);
                         material[static_cast<size_t>(parentIndex)] = candidateMaterial;
                     }
                     --unresolved;
@@ -584,7 +585,7 @@ void solveWinningOutcomeMtd(
                         schedule(
                             parentIndex,
                             parentSide,
-                            distance[static_cast<size_t>(parentIndex)],
+                            distance.getUnchecked(parentIndex),
                             material[static_cast<size_t>(parentIndex)],
                             true);
                     }
@@ -599,8 +600,8 @@ void solveWinningOutcomeMtd(
 
     parallelForRanges(stateCount, effectiveThreads, [&](uint64_t begin, uint64_t end, uint32_t) {
         for (uint64_t index = begin; index < end; ++index) {
-            if (currentWdl.getUnchecked(index) == outcome && finalized[static_cast<size_t>(index)] == 0) {
-                distance[static_cast<size_t>(index)] = MtdSaturatedDistance;
+            if (currentWdl.getUnchecked(index) == outcome && !finalized.getUnchecked(index)) {
+                distance.setUncheckedAtomic(index, MtdSaturatedDistance);
                 if (material[static_cast<size_t>(index)] == UnassignedMaterial) {
                     material[static_cast<size_t>(index)] = static_cast<uint8_t>(k);
                 }
@@ -610,11 +611,16 @@ void solveWinningOutcomeMtd(
 }
 
 uint64_t estimateMtdMemoryBytes(int soldierCount, uint64_t stateCount, const PackedMtdTable12* lowerMtd) {
-    uint64_t total = stateCount * 3u;  // material + uint16 distance working arrays
-    total += denseResultPayloadBytes(stateCount, DenseResultEncoding::Packed2Bit);
+    const uint64_t bitsetBytes = denseBitsetBytesForBits(stateCount);
+    uint64_t total = 0;
+    total += stateCount;  // material targets
+    total += stateCount;  // uint8 distance values
+    total += bitsetBytes;  // distance solved bits
+    total += denseResultPayloadBytes(stateCount, DenseResultEncoding::Packed2Bit);  // current WDL
     if (soldierCount >= MinSoldiersForSoldierSurvival) {
-        total += stateCount * 3u;  // threshold truth, soldier remaining, and queue scratch headroom
-        total += stateCount * sizeof(uint32_t);
+        total += bitsetBytes * 5u;  // winning/draw finalized and candidate flags plus draw threshold bits
+        total += stateCount * 3u;  // loserUnresolved, remaining, soldierUnresolved byte counters
+        total += stateCount * sizeof(uint32_t);  // queue/bucket scratch headroom
     }
     if (soldierCount >= MinSoldiersForSoldierSurvival) {
         total += denseResultPayloadBytes(denseStateCount(soldierCount - 1), DenseResultEncoding::Packed2Bit);
@@ -783,6 +789,102 @@ uint64_t mtdDrawMaterialThresholdRounds(int soldierCount) {
         return 0;
     }
     return static_cast<uint64_t>(soldierCount - firstMtdDrawMaterialThreshold());
+}
+
+MtdEntry mtdEntryFromWorkArrays(
+    const std::vector<uint8_t>& material,
+    const MtdDistanceWork& distance,
+    uint64_t index) {
+    if (index >= static_cast<uint64_t>(material.size()) || index >= distance.size()) {
+        throw std::out_of_range("MTD work-array index out of range");
+    }
+    const uint8_t materialTarget = material[static_cast<size_t>(index)];
+    if (materialTarget == UnassignedMaterial) {
+        throw std::runtime_error("MTD work arrays contain unassigned material target");
+    }
+    if (!distance.isSolvedUnchecked(index)) {
+        throw std::logic_error("same-layer MTD successor distance is unsolved");
+    }
+    return MtdEntry{materialTarget, distance.getUnchecked(index)};
+}
+
+MtdDistanceWork::MtdDistanceWork(uint64_t stateCount) {
+    reset(stateCount);
+}
+
+void MtdDistanceWork::reset(uint64_t stateCount) {
+    if (stateCount > static_cast<uint64_t>(std::numeric_limits<size_t>::max())) {
+        throw std::overflow_error("MTD distance work array is too large for this platform");
+    }
+    values.assign(static_cast<size_t>(stateCount), MtdSaturatedDistance);
+    solved.reset(stateCount, false);
+}
+
+uint64_t MtdDistanceWork::size() const noexcept {
+    return static_cast<uint64_t>(values.size());
+}
+
+uint64_t MtdDistanceWork::bytes() const noexcept {
+    return static_cast<uint64_t>(values.size()) + solved.bytes();
+}
+
+bool MtdDistanceWork::isSolved(uint64_t index) const {
+    if (index >= size()) {
+        throw std::out_of_range("MTD distance index out of range");
+    }
+    return solved.getUnchecked(index);
+}
+
+bool MtdDistanceWork::isSolvedUnchecked(uint64_t index) const noexcept {
+    return solved.getUnchecked(index);
+}
+
+uint8_t MtdDistanceWork::get(uint64_t index) const {
+    if (index >= size()) {
+        throw std::out_of_range("MTD distance index out of range");
+    }
+    if (!solved.getUnchecked(index)) {
+        throw std::logic_error("MTD guarantee distance is unsolved");
+    }
+    return values[static_cast<size_t>(index)];
+}
+
+uint8_t MtdDistanceWork::getUnchecked(uint64_t index) const noexcept {
+    return values[static_cast<size_t>(index)];
+}
+
+void MtdDistanceWork::set(uint64_t index, uint8_t value) {
+    if (index >= size()) {
+        throw std::out_of_range("MTD distance index out of range");
+    }
+    setUnchecked(index, value);
+}
+
+void MtdDistanceWork::setUnchecked(uint64_t index, uint8_t value) noexcept {
+    values[static_cast<size_t>(index)] = value;
+    solved.setUnchecked(index);
+}
+
+void MtdDistanceWork::setUncheckedAtomic(uint64_t index, uint8_t value) noexcept {
+    values[static_cast<size_t>(index)] = value;
+    solved.setUncheckedAtomic(index);
+}
+
+void MtdDistanceWork::markUnsolved(uint64_t index) {
+    if (index >= size()) {
+        throw std::out_of_range("MTD distance index out of range");
+    }
+    markUnsolvedUnchecked(index);
+}
+
+void MtdDistanceWork::markUnsolvedUnchecked(uint64_t index) noexcept {
+    values[static_cast<size_t>(index)] = MtdSaturatedDistance;
+    solved.clearUnchecked(index);
+}
+
+void MtdDistanceWork::fillSolved(uint8_t value) {
+    std::fill(values.begin(), values.end(), value);
+    solved.fill(true);
 }
 
 MtdThresholdStampScratch::MtdThresholdStampScratch(uint64_t stateCount) {
@@ -985,14 +1087,14 @@ MtdLayerWriteStats writeMtdTableFromArrays(
     const std::filesystem::path& path,
     int soldierCount,
     const std::vector<uint8_t>& material,
-    const std::vector<uint16_t>& distance,
+    const MtdDistanceWork& distance,
     uint64_t rulesetHash) {
     requireLayer(soldierCount);
     const uint64_t stateCount = denseStateCount(soldierCount);
     if (stateCount > static_cast<uint64_t>(std::numeric_limits<size_t>::max())) {
         throw std::overflow_error("MTD layer is too large for this platform");
     }
-    if (material.size() != static_cast<size_t>(stateCount) || distance.size() != static_cast<size_t>(stateCount)) {
+    if (material.size() != static_cast<size_t>(stateCount) || distance.size() != stateCount) {
         throw std::invalid_argument("MTD material/distance arrays do not match soldier-count layer size");
     }
 
@@ -1021,15 +1123,14 @@ MtdLayerWriteStats writeMtdTableFromArrays(
     stats.outputBytes = MtdHeaderBytes + payloadBytes;
 
     const auto entryAt = [&](uint64_t index) {
-        const uint8_t materialTarget = material[static_cast<size_t>(index)];
-        const uint16_t storedDistance = distance[static_cast<size_t>(index)];
-        if (materialTarget == UnassignedMaterial) {
+        MtdEntry entry;
+        try {
+            entry = mtdEntryFromWorkArrays(material, distance, index);
+        } catch (const std::logic_error&) {
+            throw std::runtime_error("MTD writer found unsolved guarantee distance");
+        } catch (const std::runtime_error&) {
             throw std::runtime_error("MTD writer found unassigned material target");
         }
-        if (storedDistance > MtdSaturatedDistance) {
-            throw std::runtime_error("MTD writer found unsolved guarantee distance");
-        }
-        const MtdEntry entry{materialTarget, static_cast<uint8_t>(storedDistance)};
         validateEntryForLayer(entry, soldierCount);
         ++stats.materialTargetCounts[entry.materialTarget];
         ++stats.cannonMaxCapturesCounts[static_cast<size_t>(soldierCount - entry.materialTarget)];
@@ -1296,7 +1397,7 @@ MtdLayerSolveResult solveMtdLayer(const MtdLayerSolveOptions& options) {
     }
 
     std::vector<uint8_t> material(static_cast<size_t>(stateCount), UnassignedMaterial);
-    std::vector<uint16_t> distance(static_cast<size_t>(stateCount), UnsolvedDistance);
+    MtdDistanceWork distance(stateCount);
     std::vector<DenseSuccessor> successors;
     uint64_t queuePeak = 0;
 
@@ -1305,7 +1406,7 @@ MtdLayerSolveResult solveMtdLayer(const MtdLayerSolveOptions& options) {
     uint64_t winIterations = 0;
     if (k < MinSoldiersForSoldierSurvival) {
         std::fill(material.begin(), material.end(), static_cast<uint8_t>(k));
-        std::fill(distance.begin(), distance.end(), uint16_t{0});
+        distance.fillSolved(0);
     } else {
         if (currentScan.outcomeCounts[outcomeIndex(Outcome::CannonWin)] != 0) {
             solveWinningOutcomeMtd(
@@ -1333,7 +1434,7 @@ MtdLayerSolveResult solveMtdLayer(const MtdLayerSolveOptions& options) {
                 winIterations,
                 solveThreads);
         }
-        MtdThresholdStampScratch thresholdScratch(stateCount);
+        DenseBitset thresholdNewTrue(stateCount);
         std::vector<uint8_t> remaining(static_cast<size_t>(stateCount), 0);
         std::vector<uint32_t> queue;
         std::vector<uint32_t> predecessorIndices;
@@ -1342,7 +1443,7 @@ MtdLayerSolveResult solveMtdLayer(const MtdLayerSolveOptions& options) {
         if (currentScan.outcomeCounts[outcomeIndex(Outcome::Draw)] != 0) {
             const int firstDrawThreshold = MinSoldiersForSoldierSurvival;
             for (int threshold = firstDrawThreshold; threshold < k; ++threshold) {
-                thresholdScratch.nextRound();
+                thresholdNewTrue.fill(false);
                 std::fill(remaining.begin(), remaining.end(), uint8_t{0});
                 queue.clear();
                 size_t queueHead = 0;
@@ -1351,12 +1452,13 @@ MtdLayerSolveResult solveMtdLayer(const MtdLayerSolveOptions& options) {
                     return material[static_cast<size_t>(index)] != UnassignedMaterial;
                 };
                 const auto isThresholdTrue = [&](uint64_t index) {
-                    return thresholdScratch.isTrue(index, materialAssigned(index));
+                    return materialAssigned(index) || thresholdNewTrue.getUnchecked(index);
                 };
                 const auto markTrue = [&](uint64_t index) {
-                    if (!thresholdScratch.mark(index, materialAssigned(index))) {
+                    if (isThresholdTrue(index)) {
                         return;
                     }
+                    thresholdNewTrue.setUnchecked(index);
                     queue.push_back(checkedMtdQueueIndex(index));
                     queuePeak = std::max<uint64_t>(queuePeak, queue.size() - queueHead);
                 };
@@ -1407,8 +1509,7 @@ MtdLayerSolveResult solveMtdLayer(const MtdLayerSolveOptions& options) {
                                         lowerWdl.has_value() ? &*lowerWdl : nullptr,
                                         lowerMtd.has_value() ? &*lowerMtd : nullptr,
                                         material,
-                                        thresholdScratch.stamps(),
-                                        thresholdScratch.currentStamp(),
+                                        thresholdNewTrue,
                                         threshold)) {
                                     hasTrueChild = true;
                                     break;
@@ -1437,8 +1538,7 @@ MtdLayerSolveResult solveMtdLayer(const MtdLayerSolveOptions& options) {
                                     lowerWdl.has_value() ? &*lowerWdl : nullptr,
                                     lowerMtd.has_value() ? &*lowerMtd : nullptr,
                                     material,
-                                    thresholdScratch.stamps(),
-                                    thresholdScratch.currentStamp(),
+                                    thresholdNewTrue,
                                     threshold)) {
                                 ++falsePreservingChildren;
                             }
@@ -1455,7 +1555,8 @@ MtdLayerSolveResult solveMtdLayer(const MtdLayerSolveOptions& options) {
                 });
                 for (std::vector<uint32_t>& localQueue : initialQueues) {
                     for (uint32_t index : localQueue) {
-                        if (thresholdScratch.mark(index, materialAssigned(index))) {
+                        if (!materialAssigned(index) && !thresholdNewTrue.getUnchecked(index)) {
+                            thresholdNewTrue.setUnchecked(index);
                             queue.push_back(index);
                         }
                     }
@@ -1499,7 +1600,7 @@ MtdLayerSolveResult solveMtdLayer(const MtdLayerSolveOptions& options) {
                 parallelForRanges(stateCount, solveThreads, [&](uint64_t begin, uint64_t end, uint32_t) {
                     for (uint64_t index = begin; index < end; ++index) {
                         if (material[static_cast<size_t>(index)] == UnassignedMaterial &&
-                            thresholdScratch.stamps()[static_cast<size_t>(index)] == thresholdScratch.currentStamp()) {
+                            thresholdNewTrue.getUnchecked(index)) {
                             material[static_cast<size_t>(index)] = static_cast<uint8_t>(threshold);
                         }
                     }
@@ -1511,7 +1612,7 @@ MtdLayerSolveResult solveMtdLayer(const MtdLayerSolveOptions& options) {
                 if (currentWdl.getUnchecked(index) == Outcome::Draw &&
                     material[static_cast<size_t>(index)] == UnassignedMaterial) {
                     material[static_cast<size_t>(index)] = static_cast<uint8_t>(k);
-                    distance[static_cast<size_t>(index)] = 0;
+                    distance.setUncheckedAtomic(index, 0);
                 }
             }
         });
@@ -1522,8 +1623,8 @@ MtdLayerSolveResult solveMtdLayer(const MtdLayerSolveOptions& options) {
     uint64_t distanceIterations = 0;
     if (k >= MinSoldiersForSoldierSurvival &&
         currentScan.outcomeCounts[outcomeIndex(Outcome::Draw)] != 0) {
-        std::vector<uint8_t> finalized(static_cast<size_t>(stateCount), 0);
-        std::vector<uint8_t> hasCandidate(static_cast<size_t>(stateCount), 0);
+        DenseBitset finalized(stateCount);
+        DenseBitset hasCandidate(stateCount);
         std::vector<uint8_t> soldierUnresolved(static_cast<size_t>(stateCount), 0);
         std::array<std::vector<uint32_t>, 256> buckets;
         std::vector<uint32_t> predecessorIndices;
@@ -1537,30 +1638,31 @@ MtdLayerSolveResult solveMtdLayer(const MtdLayerSolveOptions& options) {
         };
 
         const auto scheduleDistance = [&](uint64_t index, Side side, uint8_t candidate, bool forceEnqueue = false) {
-            if (finalized[static_cast<size_t>(index)] != 0) {
+            if (finalized.getUnchecked(index)) {
                 return;
             }
-            uint16_t& current = distance[static_cast<size_t>(index)];
             bool shouldSchedule = false;
-            if (hasCandidate[static_cast<size_t>(index)] == 0) {
-                hasCandidate[static_cast<size_t>(index)] = 1;
-                current = candidate;
+            if (!hasCandidate.getUnchecked(index)) {
+                hasCandidate.setUnchecked(index);
+                distance.setUnchecked(index, candidate);
                 shouldSchedule = true;
             } else if (side == Side::Cannon) {
+                const uint8_t current = distance.getUnchecked(index);
                 if (candidate < current) {
-                    current = candidate;
+                    distance.setUnchecked(index, candidate);
                     shouldSchedule = true;
                 }
             } else {
+                const uint8_t current = distance.getUnchecked(index);
                 if (candidate > current) {
-                    current = candidate;
+                    distance.setUnchecked(index, candidate);
                     shouldSchedule = true;
                 }
             }
             if (!shouldSchedule && !forceEnqueue) {
                 return;
             }
-            enqueueDistance(static_cast<uint8_t>(current), index);
+            enqueueDistance(distance.getUnchecked(index), index);
         };
 
         using BucketSet = std::array<std::vector<uint32_t>, 256>;
@@ -1577,8 +1679,8 @@ MtdLayerSolveResult solveMtdLayer(const MtdLayerSolveOptions& options) {
                 }
                 const uint8_t target = material[static_cast<size_t>(index)];
                 if (target == k) {
-                    finalized[static_cast<size_t>(index)] = 1;
-                    distance[static_cast<size_t>(index)] = 0;
+                    finalized.setUncheckedAtomic(index);
+                    distance.setUncheckedAtomic(index, 0);
                     continue;
                 }
                 const Position pos = positionFromDenseIndex(k, index);
@@ -1622,20 +1724,20 @@ MtdLayerSolveResult solveMtdLayer(const MtdLayerSolveOptions& options) {
                 soldierUnresolved[static_cast<size_t>(index)] = static_cast<uint8_t>(unresolvedSameLayer);
                 if (pos.side == Side::Cannon) {
                     if (hasKnownOptimal) {
-                        distance[static_cast<size_t>(index)] = knownDistance;
-                        hasCandidate[static_cast<size_t>(index)] = 1;
+                        distance.setUncheckedAtomic(index, knownDistance);
+                        hasCandidate.setUncheckedAtomic(index);
                         enqueueInitialDistance(knownDistance, index);
                     }
                     continue;
                 }
                 if (hasKnownOptimal) {
-                    distance[static_cast<size_t>(index)] = knownDistance;
-                    hasCandidate[static_cast<size_t>(index)] = 1;
+                    distance.setUncheckedAtomic(index, knownDistance);
+                    hasCandidate.setUncheckedAtomic(index);
                 }
                 if (unresolvedSameLayer == 0) {
                     const uint8_t seedDistance = hasKnownOptimal ? knownDistance : MtdSaturatedDistance;
-                    distance[static_cast<size_t>(index)] = seedDistance;
-                    hasCandidate[static_cast<size_t>(index)] = 1;
+                    distance.setUncheckedAtomic(index, seedDistance);
+                    hasCandidate.setUncheckedAtomic(index);
                     enqueueInitialDistance(seedDistance, index);
                 }
             }
@@ -1660,12 +1762,13 @@ MtdLayerSolveResult solveMtdLayer(const MtdLayerSolveOptions& options) {
                 if (pendingQueueEntries > 0) {
                     --pendingQueueEntries;
                 }
-                if (finalized[static_cast<size_t>(childIndex)] != 0 ||
+                if (finalized.getUnchecked(childIndex) ||
                     currentWdl.getUnchecked(childIndex) != Outcome::Draw ||
-                    distance[static_cast<size_t>(childIndex)] != bucketIndex) {
+                    !distance.isSolvedUnchecked(childIndex) ||
+                    distance.getUnchecked(childIndex) != bucketIndex) {
                     continue;
                 }
-                finalized[static_cast<size_t>(childIndex)] = 1;
+                finalized.setUnchecked(childIndex);
                 ++distanceIterations;
 
                 const uint8_t childTarget = material[static_cast<size_t>(childIndex)];
@@ -1674,10 +1777,10 @@ MtdLayerSolveResult solveMtdLayer(const MtdLayerSolveOptions& options) {
                 }
                 const Position child = positionFromDenseIndex(k, childIndex);
                 const Side parentSide = opposite(child.side);
-                const uint8_t candidate = saturatedAdd1(static_cast<uint8_t>(distance[static_cast<size_t>(childIndex)]));
+                const uint8_t candidate = saturatedAdd1(distance.getUnchecked(childIndex));
                 generateDensePredecessorIndicesFromPosition(k, childIndex, child, predecessorIndices);
                 for (uint32_t parentIndex : predecessorIndices) {
-                    if (finalized[static_cast<size_t>(parentIndex)] != 0 ||
+                    if (finalized.getUnchecked(parentIndex) ||
                         currentWdl.getUnchecked(parentIndex) != Outcome::Draw ||
                         material[static_cast<size_t>(parentIndex)] != childTarget) {
                         continue;
@@ -1689,16 +1792,17 @@ MtdLayerSolveResult solveMtdLayer(const MtdLayerSolveOptions& options) {
                         if (unresolved == 0) {
                             continue;
                         }
-                        if (hasCandidate[static_cast<size_t>(parentIndex)] == 0) {
-                            hasCandidate[static_cast<size_t>(parentIndex)] = 1;
-                            distance[static_cast<size_t>(parentIndex)] = candidate;
+                        if (!hasCandidate.getUnchecked(parentIndex)) {
+                            hasCandidate.setUnchecked(parentIndex);
+                            distance.setUnchecked(parentIndex, candidate);
                         } else {
-                            distance[static_cast<size_t>(parentIndex)] =
-                                std::max<uint16_t>(distance[static_cast<size_t>(parentIndex)], candidate);
+                            distance.setUnchecked(
+                                parentIndex,
+                                std::max(distance.getUnchecked(parentIndex), candidate));
                         }
                         --unresolved;
                         if (unresolved == 0) {
-                            scheduleDistance(parentIndex, parentSide, distance[static_cast<size_t>(parentIndex)], true);
+                            scheduleDistance(parentIndex, parentSide, distance.getUnchecked(parentIndex), true);
                         }
                     }
                 }
@@ -1713,8 +1817,8 @@ MtdLayerSolveResult solveMtdLayer(const MtdLayerSolveOptions& options) {
             for (uint64_t index = begin; index < end; ++index) {
                 if (currentWdl.getUnchecked(index) == Outcome::Draw &&
                     material[static_cast<size_t>(index)] != k &&
-                    finalized[static_cast<size_t>(index)] == 0) {
-                    distance[static_cast<size_t>(index)] = MtdSaturatedDistance;
+                    !finalized.getUnchecked(index)) {
+                    distance.setUncheckedAtomic(index, MtdSaturatedDistance);
                 }
             }
         });

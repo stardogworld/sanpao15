@@ -154,10 +154,12 @@ MTD solve, range solve, verify, and inspect support `--threads N`. Use
 concurrency. The threaded pass parallelizes safe scans and initialization scans
 only; predecessor/worklist propagation remains single-threaded, and generated
 `.s15mtd` output should be byte-identical to the `--threads 1` result.
-The Draw material pass starts thresholds at soldier count 4, uses stamp
-membership instead of copying assigned states each threshold, skips empty WDL
-outcome phases, and block-buffers packed12 writes without changing MTD v2
-semantics or the `.s15mtd` format.
+The Draw material pass starts thresholds at soldier count 4, uses compact
+bitset membership instead of copying assigned states each threshold, skips empty
+WDL outcome phases, and block-buffers packed12 writes without changing MTD v2
+semantics or the `.s15mtd` format. MTD distance scratch is now `uint8_t`
+values plus solved bits: `255` remains solved saturated, while unsolved is not
+encoded in the byte value.
 
 Suggested workflow before a full solve:
 
@@ -433,4 +435,4 @@ docs/    rules, solver notes, table/external formats, roadmap
 
 ## MTD Validation And Production Notes
 
-`.s15mtd` files use outcome-aware version 2 semantics. Version 1 prototype files are rejected. `--solve-mtd-range --resume` validates existing MTD layers with header-only checks so resume does not accidentally scan multi-GiB payloads; run `--verify-mtd-layer` for full payload and WDL-preserving semantic verification. The MTD solve path streams packed12 output from solved material/distance arrays, reducing peak memory by avoiding a second resident current-layer packed table, and block-buffers payload writes without changing the file format. Draw material thresholds start at soldier count 4 because smaller soldier counts are already CannonWin. Large MTD production runs require a 64-bit build.
+`.s15mtd` files use outcome-aware version 2 semantics. Version 1 prototype files are rejected. `--solve-mtd-range --resume` validates existing MTD layers with header-only checks so resume does not accidentally scan multi-GiB payloads; run `--verify-mtd-layer` for full payload and WDL-preserving semantic verification. The MTD solve path streams packed12 output from solved material/distance work arrays, reducing peak memory by avoiding a second resident current-layer packed table, and block-buffers payload writes without changing the file format. Internal boolean flags use dense bitsets, and distance scratch uses `uint8_t` values plus solved bits so `255` remains saturated rather than unsolved. Draw material thresholds start at soldier count 4 because smaller soldier counts are already CannonWin. Large MTD production runs require a 64-bit build.

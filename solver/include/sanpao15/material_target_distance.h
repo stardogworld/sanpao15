@@ -7,6 +7,7 @@
 #include <string>
 #include <vector>
 
+#include "sanpao15/dense_bitset.h"
 #include "sanpao15/dense_table.h"
 #include "sanpao15/move.h"
 #include "sanpao15/position.h"
@@ -79,6 +80,27 @@ struct MtdWdlLayerScanSummary {
     std::array<uint64_t, 4> outcomeCounts{};
     bool hasUnknown = false;
     uint64_t firstUnknown = 0;
+};
+
+struct MtdDistanceWork {
+    std::vector<uint8_t> values;
+    DenseBitset solved;
+
+    explicit MtdDistanceWork(uint64_t stateCount = 0);
+
+    void reset(uint64_t stateCount);
+    uint64_t size() const noexcept;
+    uint64_t bytes() const noexcept;
+    bool isSolved(uint64_t index) const;
+    bool isSolvedUnchecked(uint64_t index) const noexcept;
+    uint8_t get(uint64_t index) const;
+    uint8_t getUnchecked(uint64_t index) const noexcept;
+    void set(uint64_t index, uint8_t value);
+    void setUnchecked(uint64_t index, uint8_t value) noexcept;
+    void setUncheckedAtomic(uint64_t index, uint8_t value) noexcept;
+    void markUnsolved(uint64_t index);
+    void markUnsolvedUnchecked(uint64_t index) noexcept;
+    void fillSolved(uint8_t value);
 };
 
 class MtdThresholdStampScratch {
@@ -206,6 +228,10 @@ uint8_t saturatedAdd1(uint8_t distance);
 uint64_t mtdPayloadBytes(uint64_t stateCount);
 int firstMtdDrawMaterialThreshold();
 uint64_t mtdDrawMaterialThresholdRounds(int soldierCount);
+MtdEntry mtdEntryFromWorkArrays(
+    const std::vector<uint8_t>& material,
+    const MtdDistanceWork& distance,
+    uint64_t index);
 MtdWdlLayerScanSummary scanSolvedWdlLayer(
     const PackedOutcomeTable2Bit& table,
     int soldierCount,
@@ -224,7 +250,7 @@ MtdLayerWriteStats writeMtdTableFromArrays(
     const std::filesystem::path& path,
     int soldierCount,
     const std::vector<uint8_t>& material,
-    const std::vector<uint16_t>& distance,
+    const MtdDistanceWork& distance,
     uint64_t rulesetHash);
 PackedMtdTable12 loadMtdTable(
     const std::filesystem::path& path,

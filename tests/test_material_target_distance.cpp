@@ -99,6 +99,49 @@ SANPAO15_TEST(mtdSolvedWdlScanCountsOutcomesAndRejectsUnknown) {
     }, "solved WDL scan should reject Unknown");
 }
 
+SANPAO15_TEST(mtdDistanceWorkTracksSolvedSeparatelyFromSaturatedValue) {
+    MtdDistanceWork distance(3);
+    SANPAO15_REQUIRE(distance.size() == 3);
+    SANPAO15_REQUIRE(distance.bytes() == 11);
+    SANPAO15_REQUIRE(!distance.isSolved(0));
+    sanpao15::test::requireThrows([&] {
+        (void)distance.get(0);
+    }, "unsolved MTD distance should throw");
+
+    distance.set(0, 7);
+    SANPAO15_REQUIRE(distance.isSolved(0));
+    SANPAO15_REQUIRE(distance.get(0) == 7);
+
+    distance.set(1, MtdSaturatedDistance);
+    SANPAO15_REQUIRE(distance.isSolved(1));
+    SANPAO15_REQUIRE(distance.get(1) == MtdSaturatedDistance);
+
+    distance.markUnsolved(1);
+    SANPAO15_REQUIRE(!distance.isSolved(1));
+    sanpao15::test::requireThrows([&] {
+        (void)distance.get(1);
+    }, "markUnsolved should clear solved bit");
+
+    distance.fillSolved(0);
+    SANPAO15_REQUIRE(distance.get(0) == 0);
+    SANPAO15_REQUIRE(distance.get(1) == 0);
+    SANPAO15_REQUIRE(distance.get(2) == 0);
+}
+
+SANPAO15_TEST(mtdWorkArrayEntryRejectsUnsolvedButAcceptsSaturated) {
+    std::vector<uint8_t> material{2, 2};
+    MtdDistanceWork distance(2);
+    distance.set(0, MtdSaturatedDistance);
+
+    const MtdEntry saturated = mtdEntryFromWorkArrays(material, distance, 0);
+    SANPAO15_REQUIRE(saturated.materialTarget == 2);
+    SANPAO15_REQUIRE(saturated.guaranteeDistance == MtdSaturatedDistance);
+
+    sanpao15::test::requireThrows([&] {
+        (void)mtdEntryFromWorkArrays(material, distance, 1);
+    }, "same-layer unsolved MTD work-array entry should throw");
+}
+
 SANPAO15_TEST(packedMtdTableSupportsOddStateCounts) {
     PackedMtdTable12 table(5);
     table.set(0, MtdEntry{0, 0});
@@ -215,9 +258,10 @@ SANPAO15_TEST(mtdStreamingWriterRoundtripAndStats) {
     const std::filesystem::path path = mtdLayerPath(dir, 0);
     const uint64_t stateCount = denseStateCount(0);
     std::vector<uint8_t> material(static_cast<size_t>(stateCount), 0);
-    std::vector<uint16_t> distance(static_cast<size_t>(stateCount), 0);
-    distance[0] = 7;
-    distance[1] = MtdSaturatedDistance;
+    MtdDistanceWork distance(stateCount);
+    distance.fillSolved(0);
+    distance.set(0, 7);
+    distance.set(1, MtdSaturatedDistance);
 
     const MtdLayerWriteStats stats = writeMtdTableFromArrays(path, 0, material, distance, StandardRulesetHash);
     SANPAO15_REQUIRE(stats.stateCount == stateCount);
@@ -244,10 +288,11 @@ SANPAO15_TEST(mtdArrayWriterIsByteIdenticalToPackedWriter) {
     table.set(stateCount - 1, MtdEntry{0, 11});
 
     std::vector<uint8_t> material(static_cast<size_t>(stateCount), 0);
-    std::vector<uint16_t> distance(static_cast<size_t>(stateCount), 0);
-    distance[0] = 7;
-    distance[1] = MtdSaturatedDistance;
-    distance[static_cast<size_t>(stateCount - 1)] = 11;
+    MtdDistanceWork distance(stateCount);
+    distance.fillSolved(0);
+    distance.set(0, 7);
+    distance.set(1, MtdSaturatedDistance);
+    distance.set(stateCount - 1, 11);
 
     saveMtdTable(table, 0, packedPath, StandardRulesetHash);
     const MtdLayerWriteStats stats = writeMtdTableFromArrays(arrayPath, 0, material, distance, StandardRulesetHash);
@@ -265,7 +310,8 @@ SANPAO15_TEST(mtdStreamingWriterRejectsUnassignedMaterial) {
     const std::filesystem::path path = mtdLayerPath(dir, 0);
     const uint64_t stateCount = denseStateCount(0);
     std::vector<uint8_t> material(static_cast<size_t>(stateCount), 0);
-    std::vector<uint16_t> distance(static_cast<size_t>(stateCount), 0);
+    MtdDistanceWork distance(stateCount);
+    distance.fillSolved(0);
     material[0] = 0xffu;
     sanpao15::test::requireThrows([&] {
         (void)writeMtdTableFromArrays(path, 0, material, distance, StandardRulesetHash);
@@ -278,8 +324,9 @@ SANPAO15_TEST(mtdStreamingWriterRejectsUnsolvedDistance) {
     const std::filesystem::path path = mtdLayerPath(dir, 0);
     const uint64_t stateCount = denseStateCount(0);
     std::vector<uint8_t> material(static_cast<size_t>(stateCount), 0);
-    std::vector<uint16_t> distance(static_cast<size_t>(stateCount), 0);
-    distance[0] = 256;
+    MtdDistanceWork distance(stateCount);
+    distance.fillSolved(0);
+    distance.markUnsolved(0);
     sanpao15::test::requireThrows([&] {
         (void)writeMtdTableFromArrays(path, 0, material, distance, StandardRulesetHash);
     }, "streaming MTD writer should reject unsolved distance");

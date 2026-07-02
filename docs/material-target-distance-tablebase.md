@@ -186,18 +186,22 @@ guaranteeDistance = 0
 ```
 
 The production solve path writes packed12 output directly from the solved
-material and distance arrays. It no longer constructs a second resident
+material and distance work arrays. It no longer constructs a second resident
 `PackedMtdTable12` for the current layer before writing, and it buffers payload
-bytes into write blocks without changing the `.s15mtd` format. The legacy
-`saveMtdTable(PackedMtdTable12, ...)` API remains for tests and small-table
-utilities.
+bytes into write blocks without changing the `.s15mtd` format. The distance
+work array is `uint8_t[stateCount]` plus a solved bitset: value `255` remains a
+legal solved saturated distance, while unsolved is represented only by the
+solved bit being false. The legacy `saveMtdTable(PackedMtdTable12, ...)` API
+remains for tests and small-table utilities.
 
 Draw material thresholds start at `MinSoldiersForSoldierSurvival` (`4`) because
 states below that soldier count are already `CannonWin`. The threshold
-attractor uses a stamp array: material-assigned Draw states are naturally true,
-and newly reached same-layer states are true only for the current threshold
-stamp. This removes per-threshold copies of assigned states and keeps MTD v2
-semantics unchanged.
+attractor uses a per-threshold bitset: material-assigned Draw states are
+naturally true, and newly reached same-layer states are true only in the
+current threshold bitset. The win and Draw distance `finalized`/`hasCandidate`
+flags also use dense bitsets, while the small unresolved counters remain
+`uint8_t` arrays with overflow checks. This keeps MTD v2 semantics and the
+`.s15mtd` file format unchanged.
 
 ## Threading
 
@@ -331,9 +335,13 @@ solver keeps public counts and byte sizes in `uint64_t`, keeps checked
 distance `255` as saturated `>=255`, not an exact ply count.
 
 Streaming packed12 output reduces peak memory by removing the current-layer
-packed output table. For the largest layer, `k=11`, this removes about
+packed output table. The low-memory data layout also replaces boolean byte
+arrays with bitsets and changes the internal distance scratch from
+`uint16_t[stateCount]` with sentinel `256` to `uint8_t[stateCount]` plus a
+solved bitset. For the largest layer, `k=11`, streaming removes about
 `mtdPayloadBytes(denseStateCount(11)) = 4,867,480,800` bytes, roughly
-`4.53 GiB`, from the solve-time resident set estimate.
+`4.53 GiB`, and the scratch layout removes additional per-state working bytes
+without changing payload encoding.
 
 The recommended next steps are:
 
