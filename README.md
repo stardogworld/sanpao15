@@ -356,6 +356,13 @@ fixed-position viewer. It has two board modes:
   piece to any square. Editing does not enforce move legality; the UI validates
   whether the resulting position is covered by the full tablebase.
 
+The board view can switch between `炮在下` and `兵在下`. The default is
+`炮在下`, matching the fixed square numbering where square 0 is the top-left
+cell and square 24 is the bottom-right cell. `兵在下` is a 180-degree display
+rotation only: notation, dense indexes, tablebase lookups, legal move text, and
+move coordinates still use the fixed 0..24 board coordinates. The UI remembers
+the last selected view in `localStorage` under `sanpao15.boardOrientation`.
+
 The position summary reports side to move, cannon count, soldier count,
 queryability, dense index, layer file, legal move count, and best-move count.
 The next-move card lists all best WDL moves for the current side, the side

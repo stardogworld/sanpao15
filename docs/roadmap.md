@@ -61,6 +61,7 @@
 - Polish the tablebase UI with board-first desktop/mobile layout, outcome/status badges, readable WDL line rows, feedback for invalid actions, and an Initial Position panel for the known Draw start and `22->12 captures 12` drawing move.
 - Localize the browser UI to Chinese, render self-created `炮` / `兵` SVG pieces, and fix board sizing so all 5x5 rows and columns remain equal on desktop and mobile.
 - Turn the browser UI into an arbitrary-position WDL analyzer with analysis/edit modes, free piece placement and deletion, side-to-move switching, queryability validation, next-move recommendations, side-to-move comparison, grouped legal moves, auto-query, and successor-outcome labels on board target squares.
+- Add a remembered board orientation toggle for `炮在下` / `兵在下`; the 180-degree rotation is display-only and keeps notation, dense indexes, lookups, and move coordinates on fixed 0..24 squares.
 - Document UI reference research and local asset policy; current UI piece SVGs are self-created.
 - Centralize the current ruleset as `sanpao15-min-four-soldiers`, where `soldierCount < 4` is immediate `CannonWin`.
 

@@ -246,6 +246,18 @@ h1 {
   color: var(--color-losing);
 }
 
+.square-index {
+  position: absolute;
+  z-index: 5;
+  top: 4px;
+  left: 5px;
+  color: rgb(31 40 36 / 62%);
+  font-size: 0.68rem;
+  font-weight: 900;
+  line-height: 1;
+  pointer-events: none;
+}
+
 .toolbar {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(132px, 1fr));
@@ -267,10 +279,21 @@ h1 {
   background: #345247;
 }
 
+.command-button.secondary {
+  border-color: var(--color-line);
+  background: var(--color-surface);
+  color: var(--color-text);
+}
+
+.command-button.secondary:hover {
+  background: #eef4f0;
+}
+
 .segmented-control,
 .editor-tools-copy {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   gap: 8px;
 }
 
@@ -294,6 +317,17 @@ h1 {
   border-color: #24342e;
   background: #24342e;
   color: #ffffff;
+}
+
+.control-label {
+  align-self: center;
+  color: var(--color-muted);
+  font-size: 0.82rem;
+  font-weight: 900;
+}
+
+.control-label:not(:first-child) {
+  margin-left: 4px;
 }
 
 .preset-select {
@@ -878,6 +912,27 @@ code,
   .command-button {
     min-height: 46px;
     padding: 0 10px;
+  }
+
+  .segmented-control,
+  .editor-tools-copy {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .control-label {
+    grid-column: 1 / -1;
+    margin-top: 4px;
+  }
+
+  .control-label:not(:first-child) {
+    margin-left: 0;
+  }
+
+  .segment,
+  .preset-select,
+  .segmented-control .command-button {
+    width: 100%;
   }
 
   .status-panel,

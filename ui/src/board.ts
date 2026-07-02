@@ -3,12 +3,15 @@ import { boardSize, movesEqual } from "./engine";
 import { classificationText, formatMove, outcomeText, zh } from "./i18n/zh";
 import type { Outcome } from "./engine";
 import type { MoveClassification } from "./tablebase/recommend";
+import { displayIndexToSquare, type BoardOrientation } from "./boardOrientation";
+export { displayIndexToSquare, squareToDisplayIndex, type BoardOrientation } from "./boardOrientation";
 
 const cannonPieceUrl = new URL("./assets/pieces/cannon.svg", import.meta.url).href;
 const soldierPieceUrl = new URL("./assets/pieces/soldier.svg", import.meta.url).href;
 
 export interface BoardRenderOptions {
   position: Position;
+  orientation: BoardOrientation;
   selectedSquare: number | null;
   legalMoves: Move[];
   editSelectedSquare?: number | null;
@@ -17,6 +20,7 @@ export interface BoardRenderOptions {
   lastMove?: Move | null;
   lineMove?: Move | null;
   spotlightMove?: Move | null;
+  showSquareLabels?: boolean;
   onSquareClick: (square: number) => void;
 }
 
@@ -46,15 +50,18 @@ function moveTouchesSquare(move: Move | null | undefined, square: number): boole
 
 export function renderBoard(container: HTMLElement, options: BoardRenderOptions): void {
   container.innerHTML = "";
+  container.dataset.orientation = options.orientation;
   const targetSquares = new Map(options.legalMoves.map((move) => [move.to, move]));
   const targetOutcomes = new Map((options.targetOutcomes ?? []).map((target) => [target.move.to, target]));
   const recommended = options.recommendedMoves ?? [];
 
-  for (let square = 0; square < boardSize * boardSize; square += 1) {
+  for (let displayIndex = 0; displayIndex < boardSize * boardSize; displayIndex += 1) {
+    const square = displayIndexToSquare(displayIndex, options.orientation);
     const button = document.createElement("button");
     button.type = "button";
     button.className = "square";
     button.dataset.square = String(square);
+    button.dataset.displayIndex = String(displayIndex);
     button.setAttribute("aria-label", `${pieceLabel(options.position, square)}，第 ${square} 格`);
 
     if (options.position.soldiers.has(square)) {
@@ -107,6 +114,13 @@ export function renderBoard(container: HTMLElement, options: BoardRenderOptions)
 
     if (moveTouchesSquare(options.spotlightMove, square)) {
       button.classList.add("spotlight-move");
+    }
+
+    if (options.showSquareLabels) {
+      const index = document.createElement("span");
+      index.className = "square-index";
+      index.textContent = String(square);
+      button.append(index);
     }
 
     button.addEventListener("click", () => options.onSquareClick(square));

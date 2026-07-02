@@ -1,4 +1,4 @@
-import { renderBoard, type TargetOutcomeLabel } from "./board";
+import { renderBoard, type BoardOrientation, type TargetOutcomeLabel } from "./board";
 import {
   applyMove,
   clonePosition,
@@ -67,11 +67,14 @@ interface HistoryEntry {
 const initialNotation = "SSSSS/SSSSS/SSSSS/...../.CCC. c";
 const drawingFirstMove: Move = { from: 22, to: 12, capture: true, capturedSquare: 12 };
 const analysisDebounceMs = 160;
+const boardOrientationStorageKey = "sanpao15.boardOrientation";
 
 export class Sanpao15App {
   private position: Position = initialPosition();
   private mode: BoardMode = "analysis";
   private editTool: BoardEditTool = "select";
+  private boardOrientation: BoardOrientation = loadBoardOrientation();
+  private showSquareLabels = false;
   private autoQuery = true;
   private selectedSquare: number | null = null;
   private editSelectedSquare: number | null = null;
@@ -333,16 +336,28 @@ export class Sanpao15App {
     button.type = "button";
     button.className = value === current ? "segment active" : "segment";
     button.textContent = label;
+    button.setAttribute("aria-pressed", value === current ? "true" : "false");
     button.addEventListener("click", () => onSelect(value));
     return button;
   }
 
   private renderModeControls(): void {
+    const modeLabel = textSpan("control-label", "模式");
+    const sideLabel = textSpan("control-label", "先走");
+    const orientationLabel = textSpan("control-label", "视角");
+    const squareLabelButton = this.makeButton(this.showSquareLabels ? "隐藏格号" : "显示格号", () => this.toggleSquareLabels());
+    squareLabelButton.classList.add("secondary");
     this.modeToggleEl.replaceChildren(
+      modeLabel,
       this.makeSegment("分析模式", "analysis", this.mode, (mode) => this.setMode(mode)),
       this.makeSegment("编辑模式", "edit", this.mode, (mode) => this.setMode(mode)),
+      sideLabel,
       this.sideToggleButton("炮方走", "cannon"),
       this.sideToggleButton("兵方走", "soldier"),
+      orientationLabel,
+      this.makeSegment("炮在下", "cannon-bottom", this.boardOrientation, (orientation) => this.setBoardOrientation(orientation)),
+      this.makeSegment("兵在下", "soldier-bottom", this.boardOrientation, (orientation) => this.setBoardOrientation(orientation)),
+      squareLabelButton,
     );
 
     const presetSelect = document.createElement("select");
@@ -405,6 +420,22 @@ export class Sanpao15App {
   private setEditTool(tool: BoardEditTool): void {
     this.editTool = tool;
     this.editSelectedSquare = null;
+    this.renderModeControls();
+    this.render();
+  }
+
+  private setBoardOrientation(orientation: BoardOrientation): void {
+    if (this.boardOrientation === orientation) return;
+    this.boardOrientation = orientation;
+    saveBoardOrientation(orientation);
+    this.showFeedback(orientation === "cannon-bottom" ? "已切换为炮在下视角。" : "已切换为兵在下视角。");
+    this.renderModeControls();
+    this.render();
+  }
+
+  private toggleSquareLabels(): void {
+    this.showSquareLabels = !this.showSquareLabels;
+    this.showFeedback(this.showSquareLabels ? "已显示真实格号。" : "已隐藏格号。");
     this.renderModeControls();
     this.render();
   }
@@ -1028,6 +1059,7 @@ export class Sanpao15App {
     this.updateTargetOutcomes();
     renderBoard(this.boardEl, {
       position: this.position,
+      orientation: this.boardOrientation,
       selectedSquare: this.selectedSquare,
       editSelectedSquare: this.editSelectedSquare,
       legalMoves: this.selectedMoves,
@@ -1036,6 +1068,7 @@ export class Sanpao15App {
       lastMove: this.lastMove,
       lineMove: this.currentLineMove(),
       spotlightMove: this.hoveredMove ?? this.spotlightMove,
+      showSquareLabels: this.showSquareLabels,
       onSquareClick: (square) => this.onSquareClick(square),
     });
 
@@ -1052,6 +1085,7 @@ export class Sanpao15App {
     this.headerStatusEl.replaceChildren(
       badge(zh.rulesetBadge, "neutral"),
       badge(this.mode === "analysis" ? "分析模式" : "编辑模式", this.mode === "analysis" ? "drawing" : "warning"),
+      badge(this.boardOrientation === "cannon-bottom" ? "炮在下" : "兵在下", "neutral"),
       this.currentSummary ? outcomeBadge(this.currentSummary.outcome) : badge(this.currentValidation.canQuery ? "待查询" : "不可查", this.currentValidation.canQuery ? "neutral" : "warning"),
       badge(this.tablebase ? zh.tablebase.loadedBadge(this.tablebaseStatus?.loadedLayers.length ?? 0) : zh.tablebase.notLoadedBadge, this.tablebase ? "drawing" : "warning"),
     );
@@ -1157,6 +1191,7 @@ export class Sanpao15App {
     for (const item of [
       ...zh.help,
       "编辑模式可以任意放炮、放兵、移动或删除棋子；表库查询仍要求正好 3 个炮、0..15 个兵。",
+      "视角切换只改变棋盘显示方向；局面代码、denseIndex、查表和着法编号仍使用固定 0..24 坐标。",
       "棋盘目标格上的小标签显示该着法后继的胜负和结果。",
     ]) {
       const li = document.createElement("li");
@@ -1164,6 +1199,23 @@ export class Sanpao15App {
       list.append(li);
     }
     this.helpEl.replaceChildren(list);
+  }
+}
+
+function loadBoardOrientation(): BoardOrientation {
+  try {
+    const stored = window.localStorage.getItem(boardOrientationStorageKey);
+    return stored === "soldier-bottom" || stored === "cannon-bottom" ? stored : "cannon-bottom";
+  } catch {
+    return "cannon-bottom";
+  }
+}
+
+function saveBoardOrientation(orientation: BoardOrientation): void {
+  try {
+    window.localStorage.setItem(boardOrientationStorageKey, orientation);
+  } catch {
+    // Private browsing or disabled storage should not block board rendering.
   }
 }
 

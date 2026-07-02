@@ -190,6 +190,12 @@ cannon-to-move versus soldier-to-move comparison, and successor-outcome labels
 on legal target squares. This remains WDL-only guidance and still performs
 random `.s15res` byte reads rather than loading full layers.
 
+The UI board can be viewed with `炮在下` or `兵在下`. The latter is implemented
+as a 180-degree render-order change (`displayIndex -> 24 - displayIndex`) while
+all game data remains in the fixed square coordinate system. Position notation,
+dense indexes, lookup requests, move text, target labels, edit actions, and line
+playback continue to use the real 0..24 square ids.
+
 For local desktop use, `--serve-ui` starts a read-only C++ HTTP backend and
 serves the static UI from `--ui-dir`:
 
