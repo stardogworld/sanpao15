@@ -1,6 +1,8 @@
 import type { Move, Position } from "./engine";
 import { boardSize, movesEqual } from "./engine";
-import { zh } from "./i18n/zh";
+import { classificationText, formatMove, outcomeText, zh } from "./i18n/zh";
+import type { Outcome } from "./engine";
+import type { MoveClassification } from "./tablebase/recommend";
 
 const cannonPieceUrl = new URL("./assets/pieces/cannon.svg", import.meta.url).href;
 const soldierPieceUrl = new URL("./assets/pieces/soldier.svg", import.meta.url).href;
@@ -9,11 +11,19 @@ export interface BoardRenderOptions {
   position: Position;
   selectedSquare: number | null;
   legalMoves: Move[];
+  editSelectedSquare?: number | null;
   recommendedMoves?: Move[];
+  targetOutcomes?: TargetOutcomeLabel[];
   lastMove?: Move | null;
   lineMove?: Move | null;
   spotlightMove?: Move | null;
   onSquareClick: (square: number) => void;
+}
+
+export interface TargetOutcomeLabel {
+  move: Move;
+  outcome: Outcome;
+  classification: MoveClassification;
 }
 
 function pieceLabel(position: Position, square: number): string {
@@ -37,6 +47,7 @@ function moveTouchesSquare(move: Move | null | undefined, square: number): boole
 export function renderBoard(container: HTMLElement, options: BoardRenderOptions): void {
   container.innerHTML = "";
   const targetSquares = new Map(options.legalMoves.map((move) => [move.to, move]));
+  const targetOutcomes = new Map((options.targetOutcomes ?? []).map((target) => [target.move.to, target]));
   const recommended = options.recommendedMoves ?? [];
 
   for (let square = 0; square < boardSize * boardSize; square += 1) {
@@ -57,20 +68,32 @@ export function renderBoard(container: HTMLElement, options: BoardRenderOptions)
       button.classList.add("empty");
     }
 
-    if (options.selectedSquare === square) {
+    if (options.selectedSquare === square || options.editSelectedSquare === square) {
       button.classList.add("selected");
     }
 
     const targetMove = targetSquares.get(square);
     if (targetMove) {
       button.classList.add(targetMove.capture ? "capture-target" : "move-target");
+      const labelInfo = targetOutcomes.get(square);
+      if (labelInfo) {
+        const label = document.createElement("span");
+        label.className = `target-outcome ${labelInfo.classification}`;
+        label.textContent = `${labelInfo.move.capture ? "吃 " : ""}${outcomeText(labelInfo.outcome)}`;
+        label.title = `${formatMove(labelInfo.move)}，后继：${outcomeText(labelInfo.outcome)}，${classificationText(labelInfo.classification)}`;
+        button.append(label);
+      }
     }
 
     if (moveTouchesSquare(options.lastMove, square)) {
       button.classList.add("last-move");
     }
 
-    if (recommended.some((move) => move.from === square || move.to === square)) {
+    if (recommended.some((move) => move.from === square)) {
+      button.classList.add("recommended-from");
+    }
+
+    if (recommended.some((move) => move.to === square)) {
       button.classList.add("recommended-move");
     }
 

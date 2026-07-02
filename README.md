@@ -330,6 +330,25 @@ with collapsible analysis panels. The board uses self-created Chinese SVG
 pieces (`炮` / `兵`), and every board cell is explicitly sized by the 5x5 grid
 so empty rows cannot collapse.
 
+The UI now works as an arbitrary-position WDL analyzer rather than only a
+fixed-position viewer. It has two board modes:
+
+- `分析模式`: click the side-to-move pieces to show legal targets. When a
+  complete `.s15res` tablebase is loaded, target squares show the successor
+  outcome directly on the board, such as `和棋`, `炮胜`, or `兵胜`.
+- `编辑模式`: freely place cannons, place soldiers, erase pieces, or move a
+  piece to any square. Editing does not enforce move legality; the UI validates
+  whether the resulting position is covered by the full tablebase.
+
+The position summary reports side to move, cannon count, soldier count,
+queryability, dense index, layer file, legal move count, and best-move count.
+The next-move card lists all best WDL moves for the current side, the side
+comparison panel queries the same piece placement with cannon-to-move and
+soldier-to-move, and legal moves are grouped as `保持胜势`, `保持和棋`, or
+`走向败局`. The full tablebase currently requires exactly 3 cannons and 0..15
+soldiers; positions outside that range remain editable but are reported as not
+queryable.
+
 The UI can query a local dense outcome tablebase. In the `表库` panel, select a
 directory such as `build\prod-layers`, or select `layer-00.s15res` through
 `layer-15.s15res` as files. The browser keeps file handles and reads only the

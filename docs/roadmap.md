@@ -59,6 +59,7 @@
 - Play WDL-only lines in the UI with max-plies, previous/next, autoplay, click-to-jump plies, last-move highlighting, recommended-move highlighting, undo/redo/reset, and copy/paste notation.
 - Polish the tablebase UI with board-first desktop/mobile layout, outcome/status badges, readable WDL line rows, feedback for invalid actions, and an Initial Position panel for the known Draw start and `22->12 captures 12` drawing move.
 - Localize the browser UI to Chinese, render self-created `炮` / `兵` SVG pieces, and fix board sizing so all 5x5 rows and columns remain equal on desktop and mobile.
+- Turn the browser UI into an arbitrary-position WDL analyzer with analysis/edit modes, free piece placement and deletion, side-to-move switching, queryability validation, next-move recommendations, side-to-move comparison, grouped legal moves, auto-query, and successor-outcome labels on board target squares.
 - Document UI reference research and local asset policy; current UI piece SVGs are self-created.
 - Centralize the current ruleset as `sanpao15-min-four-soldiers`, where `soldierCount < 4` is immediate `CannonWin`.
 
@@ -78,6 +79,7 @@
 - Evaluate D4 symmetry reduction for dense layers.
 - Keep the partitioned reachability line available for standard-initial-position experiments.
 - Add training/play modes on top of the polished Chinese WDL tablebase UI.
+- Add URL-shareable positions for the arbitrary-position analyzer.
 - Publish a reproducible full tablebase artifact plan for `.s15res` outputs.
 - Improve partitioned closure performance with a direct per-bucket candidate collector if needed.
 - Design layer-local CSR edge files.

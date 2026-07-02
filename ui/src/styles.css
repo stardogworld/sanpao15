@@ -188,6 +188,10 @@ h1 {
   box-shadow: inset 0 0 0 5px var(--color-recommended);
 }
 
+.square.recommended-from {
+  box-shadow: inset 0 0 0 5px rgb(47 125 80 / 70%);
+}
+
 .square.line-move {
   box-shadow: inset 0 0 0 5px var(--color-line-move);
 }
@@ -209,6 +213,39 @@ h1 {
   background: var(--color-recommended);
 }
 
+.target-outcome {
+  position: absolute;
+  z-index: 4;
+  right: 4px;
+  bottom: 4px;
+  max-width: calc(100% - 8px);
+  border: 1px solid var(--color-line);
+  border-radius: 999px;
+  padding: 2px 6px;
+  background: rgb(255 255 255 / 92%);
+  color: var(--color-text);
+  font-size: 0.68rem;
+  font-weight: 900;
+  line-height: 1.25;
+  pointer-events: none;
+  white-space: nowrap;
+}
+
+.target-outcome.winning {
+  border-color: rgb(47 125 80 / 42%);
+  color: var(--color-winning);
+}
+
+.target-outcome.drawing {
+  border-color: rgb(46 111 158 / 42%);
+  color: var(--color-drawing);
+}
+
+.target-outcome.losing {
+  border-color: rgb(185 71 59 / 42%);
+  color: var(--color-losing);
+}
+
 .toolbar {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(132px, 1fr));
@@ -228,6 +265,39 @@ h1 {
 
 .command-button:hover {
   background: #345247;
+}
+
+.segmented-control,
+.editor-tools-copy {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.editor-tools-copy.hidden {
+  display: none;
+}
+
+.segment,
+.preset-select {
+  min-height: 38px;
+  border: 1px solid var(--color-line);
+  border-radius: 7px;
+  padding: 0 12px;
+  background: var(--color-surface);
+  color: var(--color-text);
+  cursor: pointer;
+  font-weight: 800;
+}
+
+.segment.active {
+  border-color: #24342e;
+  background: #24342e;
+  color: #ffffff;
+}
+
+.preset-select {
+  min-width: 150px;
 }
 
 .notation-panel,
@@ -269,7 +339,7 @@ h1 {
 
 .status-panel {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 8px;
 }
 
@@ -293,6 +363,10 @@ code,
 .analysis-copy,
 .tablebase-status-copy,
 .tablebase-result-copy,
+.position-summary-copy,
+.best-move-copy,
+.side-comparison-copy,
+.move-groups-copy,
 .tablebase-summary,
 .line-summary,
 .playback-copy,
@@ -448,6 +522,58 @@ code,
   gap: 10px;
 }
 
+.best-card {
+  display: grid;
+  gap: 10px;
+}
+
+.best-card h3,
+.comparison-card h3 {
+  margin: 0;
+  color: var(--color-text);
+  font-size: 1rem;
+}
+
+.best-card p,
+.comparison-card p {
+  margin: 0;
+  color: var(--color-muted);
+  line-height: 1.45;
+}
+
+.best-move-list {
+  display: grid;
+  gap: 8px;
+}
+
+.comparison-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.comparison-card {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  border: 1px solid var(--color-line);
+  border-radius: 7px;
+  padding: 10px;
+  background: var(--color-surface);
+}
+
+.comparison-card.cannon {
+  border-color: rgb(159 45 36 / 28%);
+}
+
+.comparison-card.soldier {
+  border-color: rgb(36 95 70 / 28%);
+}
+
+.full-row {
+  grid-column: 1 / -1;
+}
+
 .summary-band {
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
@@ -511,6 +637,32 @@ code,
   align-items: center;
   min-width: 0;
   line-height: 1.35;
+}
+
+.move-row-button {
+  display: grid;
+  grid-template-columns: minmax(86px, 1fr) auto auto minmax(128px, 1.25fr);
+  gap: 8px;
+  align-items: center;
+  width: 100%;
+  min-height: 42px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  padding: 7px 8px;
+  background: transparent;
+  color: var(--color-text);
+  cursor: pointer;
+  text-align: left;
+}
+
+.move-row-button:hover {
+  border-color: var(--color-drawing);
+  background: #f4f9ff;
+}
+
+.move-row-button.recommended {
+  border-color: rgb(47 125 80 / 34%);
+  background: #f3fbf5;
 }
 
 .move-main {
@@ -645,6 +797,20 @@ code,
   font-weight: 800;
 }
 
+.toggle-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  color: var(--color-text);
+  font-weight: 800;
+}
+
+.toggle-row input {
+  width: 18px;
+  height: 18px;
+}
+
 .initial-card-grid p {
   margin: 0;
   color: var(--color-muted);
@@ -715,6 +881,7 @@ code,
   }
 
   .status-panel,
+  .comparison-grid,
   .status-grid,
   .summary-band {
     grid-template-columns: 1fr;
@@ -735,6 +902,11 @@ code,
   }
 
   .move-row {
+    grid-template-columns: 1fr;
+    gap: 5px;
+  }
+
+  .move-row-button {
     grid-template-columns: 1fr;
     gap: 5px;
   }
@@ -766,5 +938,12 @@ code,
 
   .toolbar {
     gap: 6px;
+  }
+
+  .target-outcome {
+    right: 2px;
+    bottom: 2px;
+    padding: 1px 4px;
+    font-size: 0.58rem;
   }
 }

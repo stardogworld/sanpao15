@@ -177,6 +177,18 @@ side to move, chosen move, successor outcome, classification, soldier count,
 alternatives, cycle markers, and stop reason, but no distance-to-win or
 shortest-draw claim.
 
+The browser UI also includes an arbitrary-position editor and best-move
+analysis layer. Users can switch between analysis mode and edit mode, freely
+place or erase `炮`/`兵`, move pieces without rule constraints while composing a
+position, switch the side to move, paste relaxed position notation, and then
+query when the position is inside the dense tablebase domain. The validation
+rule is exactly the dense domain: 3 cannons, 0..15 soldiers, no overlap, and the
+matching `layer-NN.s15res` loaded. For queryable positions, the UI shows the
+dense index, current WDL outcome, best WDL moves, grouped legal moves,
+cannon-to-move versus soldier-to-move comparison, and successor-outcome labels
+on legal target squares. This remains WDL-only guidance and still performs
+random `.s15res` byte reads rather than loading full layers.
+
 ## Dense Successor Indexing
 
 Dense successor indexing is available for the full tablebase route. Given a
