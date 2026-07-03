@@ -1,6 +1,7 @@
 #include "test_common.h"
 
 #include <array>
+#include <exception>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -33,6 +34,17 @@ std::string readBinaryFile(const std::filesystem::path& path) {
     return {
         std::istreambuf_iterator<char>(input),
         std::istreambuf_iterator<char>()};
+}
+
+template <typename Fn>
+void requireThrowsContaining(Fn&& fn, const std::string& expected, const char* message) {
+    try {
+        fn();
+    } catch (const std::exception& ex) {
+        SANPAO15_REQUIRE(std::string(ex.what()).find(expected) != std::string::npos);
+        return;
+    }
+    sanpao15::test::require(false, message);
 }
 
 }  // namespace
@@ -183,6 +195,20 @@ SANPAO15_TEST(mtdHeaderAndPayloadRoundtrip) {
     SANPAO15_REQUIRE(stats.materialTargetCounts[2] == 1);
     SANPAO15_REQUIRE(stats.maxExactDistance == 254);
     SANPAO15_REQUIRE(stats.saturatedDistanceCount == 0);
+    std::filesystem::remove_all(dir);
+}
+
+SANPAO15_TEST(mtdChunkedPayloadReadReportsTruncatedByteCounts) {
+    const std::filesystem::path dir = tempDir("sanpao15-mtd-truncated-payload");
+    const std::filesystem::path path = mtdLayerPath(dir, 0);
+    PackedMtdTable12 table(denseStateCount(0), MtdEntry{0, 0});
+    saveMtdTable(table, 0, path, StandardRulesetHash);
+    const uint64_t payloadBytes = mtdPayloadBytes(denseStateCount(0));
+    std::filesystem::resize_file(path, 44 + payloadBytes - 3);
+
+    requireThrowsContaining([&] {
+        (void)loadMtdTable(path, StandardRulesetHash, 0);
+    }, "after 6897 of 6900 bytes", "truncated MTD payload should report byte counts");
     std::filesystem::remove_all(dir);
 }
 

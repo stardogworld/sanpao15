@@ -28,7 +28,7 @@ namespace {
 constexpr std::array<char, 8> MtdMagic{'S', '1', '5', 'M', 'T', 'D', '1', '\0'};
 constexpr uint32_t MtdVersion = 2;
 constexpr uint64_t MtdHeaderBytes = 44;
-constexpr size_t MtdWriteBlockBytes = 8u * 1024u * 1024u;
+constexpr size_t MtdIoBlockBytes = 8u * 1024u * 1024u;
 constexpr uint8_t UnassignedMaterial = 0xffu;
 
 void writeU8(std::ostream& output, uint8_t value) {
@@ -132,18 +132,61 @@ void writeMtdHeader(std::ostream& output, const MtdFileInfo& info) {
     writeU64LE(output, info.payloadBytes);
 }
 
-std::vector<uint8_t> readPayload(std::istream& input, uint64_t payloadBytes) {
+void writeBytesChunked(
+    std::ostream& output,
+    const uint8_t* data,
+    uint64_t byteCount,
+    const std::string& errorContext) {
+    if (byteCount > static_cast<uint64_t>(std::numeric_limits<size_t>::max())) {
+        throw std::overflow_error(errorContext + " is too large for this platform");
+    }
+    uint64_t offset = 0;
+    while (offset < byteCount) {
+        const uint64_t remaining = byteCount - offset;
+        const size_t chunk = static_cast<size_t>(std::min<uint64_t>(remaining, MtdIoBlockBytes));
+        output.write(
+            reinterpret_cast<const char*>(data + static_cast<size_t>(offset)),
+            static_cast<std::streamsize>(chunk));
+        if (!output) {
+            std::ostringstream message;
+            message << "failed to write " << errorContext
+                    << " after " << offset << " of " << byteCount << " bytes";
+            throw std::runtime_error(message.str());
+        }
+        offset += chunk;
+    }
+}
+
+std::vector<uint8_t> readPayloadChunked(std::istream& input, uint64_t payloadBytes, size_t chunkBytes) {
     if (payloadBytes > static_cast<uint64_t>(std::numeric_limits<size_t>::max())) {
         throw std::overflow_error(".s15mtd payload is too large for this platform");
     }
-    std::vector<uint8_t> payload(static_cast<size_t>(payloadBytes), 0);
-    if (!payload.empty()) {
-        input.read(reinterpret_cast<char*>(payload.data()), static_cast<std::streamsize>(payload.size()));
+    if (chunkBytes == 0) {
+        throw std::invalid_argument(".s15mtd read chunk size must be positive");
     }
-    if (!input) {
-        throw std::runtime_error("unexpected end of .s15mtd payload");
+    std::vector<uint8_t> payload(static_cast<size_t>(payloadBytes), 0);
+    uint64_t offset = 0;
+    while (offset < payloadBytes) {
+        const uint64_t remaining = payloadBytes - offset;
+        const size_t chunk = static_cast<size_t>(std::min<uint64_t>(remaining, static_cast<uint64_t>(chunkBytes)));
+        input.read(
+            reinterpret_cast<char*>(payload.data() + static_cast<size_t>(offset)),
+            static_cast<std::streamsize>(chunk));
+        const std::streamsize bytesRead = input.gcount();
+        if (bytesRead != static_cast<std::streamsize>(chunk)) {
+            const uint64_t totalRead = offset + static_cast<uint64_t>(std::max<std::streamsize>(bytesRead, 0));
+            std::ostringstream message;
+            message << "unexpected end of .s15mtd payload after "
+                    << totalRead << " of " << payloadBytes << " bytes";
+            throw std::runtime_error(message.str());
+        }
+        offset += chunk;
     }
     return payload;
+}
+
+std::vector<uint8_t> readPayload(std::istream& input, uint64_t payloadBytes) {
+    return readPayloadChunked(input, payloadBytes, MtdIoBlockBytes);
 }
 
 void rejectTrailingBytes(std::istream& input) {
@@ -1076,10 +1119,11 @@ void saveMtdTable(
         0,
     });
     if (!table.payload().empty()) {
-        output.write(reinterpret_cast<const char*>(table.payload().data()), static_cast<std::streamsize>(table.payload().size()));
-    }
-    if (!output) {
-        throw std::runtime_error("failed to write .s15mtd payload: " + path.string());
+        writeBytesChunked(
+            output,
+            table.payload().data(),
+            static_cast<uint64_t>(table.payload().size()),
+            ".s15mtd payload: " + path.string());
     }
 }
 
@@ -1144,10 +1188,10 @@ MtdLayerWriteStats writeMtdTableFromArrays(
     };
 
     std::vector<uint8_t> writeBuffer;
-    writeBuffer.reserve(MtdWriteBlockBytes);
+    writeBuffer.reserve(MtdIoBlockBytes);
     const auto appendPayloadByte = [&](uint8_t byte) {
         writeBuffer.push_back(byte);
-        if (writeBuffer.size() >= MtdWriteBlockBytes) {
+        if (writeBuffer.size() >= MtdIoBlockBytes) {
             output.write(reinterpret_cast<const char*>(writeBuffer.data()), static_cast<std::streamsize>(writeBuffer.size()));
             if (!output) {
                 throw std::runtime_error("failed to write .s15mtd payload: " + path.string());
