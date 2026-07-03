@@ -12,6 +12,7 @@
 #include "sanpao15/mapped_file.h"
 #include "sanpao15/move.h"
 #include "sanpao15/position.h"
+#include "sanpao15/small_count_array.h"
 
 namespace sanpao15 {
 
@@ -115,6 +116,12 @@ struct MtdLayerWriteStats {
     uint64_t saturatedDistanceCount = 0;
 };
 
+struct MtdCountArrayStats {
+    uint8_t maxValue = 0;
+    SmallCountArray::Width width = SmallCountArray::Width::Nibble4;
+    uint64_t bytes = 0;
+};
+
 struct MtdWdlLayerScanSummary {
     std::array<uint64_t, 4> outcomeCounts{};
     bool hasUnknown = false;
@@ -182,6 +189,12 @@ struct MtdLayerSolveResult {
     uint64_t estimatedLowerWdlBytes = 0;
     uint64_t estimatedLowerMtdBytes = 0;
     uint64_t estimatedQueueScratchBytes = 0;
+    uint64_t estimatedCountBytesBefore = 0;
+    uint64_t estimatedCountBytesActual = 0;
+    uint64_t countArraySavingsBytes = 0;
+    MtdCountArrayStats loserUnresolvedStats;
+    MtdCountArrayStats drawMaterialRemainingStats;
+    MtdCountArrayStats drawDistanceSoldierUnresolvedStats;
     MtdTableStore lowerMtdStore = MtdTableStore::Ram;
     MtdTableStore wdlStore = MtdTableStore::Ram;
     uint64_t queuePeak = 0;

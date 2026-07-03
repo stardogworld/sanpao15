@@ -20,6 +20,7 @@
 #include "sanpao15/parallel.h"
 #include "sanpao15/rules.h"
 #include "sanpao15/ruleset.h"
+#include "sanpao15/small_count_array.h"
 
 namespace sanpao15 {
 
@@ -355,6 +356,20 @@ void releaseVectorCapacity(std::vector<T>& value) {
     std::vector<T>().swap(value);
 }
 
+MtdCountArrayStats countArrayStatsForMax(uint64_t stateCount, uint8_t maxValue) {
+    MtdCountArrayStats stats;
+    stats.maxValue = maxValue;
+    stats.width = chooseSmallCountWidth(maxValue);
+    stats.bytes = smallCountArrayBytes(stateCount, stats.width);
+    return stats;
+}
+
+void mergeCountArrayStats(MtdCountArrayStats& target, const MtdCountArrayStats& candidate) {
+    if (target.bytes == 0 || candidate.maxValue > target.maxValue) {
+        target = candidate;
+    }
+}
+
 uint64_t denseBitsetBytesForBits(uint64_t bitCount) {
     const uint64_t wordCount = bitCount / 64u + (bitCount % 64u == 0 ? 0u : 1u);
     if (wordCount > std::numeric_limits<uint64_t>::max() / sizeof(uint64_t)) {
@@ -484,13 +499,52 @@ void solveWinningOutcomeMtd(
     MtdDistanceWork& distance,
     uint64_t& queuePeak,
     uint64_t& iterations,
+    MtdCountArrayStats& countStats,
     uint32_t threads) {
     const uint64_t stateCount = denseStateCount(k);
     const uint32_t effectiveThreads = normalizeThreadCount(threads, stateCount);
     const Side winner = winnerForOutcome(outcome);
     DenseBitset finalized(stateCount);
     DenseBitset hasCandidate(stateCount);
-    std::vector<uint8_t> loserUnresolved(static_cast<size_t>(stateCount), 0);
+    uint8_t maxLoserUnresolved = 0;
+    std::vector<uint8_t> localMaxLoserUnresolved(effectiveThreads, 0);
+    parallelForRanges(stateCount, effectiveThreads, [&](uint64_t begin, uint64_t end, uint32_t threadId) {
+        std::vector<DenseSuccessor> successors;
+        uint8_t localMax = 0;
+        for (uint64_t index = begin; index < end; ++index) {
+            if (currentWdl.getUnchecked(index) != outcome) {
+                continue;
+            }
+            const Position pos = positionFromDenseIndex(k, index);
+            if (pos.side == winner) {
+                continue;
+            }
+            generateDenseSuccessorsFromPosition(k, index, pos, successors);
+            const DenseTerminalInfo terminal = terminalOutcomeForPositionWithSuccessors(pos, successors);
+            if (isTerminalForMtdOutcome(terminal, outcome)) {
+                continue;
+            }
+            uint16_t unresolvedSameLayerChildren = 0;
+            for (const DenseSuccessor& successor : successors) {
+                const Outcome childOutcome = successorOutcomeFor(successor, currentWdl, lowerWdl);
+                if (childOutcome == outcome && successor.kind == DenseSuccessorKind::SameLayer) {
+                    ++unresolvedSameLayerChildren;
+                }
+            }
+            if (unresolvedSameLayerChildren > std::numeric_limits<uint8_t>::max()) {
+                throw std::overflow_error("MTD win-distance remaining count overflowed uint8_t");
+            }
+            localMax = std::max(localMax, static_cast<uint8_t>(unresolvedSameLayerChildren));
+        }
+        localMaxLoserUnresolved[threadId] = localMax;
+    });
+    for (uint8_t localMax : localMaxLoserUnresolved) {
+        maxLoserUnresolved = std::max(maxLoserUnresolved, localMax);
+    }
+    countStats.maxValue = maxLoserUnresolved;
+    countStats.width = chooseSmallCountWidth(maxLoserUnresolved);
+    SmallCountArray loserUnresolved(stateCount, countStats.width);
+    countStats.bytes = loserUnresolved.bytes();
     std::array<std::vector<uint32_t>, 256> buckets;
     std::vector<uint32_t> predecessorIndices;
     predecessorIndices.reserve(32);
@@ -614,7 +668,7 @@ void solveWinningOutcomeMtd(
             if (unresolvedSameLayerChildren > std::numeric_limits<uint8_t>::max()) {
                 throw std::overflow_error("MTD win-distance remaining count overflowed uint8_t");
             }
-            loserUnresolved[static_cast<size_t>(index)] = static_cast<uint8_t>(unresolvedSameLayerChildren);
+            loserUnresolved.setUncheckedAtomic(index, static_cast<uint8_t>(unresolvedSameLayerChildren));
             if (hasKnownChild) {
                 material[static_cast<size_t>(index)] = knownMaterial;
                 distance.setUncheckedAtomic(index, knownDistance);
@@ -676,8 +730,7 @@ void solveWinningOutcomeMtd(
                 if (parentSide == winner) {
                     schedule(parentIndex, parentSide, candidateDistance, candidateMaterial);
                 } else {
-                    uint8_t& unresolved = loserUnresolved[static_cast<size_t>(parentIndex)];
-                    if (unresolved == 0) {
+                    if (loserUnresolved.getUnchecked(parentIndex) == 0) {
                         continue;
                     }
                     if (!hasCandidate.getUnchecked(parentIndex) ||
@@ -689,8 +742,8 @@ void solveWinningOutcomeMtd(
                         distance.setUnchecked(parentIndex, candidateDistance);
                         material[static_cast<size_t>(parentIndex)] = candidateMaterial;
                     }
-                    --unresolved;
-                    if (unresolved == 0) {
+                    loserUnresolved.decrementUnchecked(parentIndex);
+                    if (loserUnresolved.getUnchecked(parentIndex) == 0) {
                         schedule(
                             parentIndex,
                             parentSide,
@@ -721,7 +774,6 @@ void solveWinningOutcomeMtd(
         releaseVectorCapacity(bucket);
     }
     releaseVectorCapacity(predecessorIndices);
-    releaseVectorCapacity(loserUnresolved);
 }
 
 struct MtdMemoryEstimate {
@@ -737,7 +789,8 @@ MtdMemoryEstimate estimateMtdMemoryBytes(
     int soldierCount,
     uint64_t stateCount,
     MtdTableStore lowerMtdStore,
-    MtdTableStore wdlStore) {
+    MtdTableStore wdlStore,
+    uint64_t countArrayBytes) {
     const uint64_t bitsetBytes = denseBitsetBytesForBits(stateCount);
     MtdMemoryEstimate estimate;
     estimate.explicitRamBytes += stateCount;  // material targets
@@ -751,7 +804,7 @@ MtdMemoryEstimate estimateMtdMemoryBytes(
     }
     if (soldierCount >= MinSoldiersForSoldierSurvival) {
         estimate.explicitRamBytes += bitsetBytes * 5u;  // winning/draw finalized and candidate flags plus draw threshold bits
-        estimate.explicitRamBytes += stateCount * 3u;  // loserUnresolved, remaining, soldierUnresolved byte counters
+        estimate.explicitRamBytes += countArrayBytes;
         estimate.queueScratchBytes = stateCount * sizeof(uint32_t);
         estimate.explicitRamBytes += estimate.queueScratchBytes;
     }
@@ -782,6 +835,13 @@ void writeMtdStatsJson(const MtdLayerSolveResult& result) {
     if (!out) {
         throw std::runtime_error("failed to open .mtd.solve.json for writing: " + tempPath.string());
     }
+    const auto writeCountArrayStats = [&](const char* name, const MtdCountArrayStats& stats, bool trailingComma) {
+        out << "    \"" << name << "\": {\n";
+        out << "      \"maxValue\": " << static_cast<int>(stats.maxValue) << ",\n";
+        out << "      \"width\": \"" << smallCountWidthToString(stats.width) << "\",\n";
+        out << "      \"bytes\": " << stats.bytes << "\n";
+        out << "    }" << (trailingComma ? ",\n" : "\n");
+    };
 
     out << "{\n";
     out << "  \"format\": \"sanpao15-material-target-distance-layer-stats\",\n";
@@ -851,6 +911,15 @@ void writeMtdStatsJson(const MtdLayerSolveResult& result) {
     out << "  \"estimatedLowerWdlBytes\": " << result.estimatedLowerWdlBytes << ",\n";
     out << "  \"estimatedLowerMtdBytes\": " << result.estimatedLowerMtdBytes << ",\n";
     out << "  \"estimatedQueueScratchBytes\": " << result.estimatedQueueScratchBytes << ",\n";
+    out << "  \"estimatedCountBytesBefore\": " << result.estimatedCountBytesBefore << ",\n";
+    out << "  \"estimatedCountBytesActual\": " << result.estimatedCountBytesActual << ",\n";
+    out << "  \"countArraySavingsBytes\": " << result.countArraySavingsBytes << ",\n";
+    out << "  \"countArrays\": {\n";
+    writeCountArrayStats("loserUnresolved", result.loserUnresolvedStats, true);
+    writeCountArrayStats("drawMaterialRemaining", result.drawMaterialRemainingStats, true);
+    writeCountArrayStats("drawDistanceSoldierUnresolved", result.drawDistanceSoldierUnresolvedStats, true);
+    out << "    \"savingsBytes\": " << result.countArraySavingsBytes << "\n";
+    out << "  },\n";
     out << "  \"queuePeak\": " << result.queuePeak << ",\n";
     out << "  \"materialIterations\": " << result.materialIterations << ",\n";
     out << "  \"distanceIterations\": " << result.distanceIterations << "\n";
@@ -1642,11 +1711,15 @@ MtdLayerSolveResult solveMtdLayer(const MtdLayerSolveOptions& options) {
     const auto materialStart = std::chrono::steady_clock::now();
     uint64_t materialIterations = 0;
     uint64_t winIterations = 0;
+    MtdCountArrayStats loserUnresolvedStats;
+    MtdCountArrayStats drawMaterialRemainingStats;
+    MtdCountArrayStats drawDistanceSoldierUnresolvedStats;
     if (k < MinSoldiersForSoldierSurvival) {
         std::fill(material.begin(), material.end(), static_cast<uint8_t>(k));
         distance.fillSolved(0);
     } else {
         if (currentScan.outcomeCounts[outcomeIndex(Outcome::CannonWin)] != 0) {
+            MtdCountArrayStats outcomeCountStats;
             solveWinningOutcomeMtd(
                 k,
                 Outcome::CannonWin,
@@ -1657,9 +1730,12 @@ MtdLayerSolveResult solveMtdLayer(const MtdLayerSolveOptions& options) {
                 distance,
                 queuePeak,
                 winIterations,
+                outcomeCountStats,
                 solveThreads);
+            mergeCountArrayStats(loserUnresolvedStats, outcomeCountStats);
         }
         if (currentScan.outcomeCounts[outcomeIndex(Outcome::SoldierWin)] != 0) {
+            MtdCountArrayStats outcomeCountStats;
             solveWinningOutcomeMtd(
                 k,
                 Outcome::SoldierWin,
@@ -1670,10 +1746,11 @@ MtdLayerSolveResult solveMtdLayer(const MtdLayerSolveOptions& options) {
                 distance,
                 queuePeak,
                 winIterations,
+                outcomeCountStats,
                 solveThreads);
+            mergeCountArrayStats(loserUnresolvedStats, outcomeCountStats);
         }
         DenseBitset thresholdNewTrue(stateCount);
-        std::vector<uint8_t> remaining(static_cast<size_t>(stateCount), 0);
         std::vector<uint32_t> queue;
         std::vector<uint32_t> predecessorIndices;
         queue.reserve(1024);
@@ -1682,7 +1759,6 @@ MtdLayerSolveResult solveMtdLayer(const MtdLayerSolveOptions& options) {
             const int firstDrawThreshold = MinSoldiersForSoldierSurvival;
             for (int threshold = firstDrawThreshold; threshold < k; ++threshold) {
                 thresholdNewTrue.fill(false);
-                std::fill(remaining.begin(), remaining.end(), uint8_t{0});
                 queue.clear();
                 size_t queueHead = 0;
 
@@ -1700,6 +1776,64 @@ MtdLayerSolveResult solveMtdLayer(const MtdLayerSolveOptions& options) {
                     queue.push_back(checkedMtdQueueIndex(index));
                     queuePeak = std::max<uint64_t>(queuePeak, queue.size() - queueHead);
                 };
+
+                uint8_t maxRemaining = 0;
+                std::vector<uint8_t> localMaxRemaining(solveThreads, 0);
+                parallelForRanges(stateCount, solveThreads, [&](uint64_t begin, uint64_t end, uint32_t threadId) {
+                    std::vector<DenseSuccessor> localSuccessors;
+                    uint8_t localMax = 0;
+                    for (uint64_t index = begin; index < end; ++index) {
+                        if (isThresholdTrue(index)) {
+                            continue;
+                        }
+                        const Outcome currentOutcome = currentWdl.getUnchecked(index);
+                        if (currentOutcome != Outcome::Draw) {
+                            continue;
+                        }
+                        const Position pos = positionFromDenseIndex(k, index);
+                        generateDenseSuccessorsFromPosition(k, index, pos, localSuccessors);
+                        const DenseTerminalInfo terminal = terminalOutcomeForPositionWithSuccessors(pos, localSuccessors);
+                        if (terminal.terminal) {
+                            throw std::runtime_error("MTD draw material solver found terminal Draw state");
+                        }
+                        if (pos.side == Side::Cannon) {
+                            continue;
+                        }
+
+                        uint16_t falsePreservingChildren = 0;
+                        for (const DenseSuccessor& successor : localSuccessors) {
+                            const Outcome childOutcome = successorOutcomeFor(
+                                successor,
+                                currentWdl,
+                                lowerWdl);
+                            if (!wdlPreserving(currentOutcome, childOutcome)) {
+                                continue;
+                            }
+                            if (!thresholdChildTrue(
+                                    successor,
+                                    currentOutcome,
+                                    currentWdl,
+                                    lowerWdl,
+                                    lowerMtd,
+                                    material,
+                                    thresholdNewTrue,
+                                    threshold)) {
+                                ++falsePreservingChildren;
+                            }
+                        }
+                        if (falsePreservingChildren > std::numeric_limits<uint8_t>::max()) {
+                            throw std::overflow_error("MTD threshold remaining count overflowed uint8_t");
+                        }
+                        localMax = std::max(localMax, static_cast<uint8_t>(falsePreservingChildren));
+                    }
+                    localMaxRemaining[threadId] = localMax;
+                });
+                for (uint8_t localMax : localMaxRemaining) {
+                    maxRemaining = std::max(maxRemaining, localMax);
+                }
+                const MtdCountArrayStats thresholdRemainingStats = countArrayStatsForMax(stateCount, maxRemaining);
+                mergeCountArrayStats(drawMaterialRemainingStats, thresholdRemainingStats);
+                SmallCountArray remaining(stateCount, thresholdRemainingStats.width);
 
                 ++materialIterations;
                 std::vector<std::vector<uint32_t>> initialQueues(solveThreads);
@@ -1788,7 +1922,7 @@ MtdLayerSolveResult solveMtdLayer(const MtdLayerSolveOptions& options) {
                         if (falsePreservingChildren > std::numeric_limits<uint8_t>::max()) {
                             throw std::overflow_error("MTD threshold remaining count overflowed uint8_t");
                         }
-                        remaining[static_cast<size_t>(index)] = static_cast<uint8_t>(falsePreservingChildren);
+                        remaining.setUncheckedAtomic(index, static_cast<uint8_t>(falsePreservingChildren));
                     }
                 });
                 for (std::vector<uint32_t>& localQueue : initialQueues) {
@@ -1824,12 +1958,11 @@ MtdLayerSolveResult solveMtdLayer(const MtdLayerSolveOptions& options) {
                             markTrue(parentIndex);
                             continue;
                         }
-                        uint8_t& remainingCount = remaining[static_cast<size_t>(parentIndex)];
-                        if (remainingCount == 0) {
+                        if (remaining.getUnchecked(parentIndex) == 0) {
                             continue;
                         }
-                        --remainingCount;
-                        if (remainingCount == 0) {
+                        remaining.decrementUnchecked(parentIndex);
+                        if (remaining.getUnchecked(parentIndex) == 0) {
                             markTrue(parentIndex);
                         }
                     }
@@ -1846,7 +1979,6 @@ MtdLayerSolveResult solveMtdLayer(const MtdLayerSolveOptions& options) {
                 releaseVectorCapacity(queue);
             }
         }
-        releaseVectorCapacity(remaining);
         releaseVectorCapacity(predecessorIndices);
         parallelForRanges(stateCount, solveThreads, [&](uint64_t begin, uint64_t end, uint32_t) {
             for (uint64_t index = begin; index < end; ++index) {
@@ -1866,7 +1998,46 @@ MtdLayerSolveResult solveMtdLayer(const MtdLayerSolveOptions& options) {
         currentScan.outcomeCounts[outcomeIndex(Outcome::Draw)] != 0) {
         DenseBitset finalized(stateCount);
         DenseBitset hasCandidate(stateCount);
-        std::vector<uint8_t> soldierUnresolved(static_cast<size_t>(stateCount), 0);
+        uint8_t maxSoldierUnresolved = 0;
+        std::vector<uint8_t> localMaxSoldierUnresolved(solveThreads, 0);
+        parallelForRanges(stateCount, solveThreads, [&](uint64_t begin, uint64_t end, uint32_t threadId) {
+            std::vector<DenseSuccessor> localSuccessors;
+            uint8_t localMax = 0;
+            for (uint64_t index = begin; index < end; ++index) {
+                if (currentWdl.getUnchecked(index) != Outcome::Draw) {
+                    continue;
+                }
+                const uint8_t target = material[static_cast<size_t>(index)];
+                if (target == k) {
+                    continue;
+                }
+                const Position pos = positionFromDenseIndex(k, index);
+                generateDenseSuccessorsFromPosition(k, index, pos, localSuccessors);
+                uint16_t unresolvedSameLayer = 0;
+                for (const DenseSuccessor& successor : localSuccessors) {
+                    const Outcome childOutcome = successorOutcomeFor(
+                        successor,
+                        currentWdl,
+                        lowerWdl);
+                    if (childOutcome != Outcome::Draw ||
+                        successor.kind != DenseSuccessorKind::SameLayer ||
+                        material[static_cast<size_t>(successor.toIndex)] != target) {
+                        continue;
+                    }
+                    ++unresolvedSameLayer;
+                }
+                if (unresolvedSameLayer > std::numeric_limits<uint8_t>::max()) {
+                    throw std::overflow_error("MTD distance unresolved count overflowed uint8_t");
+                }
+                localMax = std::max(localMax, static_cast<uint8_t>(unresolvedSameLayer));
+            }
+            localMaxSoldierUnresolved[threadId] = localMax;
+        });
+        for (uint8_t localMax : localMaxSoldierUnresolved) {
+            maxSoldierUnresolved = std::max(maxSoldierUnresolved, localMax);
+        }
+        drawDistanceSoldierUnresolvedStats = countArrayStatsForMax(stateCount, maxSoldierUnresolved);
+        SmallCountArray soldierUnresolved(stateCount, drawDistanceSoldierUnresolvedStats.width);
         std::array<std::vector<uint32_t>, 256> buckets;
         std::vector<uint32_t> predecessorIndices;
         predecessorIndices.reserve(32);
@@ -1962,7 +2133,7 @@ MtdLayerSolveResult solveMtdLayer(const MtdLayerSolveOptions& options) {
                 if (unresolvedSameLayer > std::numeric_limits<uint8_t>::max()) {
                     throw std::overflow_error("MTD distance unresolved count overflowed uint8_t");
                 }
-                soldierUnresolved[static_cast<size_t>(index)] = static_cast<uint8_t>(unresolvedSameLayer);
+                soldierUnresolved.setUncheckedAtomic(index, static_cast<uint8_t>(unresolvedSameLayer));
                 if (pos.side == Side::Cannon) {
                     if (hasKnownOptimal) {
                         distance.setUncheckedAtomic(index, knownDistance);
@@ -2029,8 +2200,7 @@ MtdLayerSolveResult solveMtdLayer(const MtdLayerSolveOptions& options) {
                     if (parentSide == Side::Cannon) {
                         scheduleDistance(parentIndex, parentSide, candidate);
                     } else {
-                        uint8_t& unresolved = soldierUnresolved[static_cast<size_t>(parentIndex)];
-                        if (unresolved == 0) {
+                        if (soldierUnresolved.getUnchecked(parentIndex) == 0) {
                             continue;
                         }
                         if (!hasCandidate.getUnchecked(parentIndex)) {
@@ -2041,8 +2211,8 @@ MtdLayerSolveResult solveMtdLayer(const MtdLayerSolveOptions& options) {
                                 parentIndex,
                                 std::max(distance.getUnchecked(parentIndex), candidate));
                         }
-                        --unresolved;
-                        if (unresolved == 0) {
+                        soldierUnresolved.decrementUnchecked(parentIndex);
+                        if (soldierUnresolved.getUnchecked(parentIndex) == 0) {
                             scheduleDistance(parentIndex, parentSide, distance.getUnchecked(parentIndex), true);
                         }
                     }
@@ -2067,7 +2237,6 @@ MtdLayerSolveResult solveMtdLayer(const MtdLayerSolveOptions& options) {
             releaseVectorCapacity(bucket);
         }
         releaseVectorCapacity(predecessorIndices);
-        releaseVectorCapacity(soldierUnresolved);
     }
     const auto distanceFinish = std::chrono::steady_clock::now();
 
@@ -2098,8 +2267,26 @@ MtdLayerSolveResult solveMtdLayer(const MtdLayerSolveOptions& options) {
     result.stageDistanceSeconds = std::chrono::duration<double>(distanceFinish - distanceStart).count();
     const auto totalFinish = std::chrono::steady_clock::now();
     result.totalSeconds = std::chrono::duration<double>(totalFinish - totalStart).count();
+    result.loserUnresolvedStats = loserUnresolvedStats;
+    result.drawMaterialRemainingStats = drawMaterialRemainingStats;
+    result.drawDistanceSoldierUnresolvedStats = drawDistanceSoldierUnresolvedStats;
+    if (k >= MinSoldiersForSoldierSurvival) {
+        result.estimatedCountBytesBefore = stateCount * 3u;
+        result.estimatedCountBytesActual =
+            loserUnresolvedStats.bytes +
+            drawMaterialRemainingStats.bytes +
+            drawDistanceSoldierUnresolvedStats.bytes;
+        result.countArraySavingsBytes = result.estimatedCountBytesBefore > result.estimatedCountBytesActual
+            ? result.estimatedCountBytesBefore - result.estimatedCountBytesActual
+            : 0;
+    }
     const MtdMemoryEstimate memoryEstimate =
-        estimateMtdMemoryBytes(k, stateCount, options.lowerMtdStore, options.wdlStore);
+        estimateMtdMemoryBytes(
+            k,
+            stateCount,
+            options.lowerMtdStore,
+            options.wdlStore,
+            result.estimatedCountBytesActual);
     result.lowerMtdStore = options.lowerMtdStore;
     result.wdlStore = options.wdlStore;
     result.estimatedMemoryBytes = memoryEstimate.explicitRamBytes;

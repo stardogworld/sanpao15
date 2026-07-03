@@ -1891,6 +1891,14 @@ void printValidateRes(const std::filesystem::path& path) {
 }
 
 void printMtdLayerResult(const MtdLayerSolveResult& layer) {
+    const auto printCountArrayStats = [&](const char* name, const MtdCountArrayStats& stats) {
+        std::cout << "  " << name
+                  << ": max=" << formatInteger(stats.maxValue)
+                  << " width=" << smallCountWidthToString(stats.width)
+                  << " bytes=" << formatInteger(stats.bytes)
+                  << " (" << formatBytes(stats.bytes) << ")\n";
+    };
+
     std::cout << "Layer " << layer.soldierCount << "\n";
     std::cout << "Threads: " << layer.threads << "\n";
     std::cout << "State count: " << formatInteger(layer.stateCount) << "\n";
@@ -1918,6 +1926,16 @@ void printMtdLayerResult(const MtdLayerSolveResult& layer) {
               << " lower=" << formatInteger(layer.estimatedLowerWdlBytes) << "\n";
     std::cout << "Estimated lower MTD bytes: " << formatInteger(layer.estimatedLowerMtdBytes) << "\n";
     std::cout << "Estimated queue scratch bytes: " << formatInteger(layer.estimatedQueueScratchBytes) << "\n";
+    std::cout << "Estimated count bytes before: " << formatInteger(layer.estimatedCountBytesBefore)
+              << " (" << formatBytes(layer.estimatedCountBytesBefore) << ")\n";
+    std::cout << "Estimated count bytes actual: " << formatInteger(layer.estimatedCountBytesActual)
+              << " (" << formatBytes(layer.estimatedCountBytesActual) << ")\n";
+    std::cout << "Count array savings: " << formatInteger(layer.countArraySavingsBytes)
+              << " (" << formatBytes(layer.countArraySavingsBytes) << ")\n";
+    std::cout << "Count arrays:\n";
+    printCountArrayStats("loserUnresolved", layer.loserUnresolvedStats);
+    printCountArrayStats("drawMaterialRemaining", layer.drawMaterialRemainingStats);
+    printCountArrayStats("drawDistanceSoldierUnresolved", layer.drawDistanceSoldierUnresolvedStats);
     std::cout << "Queue peak: " << formatInteger(layer.queuePeak) << "\n";
     std::cout << "Material iterations: " << formatInteger(layer.materialIterations) << "\n";
     std::cout << "Distance iterations: " << formatInteger(layer.distanceIterations) << "\n";

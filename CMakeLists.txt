@@ -38,6 +38,7 @@ add_library(sanpao15_solver
     solver/src/partitioned_keyset.cpp
     solver/src/retrograde.cpp
     solver/src/solver.cpp
+    solver/src/small_count_array.cpp
     solver/src/table.cpp
 )
 
@@ -93,6 +94,7 @@ add_executable(sanpao15_tests
     tests/test_parallel.cpp
     tests/test_partitioned_keyset.cpp
     tests/test_solver_small.cpp
+    tests/test_small_count_array.cpp
     tests/test_stats.cpp
     tests/test_table.cpp
     tests/test_terminal.cpp
