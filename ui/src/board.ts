@@ -17,6 +17,11 @@ export interface BoardRenderOptions {
   lastMove?: Move | null;
   lineMove?: Move | null;
   spotlightMove?: Move | null;
+  orientation?: "cannon" | "soldier";
+  primaryMove?: Move | null;
+  selectedMove?: Move | null;
+  hoveredMove?: Move | null;
+  showSquareNumbers?: boolean;
   onSquareClick: (square: number) => void;
 }
 
@@ -44,18 +49,42 @@ function moveTouchesSquare(move: Move | null | undefined, square: number): boole
   return !!move && (move.from === square || move.to === square);
 }
 
+function visualSquaresForOrientation(orientation: "cannon" | "soldier"): number[] {
+  const squares = Array.from({ length: boardSize * boardSize }, (_, index) => index);
+  return orientation === "soldier" ? squares.reverse() : squares;
+}
+
+function appendSquareNumber(button: HTMLButtonElement, square: number): void {
+  const squareNumber = document.createElement("span");
+  squareNumber.className = "square-number";
+  squareNumber.textContent = String(square);
+  button.append(squareNumber);
+}
+
+function ariaLabelForSquare(options: BoardRenderOptions, square: number, targetMove: Move | undefined, displayMove: Move | null): string {
+  const parts = [`第 ${square} 格`, pieceLabel(options.position, square)];
+  if (options.selectedSquare === square || options.editSelectedSquare === square) parts.push("已选中");
+  if (targetMove) parts.push(targetMove.capture ? "合法吃子目标" : "合法移动目标");
+  if (displayMove?.from === square) parts.push("推荐着法起点");
+  if (displayMove?.to === square) parts.push("推荐着法目标");
+  if (moveTouchesSquare(options.lastMove, square)) parts.push("上一着经过");
+  return parts.join("，");
+}
+
 export function renderBoard(container: HTMLElement, options: BoardRenderOptions): void {
   container.innerHTML = "";
   const targetSquares = new Map(options.legalMoves.map((move) => [move.to, move]));
   const targetOutcomes = new Map((options.targetOutcomes ?? []).map((target) => [target.move.to, target]));
-  const recommended = options.recommendedMoves ?? [];
+  const orientation = options.orientation ?? "cannon";
+  const visualSquares = visualSquaresForOrientation(orientation);
+  const displayMove = options.selectedMove ?? options.hoveredMove ?? options.primaryMove ?? null;
+  const displayKind = options.selectedMove ? "selected" : options.hoveredMove ? "hovered" : displayMove ? "primary" : null;
 
-  for (let square = 0; square < boardSize * boardSize; square += 1) {
+  for (const square of visualSquares) {
     const button = document.createElement("button");
     button.type = "button";
     button.className = "square";
     button.dataset.square = String(square);
-    button.setAttribute("aria-label", `${pieceLabel(options.position, square)}，第 ${square} 格`);
 
     if (options.position.soldiers.has(square)) {
       button.classList.add("soldier");
@@ -66,6 +95,10 @@ export function renderBoard(container: HTMLElement, options: BoardRenderOptions)
     } else {
       button.textContent = "";
       button.classList.add("empty");
+    }
+
+    if (options.showSquareNumbers ?? true) {
+      appendSquareNumber(button, square);
     }
 
     if (options.selectedSquare === square || options.editSelectedSquare === square) {
@@ -85,30 +118,60 @@ export function renderBoard(container: HTMLElement, options: BoardRenderOptions)
       }
     }
 
-    if (moveTouchesSquare(options.lastMove, square)) {
-      button.classList.add("last-move");
+    if (displayKind === "primary" && displayMove?.from === square) {
+      button.classList.add("primary-from");
     }
 
-    if (recommended.some((move) => move.from === square)) {
-      button.classList.add("recommended-from");
+    if (displayKind === "primary" && displayMove?.to === square) {
+      button.classList.add("primary-to");
+      if (displayMove.capture) button.classList.add("primary-capture");
     }
 
-    if (recommended.some((move) => move.to === square)) {
-      button.classList.add("recommended-move");
+    if (displayKind === "hovered" && displayMove?.from === square) {
+      button.classList.add("hovered-move-from");
     }
 
-    if (targetMove && recommended.some((move) => movesEqual(move, targetMove))) {
+    if (displayKind === "hovered" && displayMove?.to === square) {
+      button.classList.add("hovered-move-to");
+    }
+
+    if (displayKind === "selected" && displayMove?.from === square) {
+      button.classList.add("selected-move-from");
+    }
+
+    if (displayKind === "selected" && displayMove?.to === square) {
+      button.classList.add("selected-move-to");
+    }
+
+    if (options.lastMove?.from === square) {
+      button.classList.add("last-move-from");
+    }
+
+    if (options.lastMove?.to === square) {
+      button.classList.add("last-move-to");
+    }
+
+    if (options.lineMove?.from === square) {
+      button.classList.add("line-move-from");
+    }
+
+    if (options.lineMove?.to === square) {
+      button.classList.add("line-move-to");
+    }
+
+    if (options.spotlightMove?.from === square) {
+      button.classList.add("spotlight-from");
+    }
+
+    if (options.spotlightMove?.to === square) {
+      button.classList.add("spotlight-to");
+    }
+
+    if (targetMove && displayMove && movesEqual(displayMove, targetMove)) {
       button.classList.add("recommended-target");
     }
 
-    if (moveTouchesSquare(options.lineMove, square)) {
-      button.classList.add("line-move");
-    }
-
-    if (moveTouchesSquare(options.spotlightMove, square)) {
-      button.classList.add("spotlight-move");
-    }
-
+    button.setAttribute("aria-label", ariaLabelForSquare(options, square, targetMove, displayMove));
     button.addEventListener("click", () => options.onSquareClick(square));
     container.append(button);
   }

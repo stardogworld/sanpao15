@@ -9,6 +9,10 @@ export const zh = {
   panels: {
     game: "对局",
     tablebase: "表库",
+    currentPosition: "当前局面",
+    bestMove: "下一步建议",
+    moveAnalysis: "合法着法分析",
+    sideComparison: "双方先走比较",
     lineExplorer: "路线探索",
     initialPosition: "初始局面",
     help: "规则说明",
@@ -43,6 +47,56 @@ export const zh = {
     off: "关闭",
     none: "无",
     maxPlies: "最多手数",
+  },
+
+  mtd: {
+    loaded: "已加载",
+    partial: "部分加载",
+    notLoaded: "未加载",
+    complete: "完整 MTD：0..15 均已加载",
+    partialNote: "MTD 尚未完整生成，缺失层会回退为 WDL-only。",
+    missingNote: "未加载 MTD：只能显示胜负和推荐，不能区分同为胜/和的细节优劣。",
+    backendOnly: "MTD 推荐仅在本地后端模式可用；浏览器文件模式当前为 WDL-only。",
+    policyPerfect: "MTD 完美推荐",
+    policyWdlOnly: "WDL-only 推荐",
+    policyPartialFallback: "MTD 部分加载，当前层回退 WDL-only",
+    currentLayerAvailable: (k: number) => `当前 k=${k} 层 MTD 已加载。`,
+    currentLayerMissing: (k: number) => `当前 k=${k} 层 MTD 未加载，已回退 WDL-only。`,
+  },
+
+  moveGroups: {
+    summary: "着法概览",
+    total: "总着法",
+    winning: "胜势",
+    drawing: "和棋",
+    losing: "败着",
+    policy: "推荐模式",
+    optimal: "最优",
+    acceptable: "可接受",
+    mistake: "失误",
+    empty: "无",
+    preview: "预览",
+    execute: "执行",
+  },
+
+  board: {
+    flip: "翻转棋盘",
+    unflip: "恢复视角",
+    showNumbers: "显示格号",
+    hideNumbers: "隐藏格号",
+    defaultView: "默认视角",
+    flippedView: "翻转视角",
+  },
+
+  recommendation: {
+    title: "最优下一步",
+    wdlTitle: "WDL 推荐下一步",
+    executeBest: "执行最佳着法",
+    noLegalMove: "当前方无合法着法。",
+    waiting: "正在等待查询结果。",
+    wdlOnlyWarning: "当前为 WDL-only 推荐。",
+    mtdPerfect: "当前为 MTD 完美推荐。",
+    optimalCount: (count: number) => `共有 ${count} 个同分最优着法，棋盘默认高亮第一个；可在着法列表中选择其它最优着法。`,
   },
 
   actions: {
@@ -122,7 +176,7 @@ export const zh = {
   },
 
   line: {
-    note: "当前是胜负和表库，只保证胜、负、和结果；不包含最快胜、最短保和或距离信息。",
+    note: "路线探索当前仍使用 WDL 策略，只保证胜、负、和结果；MTD 最优下一步请看“下一步建议”面板。",
     maxPliesNote: "这是一条胜负和示例路线，不代表最快胜或最短保和。",
     exploring: "正在探索胜负和路线...",
     explored: (reason: string) => `路线探索结束：${stopReasonText(reason)}。`,
@@ -187,7 +241,7 @@ export const zh = {
     "兵数少于 4 时，炮胜。",
     "炮无合法着法时，兵胜。",
     "其他局面由完整表库给出炮胜、兵胜或和棋。",
-    "当前表库只保存胜负和结果，不保存最快胜或最短保和步数。",
+    "WDL 表库保存胜负和结果；加载 MTD 后，下一步建议会在同一 WDL 层级内按材料目标和保证步数细分排序。",
   ],
 };
 

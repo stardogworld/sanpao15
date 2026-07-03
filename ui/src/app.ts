@@ -40,7 +40,7 @@ import {
   openTablebaseDirectory,
   openTablebaseFiles,
 } from "./tablebase/denseResult";
-import { type MoveClassification, type TablebaseRecommendationResult } from "./tablebase/recommend";
+import { type MtdInfo, type TablebaseRecommendationResult } from "./tablebase/recommend";
 import {
   type WdlLineExplorerResult,
 } from "./tablebase/lineExplorer";
@@ -81,6 +81,9 @@ export class Sanpao15App {
   private lastMove: Move | null = null;
   private recommendedMoves: Move[] = [];
   private targetOutcomes: TargetOutcomeLabel[] = [];
+  private boardFlipped = false;
+  private showSquareNumbers = true;
+  private selectedMoveForDisplay: Move | null = null;
 
   private readonly root: HTMLElement;
   private readonly boardEl = document.createElement("section");
@@ -164,21 +167,21 @@ export class Sanpao15App {
             <summary>下一步建议</summary>
             <div class="best-move-result"></div>
           </details>
-          <details class="app-panel comparison-panel" open>
-            <summary>双方先走比较</summary>
-            <div class="side-comparison-result"></div>
-          </details>
           <details class="app-panel moves-panel" open>
             <summary>合法着法分析</summary>
             <div class="move-groups-result"></div>
           </details>
-          <details class="app-panel tablebase-panel" open>
+          <details class="app-panel tablebase-panel">
             <summary>${zh.panels.tablebase}</summary>
             <div class="panel-heading">
               <div class="tablebase-actions"></div>
             </div>
             <div class="auto-query-row"></div>
             <div class="tablebase-status"></div>
+          </details>
+          <details class="app-panel comparison-panel">
+            <summary>${zh.panels.sideComparison}</summary>
+            <div class="side-comparison-result"></div>
           </details>
           <details class="app-panel line-panel">
             <summary>${zh.panels.lineExplorer}</summary>
@@ -220,15 +223,7 @@ export class Sanpao15App {
     metrics[2].append(this.soldierCountEl);
     metrics[3].append(this.resultEl);
 
-    const toolbar = this.requireElement(".toolbar");
-    toolbar.append(
-      this.makeButton(zh.actions.undo, () => this.undo()),
-      this.makeButton(zh.actions.redo, () => this.redo()),
-      this.makeButton("查询当前局面", () => void this.refreshAnalysisNow()),
-      this.makeButton("清空棋盘", () => this.setPosition(clonePosition(emptyPosition), null, true, "已清空棋盘。")),
-      this.makeButton("恢复初始局面", () => this.reset()),
-      this.makeButton("随机局面", () => this.setPosition(randomLegalDensePosition(), null, true, "已生成随机局面。")),
-    );
+    this.renderToolbar();
 
     this.notationEl.className = "notation-code";
     this.pasteInputEl.type = "text";
@@ -337,6 +332,33 @@ export class Sanpao15App {
     return button;
   }
 
+  private renderToolbar(): void {
+    const toolbar = this.requireElement(".toolbar");
+    toolbar.replaceChildren(
+      this.makeButton(zh.actions.undo, () => this.undo()),
+      this.makeButton(zh.actions.redo, () => this.redo()),
+      this.makeButton(this.boardFlipped ? zh.board.unflip : zh.board.flip, () => this.toggleBoardFlip()),
+      this.makeButton(this.showSquareNumbers ? zh.board.hideNumbers : zh.board.showNumbers, () => this.toggleSquareNumbers()),
+      this.makeButton("查询当前局面", () => void this.refreshAnalysisNow()),
+      this.makeButton("清空棋盘", () => this.setPosition(clonePosition(emptyPosition), null, true, "已清空棋盘。")),
+      this.makeButton("恢复初始局面", () => this.reset()),
+      this.makeButton("随机局面", () => this.setPosition(randomLegalDensePosition(), null, true, "已生成随机局面。")),
+    );
+  }
+
+  private toggleBoardFlip(): void {
+    this.boardFlipped = !this.boardFlipped;
+    this.showFeedback(this.boardFlipped ? "已翻转棋盘视角。" : "已恢复默认棋盘视角。");
+    this.renderToolbar();
+    this.render();
+  }
+
+  private toggleSquareNumbers(): void {
+    this.showSquareNumbers = !this.showSquareNumbers;
+    this.renderToolbar();
+    this.render();
+  }
+
   private renderModeControls(): void {
     this.modeToggleEl.replaceChildren(
       this.makeSegment("分析模式", "analysis", this.mode, (mode) => this.setMode(mode)),
@@ -396,6 +418,7 @@ export class Sanpao15App {
   private setMode(mode: BoardMode): void {
     this.mode = mode;
     this.clearSelection();
+    this.selectedMoveForDisplay = null;
     this.editSelectedSquare = null;
     this.showFeedback(mode === "analysis" ? "已切换到分析模式。" : "已切换到编辑模式。");
     this.renderModeControls();
@@ -479,6 +502,7 @@ export class Sanpao15App {
     this.targetOutcomes = [];
     this.spotlightMove = null;
     this.hoveredMove = null;
+    this.selectedMoveForDisplay = null;
   }
 
   private async detectBackendOnStartup(): Promise<void> {
@@ -567,17 +591,92 @@ export class Sanpao15App {
     this.renderTablebaseStatus();
   }
 
+  private primaryRecommendedMove(): Move | null {
+    return this.tablebaseResult?.bestMove?.move
+      ?? this.currentSummary?.bestMoves[0]?.move
+      ?? null;
+  }
+
+  private bestMoveInfo(): MoveOutcomeInfo | null {
+    const backendBest = this.tablebaseResult?.bestMove?.move;
+    if (backendBest && this.currentSummary) {
+      const matched = this.currentSummary.allMoves.find((move) => movesSame(move.move, backendBest));
+      if (matched) return matched;
+    }
+    return this.currentSummary?.bestMoves[0] ?? null;
+  }
+
+  private currentMtdInfo(): MtdInfo | null {
+    return this.tablebaseResult?.currentMtd ?? null;
+  }
+
+  private currentMtdMissingLabel(): string {
+    if (this.tablebase?.kind === "browser-files") return "WDL-only";
+    if (this.tablebaseStatus?.mtd?.loaded) return "当前层缺失";
+    return zh.mtd.notLoaded;
+  }
+
+  private recommendationModeLabel(): string {
+    if (this.tablebaseResult?.recommendationPolicy === "mtd" && this.tablebaseResult.mtdScoringEnabled) {
+      return zh.mtd.policyPerfect;
+    }
+    if (this.tablebaseStatus?.mtd?.loaded && this.tablebaseResult?.recommendationPolicy !== "mtd") {
+      return zh.mtd.policyPartialFallback;
+    }
+    return zh.mtd.policyWdlOnly;
+  }
+
+  private recommendationModeTone(): Parameters<typeof badge>[1] {
+    return this.tablebaseResult?.recommendationPolicy === "mtd" && this.tablebaseResult.mtdScoringEnabled
+      ? "drawing"
+      : "warning";
+  }
+
+  private recommendationPolicyNote(): HTMLElement {
+    const note = document.createElement("p");
+    note.className = this.recommendationModeTone() === "drawing" ? "panel-note" : "panel-note warning-note";
+    note.append(badge(this.recommendationModeLabel(), this.recommendationModeTone()));
+    const reason = this.tablebaseResult?.mtdScoringDisabledReason;
+    if (this.tablebaseResult?.recommendationPolicy === "mtd" && this.tablebaseResult.mtdScoringEnabled) {
+      note.append(document.createTextNode(" 同一 WDL 层级内按材料目标和保证步数继续细分排序。"));
+    } else if (this.tablebase?.kind === "browser-files") {
+      note.append(document.createTextNode(` ${zh.mtd.backendOnly}`));
+    } else if (reason) {
+      note.append(document.createTextNode(` ${reason}`));
+    } else {
+      note.append(document.createTextNode(` ${zh.mtd.partialNote}`));
+    }
+    return note;
+  }
+
   private renderPositionSummary(): HTMLElement {
     const container = document.createElement("div");
     container.className = "status-grid";
     const canQueryText = this.currentValidation.canQuery ? "是" : "否";
+    const currentMtd = this.currentMtdInfo();
     container.append(
       this.statusItem("可查表", canQueryText, this.currentValidation.canQuery ? "drawing" : "warning"),
       this.statusItem("denseIndex", this.currentValidation.denseIndex?.toString() ?? "-"),
       this.statusItem("表库层", this.currentValidation.layerName ?? "-"),
       this.statusItem("合法着法", String(generateLegalMoves(this.position).length)),
       this.statusItem("最佳着法", String(this.currentSummary?.bestMoves.length ?? 0)),
+      this.statusItem("推荐模式", this.recommendationModeLabel(), this.recommendationModeTone()),
+      this.statusItem("当前 MTD", currentMtd?.available ? zh.mtd.loaded : this.currentMtdMissingLabel(), currentMtd?.available ? "drawing" : "warning"),
+      this.statusItem("材料目标", currentMtd?.available ? String(currentMtd.materialTarget ?? "-") : "-"),
+      this.statusItem("保证步数", currentMtd?.available ? String(currentMtd.guaranteeDistance ?? "-") : "-"),
     );
+    if (currentMtd?.available) {
+      container.append(
+        this.statusItem("炮最多还能吃", String(currentMtd.cannonMaxCaptures ?? "-")),
+        this.statusItem("兵方能保住", String(currentMtd.soldierSaved ?? "-")),
+      );
+      if (currentMtd.text) {
+        const note = document.createElement("p");
+        note.className = "panel-note mtd-note full-row";
+        note.textContent = currentMtd.text;
+        container.append(note);
+      }
+    }
     if (this.currentValidation.reason) {
       const reason = document.createElement("p");
       reason.className = "panel-note warning-note full-row";
@@ -592,7 +691,7 @@ export class Sanpao15App {
       return this.renderEmptyState("当前局面暂不可查表", this.currentValidation.reason ?? "无法给出下一步建议。");
     }
     if (!this.currentSummary) {
-      return this.renderEmptyState("尚未查询", this.tablebase ? "正在等待查询结果。" : "请先加载表库。");
+      return this.renderEmptyState("尚未查询", this.tablebase ? zh.recommendation.waiting : "请先加载表库。");
     }
     const container = document.createElement("div");
     container.className = "best-card";
@@ -600,31 +699,22 @@ export class Sanpao15App {
     const bestCount = this.currentSummary.bestMoves.length;
     heading.textContent = bestCount === 0
       ? `${sideText(this.position.side)}无合法着法`
-      : `${sideText(this.position.side)}建议`;
+      : this.recommendationModeLabel() === zh.mtd.policyPerfect ? zh.recommendation.title : zh.recommendation.wdlTitle;
     container.append(heading);
+    container.append(this.recommendationPolicyNote());
 
     if (bestCount === 0) {
       const note = document.createElement("p");
-      note.textContent = "当前方无合法着法。";
+      note.textContent = zh.recommendation.noLegalMove;
       container.append(note);
       return container;
     }
 
-    const intro = document.createElement("p");
-    intro.textContent = bestMoveExplanation(this.currentSummary);
-    container.append(intro);
-
-    const bestMove = this.currentSummary.bestMoves[0];
-    const recommendation = this.tablebaseResult;
-    const policy = recommendation?.recommendationPolicy;
-    if (policy) {
-      const policyNote = document.createElement("p");
-      policyNote.className = policy === "mtd" ? "panel-note" : "panel-note warning-note";
-      policyNote.textContent = policy === "mtd"
-        ? "推荐模式：MTD 细分推荐，同一 WDL 层级内使用材料目标和保证步数排序。"
-        : `推荐模式：WDL-only。${recommendation?.mtdScoringDisabledReason ?? "MTD 未加载或当前同级着法缺少 MTD 数据。"}`;
-      container.append(policyNote);
+    const bestMove = this.bestMoveInfo();
+    if (!bestMove) {
+      return this.renderEmptyState("尚未查询", zh.recommendation.waiting);
     }
+    const recommendation = this.tablebaseResult;
 
     const detail = document.createElement("div");
     detail.className = "best-move-detail-grid";
@@ -636,11 +726,27 @@ export class Sanpao15App {
     );
     container.append(detail);
 
+    const mtdDetail = document.createElement("div");
+    mtdDetail.className = "best-move-detail-grid";
+    const successorMtd = bestMove.successorMtd;
+    mtdDetail.append(
+      this.summaryStat("目标剩余兵", successorMtd?.available ? String(successorMtd.materialTarget ?? "-") : "-"),
+      this.summaryStat("保证步数", successorMtd?.available ? String(successorMtd.guaranteeDistance ?? "-") : "-"),
+      this.summaryStat("炮最多还能吃", successorMtd?.available ? String(successorMtd.cannonMaxCaptures ?? "-") : "-"),
+      this.summaryStat("兵方能保住", successorMtd?.available ? String(successorMtd.soldierSaved ?? "-") : "-"),
+    );
+    container.append(mtdDetail);
+
     if (bestMove.reason) {
       const reason = document.createElement("p");
       reason.className = "panel-note";
       reason.textContent = bestMove.reason;
       container.append(reason);
+    } else {
+      const intro = document.createElement("p");
+      intro.className = "panel-note";
+      intro.textContent = bestMoveExplanation(this.currentSummary, recommendation);
+      container.append(intro);
     }
     if (bestMove.successorMtd?.available && bestMove.successorMtd.text) {
       const mtd = document.createElement("p");
@@ -648,22 +754,22 @@ export class Sanpao15App {
       mtd.textContent = bestMove.successorMtd.text;
       container.append(mtd);
     }
+    if ((recommendation?.optimalMoveCount ?? bestCount) > 1) {
+      const optimalNote = document.createElement("p");
+      optimalNote.className = "panel-note";
+      optimalNote.textContent = zh.recommendation.optimalCount(recommendation?.optimalMoveCount ?? bestCount);
+      container.append(optimalNote);
+    }
 
     const actions = document.createElement("div");
     actions.className = "best-actions";
     actions.append(
-      this.makeButton("执行最佳着法", () => this.applyMoveFromPanel(bestMove.move)),
+      this.makeButton(zh.recommendation.executeBest, () => this.applyMoveFromPanel(bestMove.move)),
       this.makeButton("复制局面", () => void this.copyNotation()),
       this.makeButton("重置初始局面", () => this.reset()),
     );
     container.append(actions);
 
-    const list = document.createElement("div");
-    list.className = "best-move-list";
-    for (const move of this.currentSummary.bestMoves) {
-      list.append(this.renderMoveButton(move, true));
-    }
-    container.append(list);
     return container;
   }
 
@@ -701,18 +807,18 @@ export class Sanpao15App {
 
   private renderMoveGroupsPanel(): HTMLElement {
     if (!this.currentSummary) {
-      return this.renderEmptyState("????", this.currentValidation.reason ?? "???????????????");
+      return this.renderEmptyState("尚未查询", this.currentValidation.reason ?? "加载表库后会列出全部合法着法。");
     }
     const container = document.createElement("div");
     container.className = "tablebase-result-grid";
     const summary = document.createElement("div");
     summary.className = "summary-band";
     summary.append(
-      this.summaryStat("????", String(this.currentSummary.legalMoveCount)),
-      this.summaryStat("????", String(this.currentSummary.winningMoves.length)),
-      this.summaryStat("????", String(this.currentSummary.drawingMoves.length)),
-      this.summaryStat("????", String(this.currentSummary.losingMoves.length)),
-      this.summaryStat("????", this.tablebaseResult?.recommendationPolicy === "mtd" ? "MTD" : "WDL-only"),
+      this.summaryStat(zh.moveGroups.total, String(this.currentSummary.legalMoveCount)),
+      this.summaryStat(zh.moveGroups.winning, String(this.currentSummary.winningMoves.length)),
+      this.summaryStat(zh.moveGroups.drawing, String(this.currentSummary.drawingMoves.length)),
+      this.summaryStat(zh.moveGroups.losing, String(this.currentSummary.losingMoves.length)),
+      this.summaryStat(zh.moveGroups.policy, this.recommendationModeLabel()),
     );
     container.append(summary);
 
@@ -720,19 +826,19 @@ export class Sanpao15App {
     const groups: Array<{ key: "optimal" | "acceptable" | "mistake"; title: string; moves: MoveOutcomeInfo[] }> = [
       {
         key: "optimal",
-        title: "??",
+        title: zh.moveGroups.optimal,
         moves: this.currentSummary.allMoves.filter((move) => move.isBest),
       },
       {
         key: "acceptable",
-        title: "???",
+        title: zh.moveGroups.acceptable,
         moves: this.currentSummary.allMoves.filter((move) =>
           !move.isBest &&
           (bestTier !== undefined ? move.score?.wdlTier === bestTier : move.classification !== "losing")),
       },
       {
         key: "mistake",
-        title: "??",
+        title: zh.moveGroups.mistake,
         moves: this.currentSummary.allMoves.filter((move) =>
           !move.isBest &&
           (bestTier !== undefined ? move.score?.wdlTier !== bestTier : move.classification === "losing")),
@@ -748,7 +854,7 @@ export class Sanpao15App {
       if (group.moves.length === 0) {
         const empty = document.createElement("p");
         empty.className = "empty-group";
-        empty.textContent = "?";
+        empty.textContent = zh.moveGroups.empty;
         section.append(empty);
       } else {
         const list = document.createElement("ul");
@@ -764,34 +870,63 @@ export class Sanpao15App {
     return container;
   }
 
-  private renderMoveButton(move: MoveOutcomeInfo, isBest: boolean): HTMLButtonElement {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = isBest ? "move-row-button recommended" : "move-row-button";
-    const mtd = move.successorMtd?.available
-      ? `MTD ${move.successorMtd.materialTarget}/${move.successorMtd.guaranteeDistance}`
-      : "MTD -";
+  private renderMoveButton(move: MoveOutcomeInfo, isBest: boolean): HTMLElement {
+    const card = document.createElement("article");
+    card.className = `move-row-card ${isBest ? "recommended" : move.classification === "losing" ? "mistake" : ""}`;
     const rank = move.rank !== undefined ? `#${move.rank}` : "-";
-    button.append(
+    const topLine = document.createElement("div");
+    topLine.className = "move-row-top";
+    topLine.append(
       textSpan("move-main", `${rank} ${formatMove(move.move)}`),
       outcomeBadge(move.successorOutcome),
       classificationBadge(move.classification),
-      textSpan("move-detail", `??=${move.move.to}?${move.move.capture ? `? ${move.move.capturedSquare}` : "???"}???=${move.successorSoldierCount}?${mtd}`),
     );
+
+    const mtd = move.successorMtd?.available
+      ? `MTD：目标 ${move.successorMtd.materialTarget ?? "-"} 兵，${move.successorMtd.guaranteeDistance ?? "-"} ply`
+      : "MTD：-";
+    const secondLine = textSpan(
+      "move-detail",
+      [
+        `k=${move.successorSoldierCount}`,
+        `dense=${formatDenseIndex(move.successorIndex)}`,
+        move.move.capture ? `吃 ${move.move.capturedSquare}` : "不吃子",
+        mtd,
+      ].join(" | "),
+    );
+
+    card.append(topLine, secondLine);
     const reasonText = move.reason ?? move.score?.description;
     if (reasonText) {
-      button.append(textSpan("move-reason", reasonText));
+      card.append(textSpan("move-reason", reasonText));
     }
-    button.addEventListener("mouseenter", () => {
+    const actions = document.createElement("div");
+    actions.className = "move-row-actions";
+    const previewButton = this.makeButton(zh.moveGroups.preview, () => this.previewMove(move.move));
+    const executeButton = this.makeButton(zh.moveGroups.execute, () => this.applyMoveFromPanel(move.move));
+    previewButton.addEventListener("click", (event) => event.stopPropagation());
+    executeButton.addEventListener("click", (event) => event.stopPropagation());
+    actions.append(previewButton, executeButton);
+    card.append(actions);
+
+    card.addEventListener("mouseenter", () => {
       this.hoveredMove = move.move;
       this.render();
     });
-    button.addEventListener("mouseleave", () => {
+    card.addEventListener("mouseleave", () => {
       this.hoveredMove = null;
       this.render();
     });
-    button.addEventListener("click", () => this.applyMoveFromPanel(move.move));
-    return button;
+    card.addEventListener("click", () => this.previewMove(move.move));
+    card.addEventListener("dblclick", () => this.applyMoveFromPanel(move.move));
+    return card;
+  }
+
+  private previewMove(move: Move): void {
+    this.selectedMoveForDisplay = move;
+    this.hoveredMove = null;
+    this.showFeedback(`已预览着法：${formatMove(move)}。`);
+    this.render();
   }
 
   private applyMoveFromPanel(move: Move): void {
@@ -836,8 +971,8 @@ export class Sanpao15App {
   private renderTablebaseStatus(): void {
     if (!this.tablebase) {
       if (this.tablebaseStatus?.mode === "local-backend") {
-        const detail = this.tablebaseStatus.error ?? "?????????????????????";
-        this.tablebaseStatusEl.replaceChildren(this.renderEmptyState("?????????", detail));
+        const detail = this.tablebaseStatus.error ?? "本地后端已响应，但表库未完整加载。";
+        this.tablebaseStatusEl.replaceChildren(this.renderEmptyState("本地后端不可用", detail));
         return;
       }
       this.tablebaseStatusEl.replaceChildren(this.renderEmptyState(
@@ -848,7 +983,7 @@ export class Sanpao15App {
     }
     const status = this.tablebaseStatus;
     if (!status) {
-      this.tablebaseStatusEl.replaceChildren(this.renderEmptyState("??????", "????????????????"));
+      this.tablebaseStatusEl.replaceChildren(this.renderEmptyState("状态未知", "尚未取得表库状态。"));
       return;
     }
     const complete = status.complete;
@@ -856,36 +991,61 @@ export class Sanpao15App {
     container.className = "status-grid";
     container.append(
       this.statusItem(zh.labels.status, complete ? zh.tablebase.complete : zh.tablebase.partial, complete ? "drawing" : "warning"),
-      this.statusItem(zh.labels.source, this.tablebase.kind === "backend" ? "????" : status.sourceName),
+      this.statusItem(zh.labels.source, this.tablebase.kind === "backend" ? "本地后端" : status.sourceName),
       this.statusItem(zh.labels.layers, `${status.loadedLayers.length}/16`),
       this.statusItem(zh.labels.encoding, status.encoding || zh.outcome.Unknown),
       this.statusItem(zh.labels.ruleset, status.rulesetHash ?? status.rulesetName ?? "-"),
-      this.statusItem(zh.labels.readMode, this.tablebase.kind === "backend" ? "?????? .s15res" : zh.tablebase.randomRead),
+      this.statusItem(zh.labels.readMode, this.tablebase.kind === "backend" ? "后端随机读取 .s15res" : zh.tablebase.randomRead),
     );
+    if (status.missingLayers.length > 0) {
+      container.append(this.statusItem("缺失 WDL 层", status.missingLayers.join(","), "warning"));
+    }
+    if (status.invalidLayers?.length) {
+      const invalidNote = document.createElement("p");
+      invalidNote.className = "panel-note warning-note full-row";
+      invalidNote.textContent = `无效 WDL 层：${status.invalidLayers.map((layer) => `${layer.soldierCount}:${layer.error}`).join("；")}`;
+      container.append(invalidNote);
+    }
     if (status.mtd) {
       const mtdText = status.mtd.complete
-        ? "????"
+        ? zh.mtd.loaded
         : status.mtd.loaded
-          ? "????"
-          : "???";
+          ? zh.mtd.partial
+          : zh.mtd.notLoaded;
       container.append(
         this.statusItem("MTD", mtdText, status.mtd.loaded ? (status.mtd.complete ? "drawing" : "warning") : "warning"),
-        this.statusItem("MTD ?", `${status.mtd.loadedLayers.length}/16`),
-        this.statusItem("MTD ??", status.mtd.store),
+        this.statusItem("MTD 层数", `${status.mtd.loadedLayers.length}/16`),
+        this.statusItem("MTD 存储", status.mtd.store),
       );
+      if (status.mtd.missingLayers.length > 0) {
+        container.append(this.statusItem("缺失 MTD 层", status.mtd.missingLayers.join(","), "warning"));
+      }
+      if (status.mtd.invalidLayers?.length) {
+        const invalidMtd = document.createElement("p");
+        invalidMtd.className = "panel-note warning-note full-row";
+        invalidMtd.textContent = `无效 MTD 层：${status.mtd.invalidLayers.map((layer) => `${layer.soldierCount}:${layer.error}`).join("；")}`;
+        container.append(invalidMtd);
+      }
       const mtdNote = document.createElement("p");
       mtdNote.className = `panel-note full-row${status.mtd.complete ? "" : " warning-note"}`;
       mtdNote.textContent = status.mtd.complete
-        ? "MTD ?????? WDL ?????????????????"
+        ? "本地后端已加载完整 MTD；推荐会在数据完整的层使用 MTD tie-break。"
         : status.mtd.loaded
-          ? "MTD ?????????????????????? WDL-only?"
-          : (status.mtd.error ?? "MTD ???????????/???????");
+          ? "本地后端已部分加载 MTD；缺失层会回退为 WDL-only。"
+          : (status.mtd.error ?? "未加载 MTD；当前仅使用 WDL 推荐。");
       container.append(mtdNote);
     }
     if (this.tablebase.kind === "backend") {
       const note = document.createElement("p");
       note.className = "panel-note full-row";
-      note.textContent = "????????UI ?????????????????????????";
+      note.textContent = status.mtd?.loaded
+        ? "本地后端模式可提供 MTD-aware 推荐；当前局面是否使用 MTD 取决于该兵数层是否已加载。"
+        : "未加载 MTD；当前仅使用 WDL 推荐。";
+      container.append(note);
+    } else {
+      const note = document.createElement("p");
+      note.className = "panel-note warning-note full-row";
+      note.textContent = "浏览器文件模式当前只支持 .s15res WDL 查询；MTD 推荐请使用 --serve-ui --mtd-dir。";
       container.append(note);
     }
     this.tablebaseStatusEl.replaceChildren(container);
@@ -1119,6 +1279,7 @@ export class Sanpao15App {
     this.selectedSquare = null;
     this.selectedMoves = [];
     this.targetOutcomes = [];
+    this.selectedMoveForDisplay = null;
   }
 
   private render(): void {
@@ -1128,11 +1289,15 @@ export class Sanpao15App {
       selectedSquare: this.selectedSquare,
       editSelectedSquare: this.editSelectedSquare,
       legalMoves: this.selectedMoves,
-      recommendedMoves: this.recommendedMoves,
       targetOutcomes: this.targetOutcomes,
       lastMove: this.lastMove,
       lineMove: this.currentLineMove(),
-      spotlightMove: this.hoveredMove ?? this.spotlightMove,
+      spotlightMove: this.spotlightMove,
+      orientation: this.boardFlipped ? "soldier" : "cannon",
+      primaryMove: this.primaryRecommendedMove(),
+      selectedMove: this.selectedMoveForDisplay,
+      hoveredMove: this.hoveredMove,
+      showSquareNumbers: this.showSquareNumbers,
       onSquareClick: (square) => this.onSquareClick(square),
     });
 
@@ -1146,11 +1311,15 @@ export class Sanpao15App {
   }
 
   private renderHeaderStatus(): void {
+    const mtdStatus = this.tablebaseStatus?.mtd;
     this.headerStatusEl.replaceChildren(
       badge(zh.rulesetBadge, "neutral"),
       badge(this.mode === "analysis" ? "分析模式" : "编辑模式", this.mode === "analysis" ? "drawing" : "warning"),
       this.currentSummary ? outcomeBadge(this.currentSummary.outcome) : badge(this.currentValidation.canQuery ? "待查询" : "不可查", this.currentValidation.canQuery ? "neutral" : "warning"),
       badge(this.tablebase ? zh.tablebase.loadedBadge(this.tablebaseStatus?.loadedLayers.length ?? 0) : zh.tablebase.notLoadedBadge, this.tablebase ? "drawing" : "warning"),
+      mtdStatus?.loaded ? badge(`MTD ${mtdStatus.loadedLayers.length}/16`, mtdStatus.complete ? "drawing" : "warning") : badge("WDL-only", "warning"),
+      badge(this.boardFlipped ? zh.board.flippedView : zh.board.defaultView, "neutral"),
+      badge(this.showSquareNumbers ? "格号开" : "格号关", "neutral"),
     );
   }
 
@@ -1271,6 +1440,11 @@ function textSpan(className: string, text: string): HTMLSpanElement {
   return span;
 }
 
+function formatDenseIndex(index: bigint): string {
+  const text = index.toString();
+  return text.length > 10 ? `${text.slice(0, 4)}...${text.slice(-4)}` : text;
+}
+
 function movesSame(left: Move, right: Move): boolean {
   return (
     left.from === right.from &&
@@ -1280,7 +1454,10 @@ function movesSame(left: Move, right: Move): boolean {
   );
 }
 
-function bestMoveExplanation(summary: BestMoveSummary): string {
+function bestMoveExplanation(summary: BestMoveSummary, recommendation?: TablebaseRecommendationResult | null): string {
+  if (recommendation?.recommendationPolicy === "mtd" && recommendation.mtdScoringEnabled) {
+    return "当前推荐已使用 MTD 细分排序。";
+  }
   if (summary.bestMoves.length === 0) {
     return "当前方无合法着法。";
   }
