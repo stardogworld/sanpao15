@@ -15,6 +15,7 @@ namespace {
 
 constexpr std::array<char, 8> DenseResultMagic{'S', '1', '5', 'R', 'E', 'S', '1', '\0'};
 constexpr uint32_t DenseResultVersion = 1;
+constexpr uint64_t DenseResultHeaderBytes = 44;
 
 void writeU8(std::ostream& output, uint8_t value) {
     output.put(static_cast<char>(value));
@@ -305,6 +306,71 @@ std::vector<uint8_t>& PackedOutcomeTable2Bit::mutablePayload() {
     return packed_;
 }
 
+PackedOutcomeTable2BitView PackedOutcomeTable2Bit::view() const noexcept {
+    return PackedOutcomeTable2BitView(packed_.data(), stateCount_, static_cast<uint64_t>(packed_.size()));
+}
+
+PackedOutcomeTable2BitView::PackedOutcomeTable2BitView(
+    const uint8_t* payload,
+    uint64_t stateCount,
+    uint64_t payloadBytes) noexcept
+    : payload_(payload),
+      stateCount_(stateCount),
+      payloadBytes_(payloadBytes) {}
+
+uint64_t PackedOutcomeTable2BitView::size() const noexcept {
+    return stateCount_;
+}
+
+uint64_t PackedOutcomeTable2BitView::bytes() const noexcept {
+    return payloadBytes_;
+}
+
+bool PackedOutcomeTable2BitView::empty() const noexcept {
+    return payload_ == nullptr || stateCount_ == 0;
+}
+
+Outcome PackedOutcomeTable2BitView::getUnchecked(uint64_t index) const {
+    const size_t byteIndex = static_cast<size_t>(index / 4u);
+    const int shift = static_cast<int>((index % 4u) * 2u);
+    return decodeOutcome(static_cast<uint8_t>((payload_[byteIndex] >> shift) & 0x3u));
+}
+
+MappedPackedOutcomeTable2Bit::MappedPackedOutcomeTable2Bit(
+    const std::filesystem::path& path,
+    uint64_t expectedRulesetHash,
+    int expectedSoldierCount)
+    : file_(path) {
+    std::ifstream input(path, std::ios::binary);
+    if (!input) {
+        throw std::runtime_error("failed to open .s15res for mapped header validation: " + path.string());
+    }
+    info_ = readDenseResultHeader(input);
+    validateHeaderExpectations(info_, expectedRulesetHash, expectedSoldierCount);
+    if (info_.encoding != DenseResultEncoding::Packed2Bit) {
+        throw std::runtime_error(".s15res mmap view requires packed 2-bit encoding");
+    }
+    if (file_.size() != DenseResultHeaderBytes + info_.payloadBytes) {
+        throw std::runtime_error(".s15res file size does not match header");
+    }
+    if (info_.stateCount % 4u != 0 && info_.payloadBytes != 0) {
+        const uint64_t usedSlots = info_.stateCount % 4u;
+        const int usedBits = static_cast<int>(usedSlots * 2u);
+        const uint8_t unusedMask = static_cast<uint8_t>(0xffu << usedBits);
+        if (((file_.data() + DenseResultHeaderBytes)[static_cast<size_t>(info_.payloadBytes - 1u)] & unusedMask) != 0) {
+            throw std::runtime_error(".s15res packed payload has non-zero unused bits");
+        }
+    }
+}
+
+const DenseResultFileInfo& MappedPackedOutcomeTable2Bit::info() const noexcept {
+    return info_;
+}
+
+PackedOutcomeTable2BitView MappedPackedOutcomeTable2Bit::view() const noexcept {
+    return PackedOutcomeTable2BitView(file_.data() + DenseResultHeaderBytes, info_.stateCount, info_.payloadBytes);
+}
+
 uint64_t denseResultPayloadBytes(uint64_t stateCount, DenseResultEncoding encoding) {
     switch (encoding) {
         case DenseResultEncoding::Byte:
@@ -419,8 +485,7 @@ DenseResultFileInfo inspectDenseResultFile(const std::filesystem::path& path) {
     const std::streamoff fileSize = input.tellg();
     input.seekg(0);
     const DenseResultFileInfo info = readDenseResultHeader(input);
-    const uint64_t headerBytes = 8u + 4u + 8u + 4u + 8u + 4u + 8u;
-    if (fileSize < 0 || static_cast<uint64_t>(fileSize) != headerBytes + info.payloadBytes) {
+    if (fileSize < 0 || static_cast<uint64_t>(fileSize) != DenseResultHeaderBytes + info.payloadBytes) {
         throw std::runtime_error(".s15res file size does not match header");
     }
     return info;
@@ -437,8 +502,7 @@ DenseResultFileInfo validateDenseResultFile(
     const std::streamoff fileSize = input.tellg();
     input.seekg(0);
     const DenseResultFileInfo info = readDenseResultHeader(input);
-    const uint64_t headerBytes = 8u + 4u + 8u + 4u + 8u + 4u + 8u;
-    if (fileSize < 0 || static_cast<uint64_t>(fileSize) != headerBytes + info.payloadBytes) {
+    if (fileSize < 0 || static_cast<uint64_t>(fileSize) != DenseResultHeaderBytes + info.payloadBytes) {
         throw std::runtime_error(".s15res file size does not match header");
     }
     validateHeaderExpectations(info, expectedRulesetHash, expectedSoldierCount);

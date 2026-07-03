@@ -258,6 +258,67 @@ PackedOutcomeTable2Bit loadDenseResultAnyEncoding(const std::filesystem::path& p
     return packed;
 }
 
+struct LoadedWdlTableView {
+    std::optional<PackedOutcomeTable2Bit> owned;
+    std::optional<MappedPackedOutcomeTable2Bit> mapped;
+    PackedOutcomeTable2BitView view;
+    uint64_t mappedBytes = 0;
+    uint64_t explicitRamBytes = 0;
+};
+
+LoadedWdlTableView loadWdlTableView(
+    const std::filesystem::path& path,
+    int soldierCount,
+    MtdTableStore store) {
+    LoadedWdlTableView loaded;
+    if (store == MtdTableStore::Mmap) {
+        const DenseResultFileInfo info = inspectDenseResultFile(path);
+        if (info.rulesetHash != StandardRulesetHash) {
+            throw std::runtime_error(".s15res ruleset hash mismatch");
+        }
+        if (info.soldierCount != soldierCount) {
+            throw std::runtime_error(".s15res soldier count mismatch");
+        }
+        if (info.encoding == DenseResultEncoding::Packed2Bit) {
+            loaded.mapped.emplace(path, StandardRulesetHash, soldierCount);
+            loaded.view = loaded.mapped->view();
+            loaded.mappedBytes = loaded.mapped->info().payloadBytes + MtdHeaderBytes;
+            return loaded;
+        }
+        throw std::runtime_error(".s15res mmap view requires packed 2-bit encoding");
+    }
+    loaded.owned = loadDenseResultAnyEncoding(path, soldierCount);
+    loaded.view = loaded.owned->view();
+    loaded.explicitRamBytes = loaded.owned->bytes();
+    return loaded;
+}
+
+struct LoadedMtdTableView {
+    std::optional<PackedMtdTable12> owned;
+    std::optional<MappedMtdTable12> mapped;
+    MtdTable12View view;
+    uint64_t mappedBytes = 0;
+    uint64_t explicitRamBytes = 0;
+};
+
+LoadedMtdTableView loadMtdTableView(
+    const std::filesystem::path& path,
+    uint64_t expectedRulesetHash,
+    int expectedSoldierCount,
+    MtdTableStore store) {
+    LoadedMtdTableView loaded;
+    if (store == MtdTableStore::Mmap) {
+        loaded.mapped.emplace(path, expectedRulesetHash, expectedSoldierCount);
+        loaded.view = loaded.mapped->view();
+        loaded.mappedBytes = loaded.mapped->info().fileSize;
+        return loaded;
+    }
+    loaded.owned = loadMtdTable(path, expectedRulesetHash, expectedSoldierCount);
+    loaded.view = loaded.owned->view();
+    loaded.explicitRamBytes = loaded.owned->bytes();
+    return loaded;
+}
+
 std::filesystem::path wdlLayerPath(const std::filesystem::path& dir, int soldierCount) {
     return lowKLayerResultPath(dir, soldierCount);
 }
@@ -289,6 +350,11 @@ bool isTerminalForMtdOutcome(const DenseTerminalInfo& terminal, Outcome outcome)
     return terminal.terminal && terminal.outcome == outcome;
 }
 
+template <class T>
+void releaseVectorCapacity(std::vector<T>& value) {
+    std::vector<T>().swap(value);
+}
+
 uint64_t denseBitsetBytesForBits(uint64_t bitCount) {
     const uint64_t wordCount = bitCount / 64u + (bitCount % 64u == 0 ? 0u : 1u);
     if (wordCount > std::numeric_limits<uint64_t>::max() / sizeof(uint64_t)) {
@@ -299,8 +365,8 @@ uint64_t denseBitsetBytesForBits(uint64_t bitCount) {
 
 Outcome successorOutcomeFor(
     const DenseSuccessor& successor,
-    const PackedOutcomeTable2Bit& currentWdl,
-    const PackedOutcomeTable2Bit* lowerWdl) {
+    const PackedOutcomeTable2BitView& currentWdl,
+    const PackedOutcomeTable2BitView* lowerWdl) {
     if (successor.kind == DenseSuccessorKind::SameLayer) {
         return currentWdl.getUnchecked(successor.toIndex);
     }
@@ -314,7 +380,7 @@ MtdEntry successorMtdFor(
     const DenseSuccessor& successor,
     const std::vector<uint8_t>& currentMaterial,
     const MtdDistanceWork& currentDistance,
-    const PackedMtdTable12* lowerMtd) {
+    const MtdTable12View* lowerMtd) {
     if (successor.kind == DenseSuccessorKind::SameLayer) {
         return mtdEntryFromWorkArrays(currentMaterial, currentDistance, successor.toIndex);
     }
@@ -326,8 +392,8 @@ MtdEntry successorMtdFor(
 
 MtdEntry successorMtdFromTables(
     const DenseSuccessor& successor,
-    const PackedMtdTable12& currentMtd,
-    const PackedMtdTable12* lowerMtd) {
+    const MtdTable12View& currentMtd,
+    const MtdTable12View* lowerMtd) {
     if (successor.kind == DenseSuccessorKind::SameLayer) {
         return currentMtd.getUnchecked(successor.toIndex);
     }
@@ -344,9 +410,9 @@ MtdEntry lookupSuccessorMtd(const DenseSuccessor& successor, const std::filesyst
 bool thresholdChildTrue(
     const DenseSuccessor& successor,
     Outcome currentOutcome,
-    const PackedOutcomeTable2Bit& currentWdl,
-    const PackedOutcomeTable2Bit* lowerWdl,
-    const PackedMtdTable12* lowerMtd,
+    const PackedOutcomeTable2BitView& currentWdl,
+    const PackedOutcomeTable2BitView* lowerWdl,
+    const MtdTable12View* lowerMtd,
     const std::vector<uint8_t>& currentMaterial,
     const DenseBitset& thresholdNewTrue,
     int threshold) {
@@ -369,9 +435,9 @@ uint8_t computeDistanceForState(
     uint64_t index,
     const Position& pos,
     uint8_t materialTarget,
-    const PackedOutcomeTable2Bit& currentWdl,
-    const PackedOutcomeTable2Bit* lowerWdl,
-    const PackedMtdTable12* lowerMtd,
+    const PackedOutcomeTable2BitView& currentWdl,
+    const PackedOutcomeTable2BitView* lowerWdl,
+    const MtdTable12View* lowerMtd,
     const std::vector<uint8_t>& currentMaterial,
     const MtdDistanceWork& currentDistance,
     std::vector<DenseSuccessor>& successors) {
@@ -411,9 +477,9 @@ uint32_t checkedMtdQueueIndex(uint64_t index);
 void solveWinningOutcomeMtd(
     int k,
     Outcome outcome,
-    const PackedOutcomeTable2Bit& currentWdl,
-    const PackedOutcomeTable2Bit* lowerWdl,
-    const PackedMtdTable12* lowerMtd,
+    const PackedOutcomeTable2BitView& currentWdl,
+    const PackedOutcomeTable2BitView* lowerWdl,
+    const MtdTable12View* lowerMtd,
     std::vector<uint8_t>& material,
     MtdDistanceWork& distance,
     uint64_t& queuePeak,
@@ -635,7 +701,7 @@ void solveWinningOutcomeMtd(
                 }
             }
         }
-        bucket.clear();
+        releaseVectorCapacity(bucket);
         if (bucketIndex == MtdSaturatedDistance) {
             break;
         }
@@ -651,25 +717,59 @@ void solveWinningOutcomeMtd(
             }
         }
     });
+    for (std::vector<uint32_t>& bucket : buckets) {
+        releaseVectorCapacity(bucket);
+    }
+    releaseVectorCapacity(predecessorIndices);
+    releaseVectorCapacity(loserUnresolved);
 }
 
-uint64_t estimateMtdMemoryBytes(int soldierCount, uint64_t stateCount, const PackedMtdTable12* lowerMtd) {
+struct MtdMemoryEstimate {
+    uint64_t explicitRamBytes = 0;
+    uint64_t mappedBytes = 0;
+    uint64_t currentWdlBytes = 0;
+    uint64_t lowerWdlBytes = 0;
+    uint64_t lowerMtdBytes = 0;
+    uint64_t queueScratchBytes = 0;
+};
+
+MtdMemoryEstimate estimateMtdMemoryBytes(
+    int soldierCount,
+    uint64_t stateCount,
+    MtdTableStore lowerMtdStore,
+    MtdTableStore wdlStore) {
     const uint64_t bitsetBytes = denseBitsetBytesForBits(stateCount);
-    uint64_t total = 0;
-    total += stateCount;  // material targets
-    total += stateCount;  // uint8 distance values
-    total += bitsetBytes;  // distance solved bits
-    total += denseResultPayloadBytes(stateCount, DenseResultEncoding::Packed2Bit);  // current WDL
-    if (soldierCount >= MinSoldiersForSoldierSurvival) {
-        total += bitsetBytes * 5u;  // winning/draw finalized and candidate flags plus draw threshold bits
-        total += stateCount * 3u;  // loserUnresolved, remaining, soldierUnresolved byte counters
-        total += stateCount * sizeof(uint32_t);  // queue/bucket scratch headroom
+    MtdMemoryEstimate estimate;
+    estimate.explicitRamBytes += stateCount;  // material targets
+    estimate.explicitRamBytes += stateCount;  // uint8 distance values
+    estimate.explicitRamBytes += bitsetBytes;  // distance solved bits
+    estimate.currentWdlBytes = denseResultPayloadBytes(stateCount, DenseResultEncoding::Packed2Bit);
+    if (wdlStore == MtdTableStore::Mmap) {
+        estimate.mappedBytes += MtdHeaderBytes + estimate.currentWdlBytes;
+    } else {
+        estimate.explicitRamBytes += estimate.currentWdlBytes;
     }
     if (soldierCount >= MinSoldiersForSoldierSurvival) {
-        total += denseResultPayloadBytes(denseStateCount(soldierCount - 1), DenseResultEncoding::Packed2Bit);
-        total += lowerMtd == nullptr ? mtdPayloadBytes(denseStateCount(soldierCount - 1)) : lowerMtd->bytes();
+        estimate.explicitRamBytes += bitsetBytes * 5u;  // winning/draw finalized and candidate flags plus draw threshold bits
+        estimate.explicitRamBytes += stateCount * 3u;  // loserUnresolved, remaining, soldierUnresolved byte counters
+        estimate.queueScratchBytes = stateCount * sizeof(uint32_t);
+        estimate.explicitRamBytes += estimate.queueScratchBytes;
     }
-    return total;
+    if (soldierCount >= MinSoldiersForSoldierSurvival) {
+        estimate.lowerWdlBytes = denseResultPayloadBytes(denseStateCount(soldierCount - 1), DenseResultEncoding::Packed2Bit);
+        estimate.lowerMtdBytes = mtdPayloadBytes(denseStateCount(soldierCount - 1));
+        if (wdlStore == MtdTableStore::Mmap) {
+            estimate.mappedBytes += MtdHeaderBytes + estimate.lowerWdlBytes;
+        } else {
+            estimate.explicitRamBytes += estimate.lowerWdlBytes;
+        }
+        if (lowerMtdStore == MtdTableStore::Mmap) {
+            estimate.mappedBytes += MtdHeaderBytes + estimate.lowerMtdBytes;
+        } else {
+            estimate.explicitRamBytes += estimate.lowerMtdBytes;
+        }
+    }
+    return estimate;
 }
 
 void writeMtdStatsJson(const MtdLayerSolveResult& result) {
@@ -740,7 +840,17 @@ void writeMtdStatsJson(const MtdLayerSolveResult& result) {
     out << "  \"stageMaterialSeconds\": " << std::setprecision(12) << result.stageMaterialSeconds << ",\n";
     out << "  \"stageDistanceSeconds\": " << std::setprecision(12) << result.stageDistanceSeconds << ",\n";
     out << "  \"totalSeconds\": " << std::setprecision(12) << result.totalSeconds << ",\n";
+    out << "  \"memoryMode\": {\n";
+    out << "    \"lowerMtdStore\": \"" << mtdTableStoreToString(result.lowerMtdStore) << "\",\n";
+    out << "    \"wdlStore\": \"" << mtdTableStoreToString(result.wdlStore) << "\"\n";
+    out << "  },\n";
     out << "  \"estimatedMemoryBytes\": " << result.estimatedMemoryBytes << ",\n";
+    out << "  \"estimatedExplicitRamBytes\": " << result.estimatedExplicitRamBytes << ",\n";
+    out << "  \"estimatedMappedBytes\": " << result.estimatedMappedBytes << ",\n";
+    out << "  \"estimatedCurrentWdlBytes\": " << result.estimatedCurrentWdlBytes << ",\n";
+    out << "  \"estimatedLowerWdlBytes\": " << result.estimatedLowerWdlBytes << ",\n";
+    out << "  \"estimatedLowerMtdBytes\": " << result.estimatedLowerMtdBytes << ",\n";
+    out << "  \"estimatedQueueScratchBytes\": " << result.estimatedQueueScratchBytes << ",\n";
     out << "  \"queuePeak\": " << result.queuePeak << ",\n";
     out << "  \"materialIterations\": " << result.materialIterations << ",\n";
     out << "  \"distanceIterations\": " << result.distanceIterations << "\n";
@@ -774,7 +884,13 @@ void validateWdlLayer(const std::filesystem::path& wdlDir, int soldierCount) {
     if (!std::filesystem::exists(path)) {
         throw std::runtime_error("missing WDL layer: " + path.string());
     }
-    (void)validateDenseResultFile(path, StandardRulesetHash, soldierCount);
+    const DenseResultFileInfo info = inspectDenseResultFile(path);
+    if (info.rulesetHash != StandardRulesetHash) {
+        throw std::runtime_error(".s15res ruleset hash mismatch");
+    }
+    if (info.soldierCount != soldierCount) {
+        throw std::runtime_error(".s15res soldier count mismatch");
+    }
 }
 
 uint32_t checkedMtdQueueIndex(uint64_t index) {
@@ -972,7 +1088,7 @@ const std::vector<uint8_t>& MtdThresholdStampScratch::stamps() const {
 }
 
 MtdWdlLayerScanSummary scanSolvedWdlLayer(
-    const PackedOutcomeTable2Bit& table,
+    const PackedOutcomeTable2BitView& table,
     int soldierCount,
     const char* label,
     uint32_t threads) {
@@ -1012,6 +1128,50 @@ MtdWdlLayerScanSummary scanSolvedWdlLayer(
     return summary;
 }
 
+MtdWdlLayerScanSummary scanSolvedWdlLayer(
+    const PackedOutcomeTable2Bit& table,
+    int soldierCount,
+    const char* label,
+    uint32_t threads) {
+    return scanSolvedWdlLayer(table.view(), soldierCount, label, threads);
+}
+
+MtdTable12View::MtdTable12View(
+    const uint8_t* payload,
+    uint64_t stateCount,
+    uint64_t payloadBytes) noexcept
+    : payload_(payload),
+      stateCount_(stateCount),
+      payloadBytes_(payloadBytes) {}
+
+uint64_t MtdTable12View::size() const noexcept {
+    return stateCount_;
+}
+
+uint64_t MtdTable12View::bytes() const noexcept {
+    return payloadBytes_;
+}
+
+bool MtdTable12View::empty() const noexcept {
+    return payload_ == nullptr || stateCount_ == 0;
+}
+
+const uint8_t* MtdTable12View::payload() const noexcept {
+    return payload_;
+}
+
+MtdEntry MtdTable12View::getUnchecked(uint64_t index) const {
+    const size_t byteIndex = static_cast<size_t>((index / 2u) * 3u);
+    if (index % 2u == 0) {
+        const uint16_t value = static_cast<uint16_t>(payload_[byteIndex]) |
+            (static_cast<uint16_t>(payload_[byteIndex + 1] & 0x0fu) << 8u);
+        return decodeMtdEntry(value);
+    }
+    const uint16_t value = static_cast<uint16_t>((payload_[byteIndex + 1] >> 4u) & 0x0fu) |
+        (static_cast<uint16_t>(payload_[byteIndex + 2]) << 4u);
+    return decodeMtdEntry(value);
+}
+
 PackedMtdTable12::PackedMtdTable12(uint64_t stateCount, MtdEntry initial)
     : stateCount_(stateCount),
       packed_(static_cast<size_t>(mtdPayloadBytes(stateCount)), 0) {
@@ -1040,15 +1200,7 @@ void PackedMtdTable12::set(uint64_t index, MtdEntry entry) {
 }
 
 MtdEntry PackedMtdTable12::getUnchecked(uint64_t index) const {
-    const size_t byteIndex = static_cast<size_t>((index / 2u) * 3u);
-    if (index % 2u == 0) {
-        const uint16_t value = static_cast<uint16_t>(packed_[byteIndex]) |
-            (static_cast<uint16_t>(packed_[byteIndex + 1] & 0x0fu) << 8u);
-        return decodeMtdEntry(value);
-    }
-    const uint16_t value = static_cast<uint16_t>((packed_[byteIndex + 1] >> 4u) & 0x0fu) |
-        (static_cast<uint16_t>(packed_[byteIndex + 2]) << 4u);
-    return decodeMtdEntry(value);
+    return view().getUnchecked(index);
 }
 
 void PackedMtdTable12::setUnchecked(uint64_t index, MtdEntry entry) {
@@ -1077,6 +1229,30 @@ const std::vector<uint8_t>& PackedMtdTable12::payload() const {
 
 std::vector<uint8_t>& PackedMtdTable12::mutablePayload() {
     return packed_;
+}
+
+MtdTable12View PackedMtdTable12::view() const noexcept {
+    return MtdTable12View(packed_.data(), stateCount_, static_cast<uint64_t>(packed_.size()));
+}
+
+MappedMtdTable12::MappedMtdTable12(
+    const std::filesystem::path& path,
+    uint64_t expectedRulesetHash,
+    int expectedSoldierCount)
+    : file_(path) {
+    info_ = inspectMtdFile(path);
+    validateExpectations(info_, expectedRulesetHash, expectedSoldierCount);
+    if (file_.size() != MtdHeaderBytes + info_.payloadBytes) {
+        throw std::runtime_error(".s15mtd file size does not match header");
+    }
+}
+
+const MtdFileInfo& MappedMtdTable12::info() const noexcept {
+    return info_;
+}
+
+MtdTable12View MappedMtdTable12::view() const noexcept {
+    return MtdTable12View(file_.data() + MtdHeaderBytes, info_.stateCount, info_.payloadBytes);
 }
 
 std::filesystem::path mtdLayerPath(const std::filesystem::path& dir, int soldierCount) {
@@ -1276,7 +1452,7 @@ MtdFileInfo validateMtdHeaderOnly(
     return info;
 }
 
-void validateMtdPayload(const PackedMtdTable12& table, int soldierCount) {
+void validateMtdPayloadView(MtdTable12View table, int soldierCount) {
     requireLayer(soldierCount);
     if (table.size() != denseStateCount(soldierCount)) {
         throw std::runtime_error(".s15mtd payload state count does not match soldier-count layer");
@@ -1284,21 +1460,26 @@ void validateMtdPayload(const PackedMtdTable12& table, int soldierCount) {
     for (uint64_t index = 0; index < table.size(); ++index) {
         validateEntryForLayer(table.getUnchecked(index), soldierCount);
     }
-    if (table.size() % 2u == 1u && !table.payload().empty()) {
-        const uint8_t unusedNibble = static_cast<uint8_t>((table.payload().back() >> 4u) & 0x0fu);
+    if (table.size() % 2u == 1u && table.bytes() != 0) {
+        const uint8_t unusedNibble =
+            static_cast<uint8_t>((table.payload()[static_cast<size_t>(table.bytes() - 1u)] >> 4u) & 0x0fu);
         if (unusedNibble != 0) {
             throw std::runtime_error(".s15mtd packed payload has non-zero unused odd-entry bits");
         }
     }
 }
 
+void validateMtdPayload(const PackedMtdTable12& table, int soldierCount) {
+    validateMtdPayloadView(table.view(), soldierCount);
+}
+
 MtdFileInfo validateMtdFileFull(
     const std::filesystem::path& path,
     uint64_t expectedRulesetHash,
     int expectedSoldierCount) {
-    MtdFileInfo info = validateMtdHeaderOnly(path, expectedRulesetHash, expectedSoldierCount);
-    (void)loadMtdTable(path, expectedRulesetHash, expectedSoldierCount);
-    return info;
+    MappedMtdTable12 mapped(path, expectedRulesetHash, expectedSoldierCount);
+    validateMtdPayloadView(mapped.view(), mapped.info().soldierCount);
+    return mapped.info();
 }
 
 MtdFileInfo validateMtdFile(
@@ -1308,10 +1489,9 @@ MtdFileInfo validateMtdFile(
     return validateMtdFileFull(path, expectedRulesetHash, expectedSoldierCount);
 }
 
-MtdInspectStats inspectMtdTable(const std::filesystem::path& path, uint32_t threads) {
+MtdInspectStats inspectMtdView(const MtdFileInfo& info, MtdTable12View table, uint32_t threads) {
     MtdInspectStats stats;
-    stats.info = inspectMtdFile(path);
-    const PackedMtdTable12 table = loadMtdTable(path, stats.info.rulesetHash, stats.info.soldierCount);
+    stats.info = info;
     stats.threads = normalizeThreadCount(threads, table.size());
     stats.minMaterialTarget = 15;
     struct LocalInspectStats {
@@ -1328,6 +1508,7 @@ MtdInspectStats inspectMtdTable(const std::filesystem::path& path, uint32_t thre
         LocalInspectStats& local = localStats[threadId];
         for (uint64_t index = begin; index < end; ++index) {
             const MtdEntry entry = table.getUnchecked(index);
+            validateEntryForLayer(entry, stats.info.soldierCount);
             local.minMaterialTarget = std::min(local.minMaterialTarget, entry.materialTarget);
             local.maxMaterialTarget = std::max(local.maxMaterialTarget, entry.materialTarget);
             ++local.materialTargetCounts[entry.materialTarget];
@@ -1357,6 +1538,16 @@ MtdInspectStats inspectMtdTable(const std::filesystem::path& path, uint32_t thre
         stats.minMaterialTarget = 0;
     }
     return stats;
+}
+
+MtdInspectStats inspectMtdTable(const std::filesystem::path& path, uint32_t threads) {
+    return inspectMtdTableMapped(path, threads);
+}
+
+MtdInspectStats inspectMtdTableMapped(const std::filesystem::path& path, uint32_t threads) {
+    const MtdFileInfo info = inspectMtdFile(path);
+    MappedMtdTable12 mapped(path, info.rulesetHash, info.soldierCount);
+    return inspectMtdView(mapped.info(), mapped.view(), threads);
 }
 
 MtdEntry lookupMtdEntryAt(
@@ -1428,15 +1619,18 @@ MtdLayerSolveResult solveMtdLayer(const MtdLayerSolveOptions& options) {
     const int k = options.soldierCount;
     const uint64_t stateCount = denseStateCount(k);
     const uint32_t solveThreads = normalizeThreadCount(options.threads, stateCount);
-    PackedOutcomeTable2Bit currentWdl = loadDenseResultAnyEncoding(wdlLayerPath(options.wdlDir, k), k);
-    std::optional<PackedOutcomeTable2Bit> lowerWdl;
-    std::optional<PackedMtdTable12> lowerMtd;
+    LoadedWdlTableView currentWdlStorage = loadWdlTableView(wdlLayerPath(options.wdlDir, k), k, options.wdlStore);
+    std::optional<LoadedWdlTableView> lowerWdlStorage;
+    std::optional<LoadedMtdTableView> lowerMtdStorage;
     if (k >= MinSoldiersForSoldierSurvival) {
-        lowerWdl = loadDenseResultAnyEncoding(wdlLayerPath(options.wdlDir, k - 1), k - 1);
-        lowerMtd = loadMtdTable(mtdLayerPath(options.mtdDir, k - 1), StandardRulesetHash, k - 1);
+        lowerWdlStorage = loadWdlTableView(wdlLayerPath(options.wdlDir, k - 1), k - 1, options.wdlStore);
+        lowerMtdStorage = loadMtdTableView(mtdLayerPath(options.mtdDir, k - 1), StandardRulesetHash, k - 1, options.lowerMtdStore);
     }
+    const PackedOutcomeTable2BitView currentWdl = currentWdlStorage.view;
+    const PackedOutcomeTable2BitView* lowerWdl = lowerWdlStorage.has_value() ? &lowerWdlStorage->view : nullptr;
+    const MtdTable12View* lowerMtd = lowerMtdStorage.has_value() ? &lowerMtdStorage->view : nullptr;
     const MtdWdlLayerScanSummary currentScan = scanSolvedWdlLayer(currentWdl, k, "current", solveThreads);
-    if (lowerWdl.has_value()) {
+    if (lowerWdl != nullptr) {
         (void)scanSolvedWdlLayer(*lowerWdl, k - 1, "lower", solveThreads);
     }
 
@@ -1457,8 +1651,8 @@ MtdLayerSolveResult solveMtdLayer(const MtdLayerSolveOptions& options) {
                 k,
                 Outcome::CannonWin,
                 currentWdl,
-                lowerWdl.has_value() ? &*lowerWdl : nullptr,
-                lowerMtd.has_value() ? &*lowerMtd : nullptr,
+                lowerWdl,
+                lowerMtd,
                 material,
                 distance,
                 queuePeak,
@@ -1470,8 +1664,8 @@ MtdLayerSolveResult solveMtdLayer(const MtdLayerSolveOptions& options) {
                 k,
                 Outcome::SoldierWin,
                 currentWdl,
-                lowerWdl.has_value() ? &*lowerWdl : nullptr,
-                lowerMtd.has_value() ? &*lowerMtd : nullptr,
+                lowerWdl,
+                lowerMtd,
                 material,
                 distance,
                 queuePeak,
@@ -1541,7 +1735,7 @@ MtdLayerSolveResult solveMtdLayer(const MtdLayerSolveOptions& options) {
                                 const Outcome childOutcome = successorOutcomeFor(
                                     successor,
                                     currentWdl,
-                                    lowerWdl.has_value() ? &*lowerWdl : nullptr);
+                                    lowerWdl);
                                 if (!wdlPreserving(currentOutcome, childOutcome)) {
                                     continue;
                                 }
@@ -1550,8 +1744,8 @@ MtdLayerSolveResult solveMtdLayer(const MtdLayerSolveOptions& options) {
                                         successor,
                                         currentOutcome,
                                         currentWdl,
-                                        lowerWdl.has_value() ? &*lowerWdl : nullptr,
-                                        lowerMtd.has_value() ? &*lowerMtd : nullptr,
+                                        lowerWdl,
+                                        lowerMtd,
                                         material,
                                         thresholdNewTrue,
                                         threshold)) {
@@ -1570,7 +1764,7 @@ MtdLayerSolveResult solveMtdLayer(const MtdLayerSolveOptions& options) {
                             const Outcome childOutcome = successorOutcomeFor(
                                 successor,
                                 currentWdl,
-                                lowerWdl.has_value() ? &*lowerWdl : nullptr);
+                                lowerWdl);
                             if (!wdlPreserving(currentOutcome, childOutcome)) {
                                 continue;
                             }
@@ -1579,8 +1773,8 @@ MtdLayerSolveResult solveMtdLayer(const MtdLayerSolveOptions& options) {
                                     successor,
                                     currentOutcome,
                                     currentWdl,
-                                    lowerWdl.has_value() ? &*lowerWdl : nullptr,
-                                    lowerMtd.has_value() ? &*lowerMtd : nullptr,
+                                    lowerWdl,
+                                    lowerMtd,
                                     material,
                                     thresholdNewTrue,
                                     threshold)) {
@@ -1649,8 +1843,11 @@ MtdLayerSolveResult solveMtdLayer(const MtdLayerSolveOptions& options) {
                         }
                     }
                 });
+                releaseVectorCapacity(queue);
             }
         }
+        releaseVectorCapacity(remaining);
+        releaseVectorCapacity(predecessorIndices);
         parallelForRanges(stateCount, solveThreads, [&](uint64_t begin, uint64_t end, uint32_t) {
             for (uint64_t index = begin; index < end; ++index) {
                 if (currentWdl.getUnchecked(index) == Outcome::Draw &&
@@ -1736,12 +1933,12 @@ MtdLayerSolveResult solveMtdLayer(const MtdLayerSolveOptions& options) {
                     const Outcome childOutcome = successorOutcomeFor(
                         successor,
                         currentWdl,
-                        lowerWdl.has_value() ? &*lowerWdl : nullptr);
+                        lowerWdl);
                     if (childOutcome != Outcome::Draw) {
                         continue;
                     }
                     if (successor.kind == DenseSuccessorKind::CaptureToLowerLayer) {
-                        if (!lowerMtd.has_value()) {
+                        if (lowerMtd == nullptr) {
                             throw std::logic_error("draw distance capture requires lower MTD layer");
                         }
                         const MtdEntry child = lowerMtd->getUnchecked(successor.toIndex);
@@ -1851,7 +2048,7 @@ MtdLayerSolveResult solveMtdLayer(const MtdLayerSolveOptions& options) {
                     }
                 }
             }
-            bucket.clear();
+            releaseVectorCapacity(bucket);
             if (bucketIndex == MtdSaturatedDistance) {
                 break;
             }
@@ -1866,6 +2063,11 @@ MtdLayerSolveResult solveMtdLayer(const MtdLayerSolveOptions& options) {
                 }
             }
         });
+        for (std::vector<uint32_t>& bucket : buckets) {
+            releaseVectorCapacity(bucket);
+        }
+        releaseVectorCapacity(predecessorIndices);
+        releaseVectorCapacity(soldierUnresolved);
     }
     const auto distanceFinish = std::chrono::steady_clock::now();
 
@@ -1896,7 +2098,17 @@ MtdLayerSolveResult solveMtdLayer(const MtdLayerSolveOptions& options) {
     result.stageDistanceSeconds = std::chrono::duration<double>(distanceFinish - distanceStart).count();
     const auto totalFinish = std::chrono::steady_clock::now();
     result.totalSeconds = std::chrono::duration<double>(totalFinish - totalStart).count();
-    result.estimatedMemoryBytes = estimateMtdMemoryBytes(k, stateCount, lowerMtd.has_value() ? &*lowerMtd : nullptr);
+    const MtdMemoryEstimate memoryEstimate =
+        estimateMtdMemoryBytes(k, stateCount, options.lowerMtdStore, options.wdlStore);
+    result.lowerMtdStore = options.lowerMtdStore;
+    result.wdlStore = options.wdlStore;
+    result.estimatedMemoryBytes = memoryEstimate.explicitRamBytes;
+    result.estimatedExplicitRamBytes = memoryEstimate.explicitRamBytes;
+    result.estimatedMappedBytes = memoryEstimate.mappedBytes;
+    result.estimatedCurrentWdlBytes = memoryEstimate.currentWdlBytes;
+    result.estimatedLowerWdlBytes = memoryEstimate.lowerWdlBytes;
+    result.estimatedLowerMtdBytes = memoryEstimate.lowerMtdBytes;
+    result.estimatedQueueScratchBytes = memoryEstimate.queueScratchBytes;
     result.queuePeak = queuePeak;
     result.distanceIterations = distanceIterations + winIterations;
     result.materialIterations = materialIterations;
@@ -1952,6 +2164,8 @@ MtdRangeSolveResult solveMtdRange(const MtdRangeSolveOptions& options) {
         layerOptions.mtdDir = options.mtdDir;
         layerOptions.overwrite = options.overwrite;
         layerOptions.threads = options.threads;
+        layerOptions.lowerMtdStore = options.lowerMtdStore;
+        layerOptions.wdlStore = options.wdlStore;
         const MtdLayerSolveResult layer = solveMtdLayer(layerOptions);
         result.totalOutputBytes += layer.outputBytes;
         result.layers.push_back(layer);
@@ -1964,20 +2178,32 @@ MtdRangeSolveResult solveMtdRange(const MtdRangeSolveOptions& options) {
 MtdLayerVerifyResult verifyMtdLayer(const MtdLayerVerifyOptions& options) {
     requireLayer(options.soldierCount);
     validateWdlLayer(options.wdlDir, options.soldierCount);
-    const PackedOutcomeTable2Bit currentWdl =
-        loadDenseResultAnyEncoding(wdlLayerPath(options.wdlDir, options.soldierCount), options.soldierCount);
-    std::optional<PackedOutcomeTable2Bit> lowerWdl;
-    std::optional<PackedMtdTable12> lowerMtd;
+    LoadedWdlTableView currentWdlStorage =
+        loadWdlTableView(wdlLayerPath(options.wdlDir, options.soldierCount), options.soldierCount, options.wdlStore);
+    std::optional<LoadedWdlTableView> lowerWdlStorage;
+    std::optional<LoadedMtdTableView> lowerMtdStorage;
     if (options.soldierCount >= MinSoldiersForSoldierSurvival) {
         validateWdlLayer(options.wdlDir, options.soldierCount - 1);
-        lowerWdl = loadDenseResultAnyEncoding(wdlLayerPath(options.wdlDir, options.soldierCount - 1), options.soldierCount - 1);
-        lowerMtd = loadMtdTable(mtdLayerPath(options.mtdDir, options.soldierCount - 1), StandardRulesetHash, options.soldierCount - 1);
+        lowerWdlStorage =
+            loadWdlTableView(wdlLayerPath(options.wdlDir, options.soldierCount - 1), options.soldierCount - 1, options.wdlStore);
+        lowerMtdStorage = loadMtdTableView(
+            mtdLayerPath(options.mtdDir, options.soldierCount - 1),
+            StandardRulesetHash,
+            options.soldierCount - 1,
+            options.lowerMtdStore);
     }
-    const PackedMtdTable12 table =
-        loadMtdTable(mtdLayerPath(options.mtdDir, options.soldierCount), StandardRulesetHash, options.soldierCount);
+    LoadedMtdTableView tableStorage = loadMtdTableView(
+        mtdLayerPath(options.mtdDir, options.soldierCount),
+        StandardRulesetHash,
+        options.soldierCount,
+        options.lowerMtdStore);
+    const PackedOutcomeTable2BitView currentWdl = currentWdlStorage.view;
+    const PackedOutcomeTable2BitView* lowerWdl = lowerWdlStorage.has_value() ? &lowerWdlStorage->view : nullptr;
+    const MtdTable12View table = tableStorage.view;
+    const MtdTable12View* lowerMtd = lowerMtdStorage.has_value() ? &lowerMtdStorage->view : nullptr;
     const uint32_t verifyThreads = normalizeThreadCount(options.threads, table.size());
     (void)scanSolvedWdlLayer(currentWdl, options.soldierCount, "current", verifyThreads);
-    if (lowerWdl.has_value()) {
+    if (lowerWdl != nullptr) {
         (void)scanSolvedWdlLayer(*lowerWdl, options.soldierCount - 1, "lower", verifyThreads);
     }
 
@@ -2067,7 +2293,7 @@ MtdLayerVerifyResult verifyMtdLayer(const MtdLayerVerifyOptions& options) {
                     const Outcome childOutcome = successorOutcomeFor(
                         successor,
                         currentWdl,
-                        lowerWdl.has_value() ? &*lowerWdl : nullptr);
+                        lowerWdl);
                     if (childOutcome == Outcome::Unknown) {
                         throw std::runtime_error("MTD verify found Unknown successor WDL outcome");
                     }
@@ -2077,7 +2303,7 @@ MtdLayerVerifyResult verifyMtdLayer(const MtdLayerVerifyOptions& options) {
                     const MtdEntry child = successorMtdFromTables(
                         successor,
                         table,
-                        lowerMtd.has_value() ? &*lowerMtd : nullptr);
+                        lowerMtd);
                     const uint8_t candidateDistance = saturatedAdd1(child.guaranteeDistance);
                     const uint8_t candidateMaterial = child.materialTarget;
                     ++local.checkedTransitions;
@@ -2134,7 +2360,7 @@ MtdLayerVerifyResult verifyMtdLayer(const MtdLayerVerifyOptions& options) {
                 const Outcome childOutcome = successorOutcomeFor(
                     successor,
                     currentWdl,
-                    lowerWdl.has_value() ? &*lowerWdl : nullptr);
+                    lowerWdl);
                 if (childOutcome == Outcome::Unknown) {
                     throw std::runtime_error("MTD verify found Unknown successor WDL outcome");
                 }
@@ -2144,7 +2370,7 @@ MtdLayerVerifyResult verifyMtdLayer(const MtdLayerVerifyOptions& options) {
                 const MtdEntry child = successorMtdFromTables(
                     successor,
                     table,
-                    lowerMtd.has_value() ? &*lowerMtd : nullptr);
+                    lowerMtd);
                 ++local.checkedTransitions;
                 if (pos.side == Side::Cannon && child.materialTarget < entry.materialTarget) {
                     throw std::runtime_error("MTD verify found cannon Draw child with smaller materialTarget");
@@ -2269,6 +2495,16 @@ const char* mtdEncodingToString(MtdEncoding encoding) {
     switch (encoding) {
         case MtdEncoding::Packed12Material4Distance8:
             return "packed12-material4-distance8";
+    }
+    return "unknown";
+}
+
+const char* mtdTableStoreToString(MtdTableStore store) {
+    switch (store) {
+        case MtdTableStore::Ram:
+            return "ram";
+        case MtdTableStore::Mmap:
+            return "mmap";
     }
     return "unknown";
 }

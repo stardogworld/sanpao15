@@ -9,6 +9,7 @@
 
 #include "sanpao15/dense_bitset.h"
 #include "sanpao15/dense_table.h"
+#include "sanpao15/mapped_file.h"
 #include "sanpao15/move.h"
 #include "sanpao15/position.h"
 
@@ -18,11 +19,33 @@ enum class MtdEncoding : uint32_t {
     Packed12Material4Distance8 = 1,
 };
 
+enum class MtdTableStore {
+    Ram,
+    Mmap,
+};
+
 struct MtdEntry {
     uint8_t materialTarget = 0;
     uint8_t guaranteeDistance = 0;
 
     friend bool operator==(const MtdEntry& lhs, const MtdEntry& rhs) = default;
+};
+
+class MtdTable12View {
+public:
+    MtdTable12View() = default;
+    MtdTable12View(const uint8_t* payload, uint64_t stateCount, uint64_t payloadBytes) noexcept;
+
+    uint64_t size() const noexcept;
+    uint64_t bytes() const noexcept;
+    bool empty() const noexcept;
+    const uint8_t* payload() const noexcept;
+    MtdEntry getUnchecked(uint64_t index) const;
+
+private:
+    const uint8_t* payload_ = nullptr;
+    uint64_t stateCount_ = 0;
+    uint64_t payloadBytes_ = 0;
 };
 
 class PackedMtdTable12 {
@@ -38,6 +61,7 @@ public:
     uint64_t bytes() const;
     const std::vector<uint8_t>& payload() const;
     std::vector<uint8_t>& mutablePayload();
+    MtdTable12View view() const noexcept;
 
 private:
     uint64_t stateCount_ = 0;
@@ -52,6 +76,21 @@ struct MtdFileInfo {
     MtdEncoding encoding = MtdEncoding::Packed12Material4Distance8;
     uint64_t payloadBytes = 0;
     uint64_t fileSize = 0;
+};
+
+class MappedMtdTable12 {
+public:
+    MappedMtdTable12(
+        const std::filesystem::path& path,
+        uint64_t expectedRulesetHash,
+        int expectedSoldierCount);
+
+    const MtdFileInfo& info() const noexcept;
+    MtdTable12View view() const noexcept;
+
+private:
+    ReadOnlyMappedFile file_;
+    MtdFileInfo info_;
 };
 
 struct MtdInspectStats {
@@ -137,6 +176,14 @@ struct MtdLayerSolveResult {
     double stageDistanceSeconds = 0.0;
     double totalSeconds = 0.0;
     uint64_t estimatedMemoryBytes = 0;
+    uint64_t estimatedMappedBytes = 0;
+    uint64_t estimatedExplicitRamBytes = 0;
+    uint64_t estimatedCurrentWdlBytes = 0;
+    uint64_t estimatedLowerWdlBytes = 0;
+    uint64_t estimatedLowerMtdBytes = 0;
+    uint64_t estimatedQueueScratchBytes = 0;
+    MtdTableStore lowerMtdStore = MtdTableStore::Ram;
+    MtdTableStore wdlStore = MtdTableStore::Ram;
     uint64_t queuePeak = 0;
     uint64_t materialIterations = 0;
     uint64_t distanceIterations = 0;
@@ -149,6 +196,8 @@ struct MtdLayerSolveOptions {
     bool overwrite = false;
     bool writeStatsJson = true;
     uint32_t threads = 1;
+    MtdTableStore lowerMtdStore = MtdTableStore::Ram;
+    MtdTableStore wdlStore = MtdTableStore::Ram;
 };
 
 struct MtdRangeSolveOptions {
@@ -159,6 +208,8 @@ struct MtdRangeSolveOptions {
     bool overwrite = false;
     bool resume = false;
     uint32_t threads = 1;
+    MtdTableStore lowerMtdStore = MtdTableStore::Ram;
+    MtdTableStore wdlStore = MtdTableStore::Ram;
 };
 
 struct MtdRangeSolveResult {
@@ -177,6 +228,8 @@ struct MtdLayerVerifyOptions {
     std::filesystem::path mtdDir;
     uint64_t sampleLimit = 10000;
     uint32_t threads = 1;
+    MtdTableStore lowerMtdStore = MtdTableStore::Ram;
+    MtdTableStore wdlStore = MtdTableStore::Ram;
 };
 
 struct MtdLayerVerifyResult {
@@ -237,6 +290,11 @@ MtdWdlLayerScanSummary scanSolvedWdlLayer(
     int soldierCount,
     const char* label,
     uint32_t threads);
+MtdWdlLayerScanSummary scanSolvedWdlLayer(
+    const PackedOutcomeTable2BitView& table,
+    int soldierCount,
+    const char* label,
+    uint32_t threads);
 
 std::filesystem::path mtdLayerPath(const std::filesystem::path& dir, int soldierCount);
 std::filesystem::path mtdLayerStatsPath(const std::filesystem::path& dir, int soldierCount);
@@ -271,6 +329,7 @@ MtdFileInfo validateMtdFile(
     uint64_t expectedRulesetHash,
     int expectedSoldierCount = -1);
 MtdInspectStats inspectMtdTable(const std::filesystem::path& path, uint32_t threads = 1);
+MtdInspectStats inspectMtdTableMapped(const std::filesystem::path& path, uint32_t threads = 1);
 MtdEntry lookupMtdEntryAt(
     const std::filesystem::path& mtdDir,
     int soldierCount,
@@ -285,6 +344,7 @@ MtdLayerVerifyResult verifyMtdLayer(const MtdLayerVerifyOptions& options);
 MtdQueryResult queryMtd(const MtdQueryOptions& options);
 
 const char* mtdEncodingToString(MtdEncoding encoding);
+const char* mtdTableStoreToString(MtdTableStore store);
 std::string mtdDistanceToString(uint8_t distance);
 
 }  // namespace sanpao15

@@ -32,6 +32,7 @@ add_library(sanpao15_solver
     solver/src/external_keyset.cpp
     solver/src/layered.cpp
     solver/src/lowk_tablebase.cpp
+    solver/src/mapped_file.cpp
     solver/src/material_target_distance.cpp
     solver/src/parallel.cpp
     solver/src/partitioned_keyset.cpp

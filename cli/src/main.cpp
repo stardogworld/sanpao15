@@ -109,6 +109,8 @@ struct CliOptions {
     bool cleanTemp = false;
     bool wdlDirProvided = false;
     bool mtdDirProvided = false;
+    bool lowerMtdStoreProvided = false;
+    bool wdlStoreProvided = false;
     uint64_t maxStates = MvpStateLimit;
     uint64_t maxStatesPerLayer = 0;
     uint64_t dedupChunkSize = 1000000;
@@ -145,6 +147,8 @@ struct CliOptions {
     PartitionMethod closurePartitionMethod = PartitionMethod::Splitmix64Mod;
     PartitionBenchmarkMode benchmarkMode = PartitionBenchmarkMode::Existing;
     DenseResultEncoding resEncoding = DenseResultEncoding::Byte;
+    MtdTableStore lowerMtdStore = MtdTableStore::Ram;
+    MtdTableStore wdlStore = MtdTableStore::Ram;
     uint64_t progressInterval = 0;
     std::optional<std::filesystem::path> buildLayersDir;
     std::optional<std::filesystem::path> layerWorkDir;
@@ -335,6 +339,8 @@ void printUsage() {
         << "  --query-mtd DIR  Query material target and guarantee distance from .s15mtd files.\n"
         << "  --wdl-dir DIR    Dense WDL .s15res tablebase directory for MTD commands.\n"
         << "  --mtd-dir DIR    Material target distance .s15mtd output/input directory.\n"
+        << "  --lower-mtd-store MODE  Lower/current MTD read store for solve/verify: ram or mmap. Default: ram.\n"
+        << "  --wdl-store MODE  WDL read store for MTD solve/verify: ram or mmap. Default: ram.\n"
         << "  --threads N     Worker threads for MTD solve/verify/inspect. 1 is baseline; 0 uses hardware concurrency.\n"
         << "  --position TEXT  Position notation for --query-tablebase or --explore-tablebase.\n"
         << "  --moves        Include legal successor outcomes and WDL recommendation groups.\n"
@@ -394,6 +400,16 @@ DenseResultEncoding parseDenseResultEncoding(const std::string& text) {
         return DenseResultEncoding::Packed2Bit;
     }
     throw std::invalid_argument("--encoding must be either byte or 2bit");
+}
+
+MtdTableStore parseMtdTableStore(const std::string& text, const char* optionName) {
+    if (text == "ram") {
+        return MtdTableStore::Ram;
+    }
+    if (text == "mmap") {
+        return MtdTableStore::Mmap;
+    }
+    throw std::invalid_argument(std::string(optionName) + " must be either ram or mmap");
 }
 
 uint32_t parseThreadCount(const std::string& text) {
@@ -848,6 +864,18 @@ CliOptions parseArgs(int argc, char** argv) {
             }
             options.mtdDir = std::filesystem::path(argv[++i]);
             options.mtdDirProvided = true;
+        } else if (arg == "--lower-mtd-store") {
+            if (i + 1 >= argc) {
+                throw std::invalid_argument("--lower-mtd-store requires a value");
+            }
+            options.lowerMtdStore = parseMtdTableStore(argv[++i], "--lower-mtd-store");
+            options.lowerMtdStoreProvided = true;
+        } else if (arg == "--wdl-store") {
+            if (i + 1 >= argc) {
+                throw std::invalid_argument("--wdl-store requires a value");
+            }
+            options.wdlStore = parseMtdTableStore(argv[++i], "--wdl-store");
+            options.wdlStoreProvided = true;
         } else if (arg == "--threads") {
             if (i + 1 >= argc) {
                 throw std::invalid_argument("--threads requires a value");
@@ -1036,7 +1064,7 @@ CliOptions parseArgs(int argc, char** argv) {
             options.migrateOutputProvided || options.cleanupStaleRuns ||
             options.outDirProvided || options.outResProvided || options.lowerResProvided ||
             options.maxKProvided || options.resEncodingProvided || options.overwrite ||
-            options.wdlDirProvided || options.mtdDirProvided ||
+            options.wdlDirProvided || options.mtdDirProvided || options.lowerMtdStoreProvided || options.wdlStoreProvided ||
             options.queryPositionNotation.has_value() || options.queryMoves || options.jsonOutput ||
             options.maxPliesProvided || options.benchmarkSampleProvided || options.threadsProvided) {
             throw std::invalid_argument("--serve-ui cannot be combined with solve, stats, probe, validate, partition, query, or table output options");
@@ -1061,6 +1089,8 @@ CliOptions parseArgs(int argc, char** argv) {
             !options.solveMtdLayer && !options.solveMtdRange && !options.verifyMtdLayer;
         const bool disallowedThreads = options.threadsProvided &&
             !options.solveMtdLayer && !options.solveMtdRange && !options.verifyMtdLayer && !options.inspectMtd;
+        const bool disallowedMtdStores = (options.lowerMtdStoreProvided || options.wdlStoreProvided) &&
+            !options.solveMtdLayer && !options.solveMtdRange && !options.verifyMtdLayer;
         if (options.buildLayersDir.has_value() || options.statsOnly || options.probe || options.analysisNotation.has_value() ||
             options.saveTablePath.has_value() || options.loadTablePath.has_value() || disallowedFull ||
             options.limitProvided || options.noPred || options.maxStatesPerLayerProvided ||
@@ -1077,13 +1107,17 @@ CliOptions parseArgs(int argc, char** argv) {
             options.lookupKeyProvided || options.sampleStatesProvided || options.nextSeedPartitionDir.has_value() ||
             disallowedOverwrite || disallowedCleanTemp || disallowedRangeResume ||
             options.migrateOutputProvided || options.cleanupStaleRuns || disallowedMaxPlies ||
-            disallowedWdlDir || disallowedMtdDir || disallowedThreads) {
+            disallowedWdlDir || disallowedMtdDir || disallowedThreads || disallowedMtdStores) {
             throw std::invalid_argument("dense tablebase modes cannot be combined with build, solve, stats, probe, validate, partition, migration, or repair options");
         }
     }
     if (options.threadsProvided &&
         !options.solveMtdLayer && !options.solveMtdRange && !options.verifyMtdLayer && !options.inspectMtd) {
         throw std::invalid_argument("--threads is only valid with --solve-mtd-layer, --solve-mtd-range, --verify-mtd-layer, or --inspect-mtd");
+    }
+    if ((options.lowerMtdStoreProvided || options.wdlStoreProvided) &&
+        !options.solveMtdLayer && !options.solveMtdRange && !options.verifyMtdLayer) {
+        throw std::invalid_argument("--lower-mtd-store and --wdl-store are only valid with MTD solve or verify commands");
     }
     if ((options.queryTablebase || options.queryMtd) && !options.queryPositionNotation.has_value()) {
         throw std::invalid_argument("--query-tablebase and --query-mtd require --position TEXT");
@@ -1872,8 +1906,18 @@ void printMtdLayerResult(const MtdLayerSolveResult& layer) {
     std::cout << "Stage material time: " << formatDuration(layer.stageMaterialSeconds) << "\n";
     std::cout << "Stage distance time: " << formatDuration(layer.stageDistanceSeconds) << "\n";
     std::cout << "Total time: " << formatDuration(layer.totalSeconds) << "\n";
+    std::cout << "Memory mode: lowerMtdStore=" << mtdTableStoreToString(layer.lowerMtdStore)
+              << " wdlStore=" << mtdTableStoreToString(layer.wdlStore) << "\n";
     std::cout << "Estimated memory: " << formatInteger(layer.estimatedMemoryBytes)
               << " (" << formatBytes(layer.estimatedMemoryBytes) << ")\n";
+    std::cout << "Estimated explicit RAM: " << formatInteger(layer.estimatedExplicitRamBytes)
+              << " (" << formatBytes(layer.estimatedExplicitRamBytes) << ")\n";
+    std::cout << "Estimated mapped bytes: " << formatInteger(layer.estimatedMappedBytes)
+              << " (" << formatBytes(layer.estimatedMappedBytes) << ")\n";
+    std::cout << "Estimated WDL bytes: current=" << formatInteger(layer.estimatedCurrentWdlBytes)
+              << " lower=" << formatInteger(layer.estimatedLowerWdlBytes) << "\n";
+    std::cout << "Estimated lower MTD bytes: " << formatInteger(layer.estimatedLowerMtdBytes) << "\n";
+    std::cout << "Estimated queue scratch bytes: " << formatInteger(layer.estimatedQueueScratchBytes) << "\n";
     std::cout << "Queue peak: " << formatInteger(layer.queuePeak) << "\n";
     std::cout << "Material iterations: " << formatInteger(layer.materialIterations) << "\n";
     std::cout << "Distance iterations: " << formatInteger(layer.distanceIterations) << "\n";
@@ -1902,6 +1946,8 @@ void printSolveMtdLayer(const CliOptions& options) {
     solveOptions.mtdDir = *options.mtdDir;
     solveOptions.overwrite = options.overwrite;
     solveOptions.threads = options.threads;
+    solveOptions.lowerMtdStore = options.lowerMtdStore;
+    solveOptions.wdlStore = options.wdlStore;
     const MtdLayerSolveResult result = solveMtdLayer(solveOptions);
     std::cout << "Material target distance layer solve\n";
     std::cout << "WDL dir: " << options.wdlDir->string() << "\n";
@@ -1920,6 +1966,8 @@ void printSolveMtdRange(const CliOptions& options) {
     rangeOptions.overwrite = options.overwrite;
     rangeOptions.resume = options.rangeResume;
     rangeOptions.threads = options.threads;
+    rangeOptions.lowerMtdStore = options.lowerMtdStore;
+    rangeOptions.wdlStore = options.wdlStore;
     const MtdRangeSolveResult result = solveMtdRange(rangeOptions);
     std::cout << "Material target distance range solve\n";
     std::cout << "WDL dir: " << result.wdlDir.string() << "\n";
@@ -1990,6 +2038,8 @@ void printVerifyMtdLayer(const CliOptions& options) {
     verifyOptions.mtdDir = *options.mtdDir;
     verifyOptions.sampleLimit = options.benchmarkSampleProvided ? options.benchmarkSample : 10000;
     verifyOptions.threads = options.threads;
+    verifyOptions.lowerMtdStore = options.lowerMtdStore;
+    verifyOptions.wdlStore = options.wdlStore;
     const MtdLayerVerifyResult result = verifyMtdLayer(verifyOptions);
     std::cout << "Verify material target distance layer\n";
     std::cout << "WDL dir: " << options.wdlDir->string() << "\n";

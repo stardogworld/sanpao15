@@ -77,6 +77,12 @@ SANPAO15_TEST(packedOutcomeTableUncheckedMatchesCheckedApi) {
     SANPAO15_REQUIRE(table.getUnchecked(4) == Outcome::Draw);
     SANPAO15_REQUIRE(table.getUnchecked(8) == Outcome::CannonWin);
     SANPAO15_REQUIRE(table.getUnchecked(1) == Outcome::Unknown);
+    const PackedOutcomeTable2BitView view = table.view();
+    SANPAO15_REQUIRE(view.size() == table.size());
+    SANPAO15_REQUIRE(view.bytes() == table.bytes());
+    for (uint64_t index = 0; index < table.size(); ++index) {
+        SANPAO15_REQUIRE(view.getUnchecked(index) == table.getUnchecked(index));
+    }
 }
 
 SANPAO15_TEST(denseResultByteRoundtrip) {
@@ -114,6 +120,13 @@ SANPAO15_TEST(denseResultPackedRoundtrip) {
     SANPAO15_REQUIRE(info.payloadBytes == denseStateCount(soldiers) / 4);
 
     const PackedOutcomeTable2Bit loaded = loadDenseResultTable2Bit(path, StandardRulesetHash, soldiers);
+    {
+        const MappedPackedOutcomeTable2Bit mapped(path, StandardRulesetHash, soldiers);
+        SANPAO15_REQUIRE(mapped.info().encoding == DenseResultEncoding::Packed2Bit);
+        SANPAO15_REQUIRE(mapped.view().getUnchecked(0) == Outcome::CannonWin);
+        SANPAO15_REQUIRE(mapped.view().getUnchecked(4) == Outcome::SoldierWin);
+        SANPAO15_REQUIRE(mapped.view().getUnchecked(mapped.view().size() - 1) == Outcome::Draw);
+    }
     std::filesystem::remove(path);
     SANPAO15_REQUIRE(loaded.get(0) == Outcome::CannonWin);
     SANPAO15_REQUIRE(loaded.get(4) == Outcome::SoldierWin);
@@ -135,6 +148,22 @@ SANPAO15_TEST(denseResultRejectsBadMagicAndWrongExpectations) {
     sanpao15::test::requireThrows([&] {
         (void)inspectDenseResultFile(path);
     }, "bad magic rejected");
+    std::filesystem::remove(path);
+}
+
+SANPAO15_TEST(mappedDenseResultRejectsByteEncodingAndWrongExpectations) {
+    const int soldiers = 0;
+    const std::filesystem::path path = tempResPath("sanpao15-mapped-byte-reject.s15res");
+    createEmptyDenseResultFile(soldiers, path, DenseResultEncoding::Byte, StandardRulesetHash);
+    sanpao15::test::requireThrows([&] {
+        (void)MappedPackedOutcomeTable2Bit(path, StandardRulesetHash, soldiers);
+    }, "mapped WDL should require packed 2-bit encoding");
+    sanpao15::test::requireThrows([&] {
+        (void)MappedPackedOutcomeTable2Bit(path, StandardRulesetHash + 1u, soldiers);
+    }, "mapped WDL should reject wrong ruleset");
+    sanpao15::test::requireThrows([&] {
+        (void)MappedPackedOutcomeTable2Bit(path, StandardRulesetHash, soldiers + 1);
+    }, "mapped WDL should reject wrong soldier count");
     std::filesystem::remove(path);
 }
 

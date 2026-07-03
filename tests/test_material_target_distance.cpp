@@ -167,6 +167,12 @@ SANPAO15_TEST(packedMtdTableSupportsOddStateCounts) {
     SANPAO15_REQUIRE(table.get(2) == (MtdEntry{2, 20}));
     SANPAO15_REQUIRE(table.get(3) == (MtdEntry{3, 30}));
     SANPAO15_REQUIRE(table.get(4) == (MtdEntry{4, 40}));
+    const MtdTable12View view = table.view();
+    SANPAO15_REQUIRE(view.size() == table.size());
+    SANPAO15_REQUIRE(view.bytes() == table.bytes());
+    for (uint64_t index = 0; index < table.size(); ++index) {
+        SANPAO15_REQUIRE(view.getUnchecked(index) == table.getUnchecked(index));
+    }
 }
 
 SANPAO15_TEST(mtdHeaderAndPayloadRoundtrip) {
@@ -187,6 +193,12 @@ SANPAO15_TEST(mtdHeaderAndPayloadRoundtrip) {
     const PackedMtdTable12 loaded = loadMtdTable(path, StandardRulesetHash, 4);
     SANPAO15_REQUIRE(loaded.get(1) == (MtdEntry{3, 12}));
     SANPAO15_REQUIRE(loaded.get(loaded.size() - 1) == (MtdEntry{2, 254}));
+    {
+        const MappedMtdTable12 mapped(path, StandardRulesetHash, 4);
+        SANPAO15_REQUIRE(mapped.info().fileSize == info.fileSize);
+        SANPAO15_REQUIRE(mapped.view().getUnchecked(1) == (MtdEntry{3, 12}));
+        SANPAO15_REQUIRE(mapped.view().getUnchecked(mapped.view().size() - 1) == (MtdEntry{2, 254}));
+    }
 
     const MtdInspectStats stats = inspectMtdTable(path, 4);
     SANPAO15_REQUIRE(stats.threads == 4);
@@ -260,6 +272,9 @@ SANPAO15_TEST(mtdVersion1PrototypeFilesAreRejected) {
     sanpao15::test::requireThrows([&] {
         (void)validateMtdFile(path, StandardRulesetHash, 0);
     }, "prototype MTD semantic version 1 should be rejected");
+    sanpao15::test::requireThrows([&] {
+        (void)MappedMtdTable12(path, StandardRulesetHash, 0);
+    }, "mapped prototype MTD semantic version 1 should be rejected");
     std::filesystem::remove_all(dir);
 }
 
@@ -271,6 +286,12 @@ SANPAO15_TEST(mtdValidationRejectsWrongRulesetAndInvalidPayload) {
     sanpao15::test::requireThrows([&] {
         (void)validateMtdFile(path, StandardRulesetHash + 1u, 0);
     }, "wrong ruleset hash should be rejected");
+    sanpao15::test::requireThrows([&] {
+        (void)MappedMtdTable12(path, StandardRulesetHash + 1u, 0);
+    }, "mapped wrong ruleset hash should be rejected");
+    sanpao15::test::requireThrows([&] {
+        (void)MappedMtdTable12(path, StandardRulesetHash, 1);
+    }, "mapped wrong soldier count should be rejected");
 
     writeByteAt(path, 44, 0x01u);
     sanpao15::test::requireThrows([&] {
@@ -443,6 +464,49 @@ SANPAO15_TEST(mtdBaseLayerThreadedSolveWritesThreadMetadataAndVerifies) {
     SANPAO15_REQUIRE(verify.threads == 8);
     SANPAO15_REQUIRE(verify.sampledStates == denseStateCount(0));
     SANPAO15_REQUIRE(verify.materialTargetKDistanceZero == denseStateCount(0));
+
+    MtdLayerVerifyOptions mappedVerifyOptions = verifyOptions;
+    mappedVerifyOptions.lowerMtdStore = MtdTableStore::Mmap;
+    mappedVerifyOptions.wdlStore = MtdTableStore::Mmap;
+    const MtdLayerVerifyResult mappedVerify = verifyMtdLayer(mappedVerifyOptions);
+    SANPAO15_REQUIRE(mappedVerify.sampledStates == verify.sampledStates);
+    SANPAO15_REQUIRE(mappedVerify.checkedTransitions == verify.checkedTransitions);
+    SANPAO15_REQUIRE(mappedVerify.materialTargetKDistanceZero == verify.materialTargetKDistanceZero);
+    std::filesystem::remove_all(dir);
+}
+
+SANPAO15_TEST(mtdBaseLayerRamAndMmapSolveWriteIdenticalOutput) {
+    const std::filesystem::path dir = tempDir("sanpao15-mtd-ram-mmap-solve");
+    const std::filesystem::path wdlDir = dir / "wdl";
+    const std::filesystem::path ramDir = dir / "mtd-ram";
+    const std::filesystem::path mmapDir = dir / "mtd-mmap";
+    std::filesystem::create_directories(wdlDir);
+    std::filesystem::create_directories(ramDir);
+    std::filesystem::create_directories(mmapDir);
+
+    PackedOutcomeTable2Bit wdl(denseStateCount(0), Outcome::CannonWin);
+    saveDenseResultTable2Bit(wdl, 0, lowKLayerResultPath(wdlDir, 0), StandardRulesetHash);
+
+    MtdLayerSolveOptions ramOptions;
+    ramOptions.soldierCount = 0;
+    ramOptions.wdlDir = wdlDir;
+    ramOptions.mtdDir = ramDir;
+    ramOptions.overwrite = true;
+    ramOptions.writeStatsJson = false;
+    ramOptions.threads = 4;
+    const MtdLayerSolveResult ram = solveMtdLayer(ramOptions);
+
+    MtdLayerSolveOptions mmapOptions = ramOptions;
+    mmapOptions.mtdDir = mmapDir;
+    mmapOptions.lowerMtdStore = MtdTableStore::Mmap;
+    mmapOptions.wdlStore = MtdTableStore::Mmap;
+    const MtdLayerSolveResult mmap = solveMtdLayer(mmapOptions);
+
+    SANPAO15_REQUIRE(mmap.lowerMtdStore == MtdTableStore::Mmap);
+    SANPAO15_REQUIRE(mmap.wdlStore == MtdTableStore::Mmap);
+    SANPAO15_REQUIRE(ram.estimatedExplicitRamBytes == ram.estimatedMemoryBytes);
+    SANPAO15_REQUIRE(mmap.estimatedExplicitRamBytes < ram.estimatedExplicitRamBytes);
+    SANPAO15_REQUIRE(readBinaryFile(ram.outputPath) == readBinaryFile(mmap.outputPath));
     std::filesystem::remove_all(dir);
 }
 
