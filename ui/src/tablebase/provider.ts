@@ -10,6 +10,8 @@ import {
 import {
   recommendMoves,
   type MoveClassification,
+  type MoveScore,
+  type MtdInfo,
   type RecommendedMove,
   type TablebaseRecommendationResult,
 } from "./recommend";
@@ -28,6 +30,22 @@ export interface TablebaseStatus {
   rulesetHash?: string;
   encoding: string;
   readMode: string;
+  mtd?: MtdStatus;
+  error?: string;
+  code?: string;
+}
+
+
+export interface MtdStatus {
+  loaded: boolean;
+  complete: boolean;
+  dir: string;
+  store: "ram" | "mmap" | string;
+  semanticVersion: number;
+  encoding: string;
+  loadedLayers: number[];
+  missingLayers: number[];
+  invalidLayers?: Array<{ soldierCount: number; path: string; error: string }>;
   error?: string;
   code?: string;
 }
@@ -143,6 +161,7 @@ interface BackendStatusResponse {
   invalidLayers?: Array<{ soldierCount: number; path: string; error: string }>;
   encoding?: string;
   readMode?: string;
+  mtd?: MtdStatus;
   error?: string;
   code?: string;
 }
@@ -158,6 +177,11 @@ interface BackendMoveResponse {
   successorIndex: string;
   successorOutcome: Outcome;
   classification: MoveClassification;
+  rank?: number;
+  isOptimal?: boolean;
+  reason?: string;
+  successorMtd?: MtdInfo;
+  score?: MoveScore;
 }
 
 interface BackendRecommendResponse {
@@ -167,6 +191,13 @@ interface BackendRecommendResponse {
   soldierCount: number;
   denseIndex: string;
   legalMoveCount: number;
+  mtdAvailable?: boolean;
+  mtdScoringEnabled?: boolean;
+  mtdScoringDisabledReason?: string | null;
+  recommendationPolicy?: "mtd" | "wdl";
+  currentMtd?: MtdInfo;
+  bestMove?: BackendMoveResponse | null;
+  optimalMoveCount?: number;
   recommendedMoves: BackendMoveResponse[];
   moves: BackendMoveResponse[];
   error?: string;
@@ -222,18 +253,31 @@ function recommendedMoveFromBackend(move: BackendMoveResponse): RecommendedMove 
     successorIndex: BigInt(move.successorIndex),
     successorOutcome: move.successorOutcome,
     classification: move.classification,
+    rank: move.rank,
+    isOptimal: move.isOptimal,
+    reason: move.reason,
+    successorMtd: move.successorMtd,
+    score: move.score,
   };
 }
 
 function recommendationFromBackend(response: BackendRecommendResponse): TablebaseRecommendationResult {
   const moves = response.moves.map(recommendedMoveFromBackend);
   const recommendedMoves = response.recommendedMoves.map(recommendedMoveFromBackend);
+  const bestMove = response.bestMove ? recommendedMoveFromBackend(response.bestMove) : null;
   return {
     soldierCount: response.soldierCount,
     denseIndex: BigInt(response.denseIndex),
     outcome: response.outcome,
     moves,
     recommendedMoves,
+    mtdAvailable: response.mtdAvailable,
+    mtdScoringEnabled: response.mtdScoringEnabled,
+    mtdScoringDisabledReason: response.mtdScoringDisabledReason,
+    recommendationPolicy: response.recommendationPolicy,
+    currentMtd: response.currentMtd,
+    bestMove,
+    optimalMoveCount: response.optimalMoveCount,
   };
 }
 
@@ -383,6 +427,7 @@ function tablebaseStatusFromBackend(status: BackendStatusResponse): TablebaseSta
     rulesetHash: status.rulesetHash,
     encoding: status.encoding ?? "unknown",
     readMode: status.readMode ?? "backend-random-read",
+    mtd: status.mtd,
     error: status.error,
     code: status.code,
   };

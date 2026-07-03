@@ -1,6 +1,6 @@
 import type { Move, Outcome, Position, Side } from "../engine";
 import type { TablebaseRecommendationResult } from "../tablebase/recommend";
-import { type MoveClassification, type RecommendedMove } from "../tablebase/recommend";
+import { type MoveClassification, type MoveScore, type MtdInfo, type RecommendedMove } from "../tablebase/recommend";
 import { validatePosition, type PositionValidation } from "../editor/validation";
 import type { TablebaseProvider } from "../tablebase/provider";
 
@@ -12,6 +12,10 @@ export interface MoveOutcomeInfo {
   successorSoldierCount: number;
   successorIndex: bigint;
   isBest: boolean;
+  rank?: number;
+  reason?: string;
+  successorMtd?: MtdInfo;
+  score?: MoveScore;
 }
 
 export interface BestMoveSummary {
@@ -35,7 +39,11 @@ function toMoveInfo(move: RecommendedMove, bestMoves: RecommendedMove[]): MoveOu
     classification: move.classification,
     successorSoldierCount: move.successorSoldierCount,
     successorIndex: move.successorIndex,
-    isBest: bestMoves.includes(move),
+    isBest: move.isOptimal ?? bestMoves.includes(move),
+    rank: move.rank,
+    reason: move.reason,
+    successorMtd: move.successorMtd,
+    score: move.score,
   };
 }
 

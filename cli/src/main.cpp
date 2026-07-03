@@ -109,6 +109,7 @@ struct CliOptions {
     bool cleanTemp = false;
     bool wdlDirProvided = false;
     bool mtdDirProvided = false;
+    bool mtdStoreProvided = false;
     bool lowerMtdStoreProvided = false;
     bool wdlStoreProvided = false;
     uint64_t maxStates = MvpStateLimit;
@@ -147,6 +148,7 @@ struct CliOptions {
     PartitionMethod closurePartitionMethod = PartitionMethod::Splitmix64Mod;
     PartitionBenchmarkMode benchmarkMode = PartitionBenchmarkMode::Existing;
     DenseResultEncoding resEncoding = DenseResultEncoding::Byte;
+    LocalMtdStoreMode mtdStore = LocalMtdStoreMode::Mmap;
     MtdTableStore lowerMtdStore = MtdTableStore::Ram;
     MtdTableStore wdlStore = MtdTableStore::Ram;
     uint64_t progressInterval = 0;
@@ -248,8 +250,8 @@ void printUsage() {
         << "  sanpao15_cli --verify-mtd-layer K --wdl-dir DIR --mtd-dir DIR [--sample N] [--threads N]\n"
         << "  sanpao15_cli --inspect-mtd FILE [--threads N]\n"
         << "  sanpao15_cli --query-mtd DIR --wdl-dir DIR --position TEXT [--moves] [--json]\n"
-        << "  sanpao15_cli --serve-ui [--tablebase-dir DIR] [--host HOST] [--port PORT]\n"
-        << "                  [--ui-dir DIR] [--open]\n"
+        << "  sanpao15_cli --serve-ui [--tablebase-dir DIR] [--mtd-dir DIR] [--mtd-store ram|mmap]\n"
+        << "                  [--host HOST] [--port PORT] [--ui-dir DIR] [--open]\n"
         << "  sanpao15_cli --analyze \"SSSSS/SSSSS/SSSSS/...../.CCC. c\" [--limit N|--full]\n"
         << "  sanpao15_cli --load-table FILE --analyze \"SSSSS/SSSSS/SSSSS/...../.CCC. c\"\n\n"
         << "Options:\n"
@@ -339,6 +341,8 @@ void printUsage() {
         << "  --query-mtd DIR  Query material target and guarantee distance from .s15mtd files.\n"
         << "  --wdl-dir DIR    Dense WDL .s15res tablebase directory for MTD commands.\n"
         << "  --mtd-dir DIR    Material target distance .s15mtd output/input directory.\n"
+        << "                   With --serve-ui, uses this directory for local UI recommendations.\n"
+        << "  --mtd-store MODE  MTD read mode for --serve-ui: ram or mmap. Default: mmap.\n"
         << "  --lower-mtd-store MODE  Lower/current MTD read store for solve/verify: ram or mmap. Default: ram.\n"
         << "  --wdl-store MODE  WDL read store for MTD solve/verify: ram or mmap. Default: ram.\n"
         << "  --threads N     Worker threads for MTD solve/verify/inspect. 1 is baseline; 0 uses hardware concurrency.\n"
@@ -410,6 +414,16 @@ MtdTableStore parseMtdTableStore(const std::string& text, const char* optionName
         return MtdTableStore::Mmap;
     }
     throw std::invalid_argument(std::string(optionName) + " must be either ram or mmap");
+}
+
+LocalMtdStoreMode parseLocalMtdStoreMode(const std::string& text) {
+    if (text == "ram") {
+        return LocalMtdStoreMode::Ram;
+    }
+    if (text == "mmap") {
+        return LocalMtdStoreMode::Mmap;
+    }
+    throw std::invalid_argument("--mtd-store must be either ram or mmap");
 }
 
 uint32_t parseThreadCount(const std::string& text) {
@@ -864,6 +878,12 @@ CliOptions parseArgs(int argc, char** argv) {
             }
             options.mtdDir = std::filesystem::path(argv[++i]);
             options.mtdDirProvided = true;
+        } else if (arg == "--mtd-store") {
+            if (i + 1 >= argc) {
+                throw std::invalid_argument("--mtd-store requires a value");
+            }
+            options.mtdStore = parseLocalMtdStoreMode(argv[++i]);
+            options.mtdStoreProvided = true;
         } else if (arg == "--lower-mtd-store") {
             if (i + 1 >= argc) {
                 throw std::invalid_argument("--lower-mtd-store requires a value");
@@ -1042,8 +1062,8 @@ CliOptions parseArgs(int argc, char** argv) {
         throw std::invalid_argument("choose only one validate/inspect/partition/dense tablebase mode");
     }
     if ((options.tablebaseDirProvided || options.hostProvided || options.portProvided ||
-         options.uiDirProvided || options.openBrowser) && !options.serveUi) {
-        throw std::invalid_argument("--tablebase-dir, --host, --port, --ui-dir, and --open are only valid with --serve-ui");
+         options.uiDirProvided || options.openBrowser || options.mtdStoreProvided) && !options.serveUi) {
+        throw std::invalid_argument("--tablebase-dir, --host, --port, --ui-dir, --open, and --mtd-store are only valid with --serve-ui");
     }
     if (options.serveUi) {
         if (options.buildLayersDir.has_value() || options.statsOnly || options.probe || options.analysisNotation.has_value() ||
@@ -1064,7 +1084,7 @@ CliOptions parseArgs(int argc, char** argv) {
             options.migrateOutputProvided || options.cleanupStaleRuns ||
             options.outDirProvided || options.outResProvided || options.lowerResProvided ||
             options.maxKProvided || options.resEncodingProvided || options.overwrite ||
-            options.wdlDirProvided || options.mtdDirProvided || options.lowerMtdStoreProvided || options.wdlStoreProvided ||
+            options.wdlDirProvided || options.lowerMtdStoreProvided || options.wdlStoreProvided ||
             options.queryPositionNotation.has_value() || options.queryMoves || options.jsonOutput ||
             options.maxPliesProvided || options.benchmarkSampleProvided || options.threadsProvided) {
             throw std::invalid_argument("--serve-ui cannot be combined with solve, stats, probe, validate, partition, query, or table output options");
@@ -3615,6 +3635,8 @@ int main(int argc, char** argv) {
             backendOptions.host = options.serveHost;
             backendOptions.port = options.servePort;
             backendOptions.tablebaseDir = options.serveTablebaseDir;
+            backendOptions.mtdDir = options.mtdDir;
+            backendOptions.mtdStore = options.mtdStore;
             backendOptions.uiDir = options.serveUiDir;
             backendOptions.executablePath = std::filesystem::path(argv[0]);
             backendOptions.openBrowser = options.openBrowser;

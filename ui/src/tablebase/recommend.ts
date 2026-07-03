@@ -3,6 +3,27 @@ import { lookupOutcome, type TablebaseDirectory, type TablebaseLookupResult } fr
 
 export type MoveClassification = "winning" | "drawing" | "losing";
 
+export interface MtdInfo {
+  available: boolean;
+  materialTarget?: number;
+  guaranteeDistance?: number;
+  saturated?: boolean;
+  cannonMaxCaptures?: number;
+  soldierSaved?: number;
+  meaning?: string;
+  text?: string;
+  reason?: string;
+}
+
+export interface MoveScore {
+  wdlTier: number;
+  usedMtd: boolean;
+  primary?: number;
+  secondary?: number;
+  tertiary?: number;
+  description?: string;
+}
+
 export interface RecommendedMove {
   move: Move;
   successor: Position;
@@ -10,11 +31,23 @@ export interface RecommendedMove {
   successorIndex: bigint;
   successorOutcome: Outcome;
   classification: MoveClassification;
+  rank?: number;
+  isOptimal?: boolean;
+  reason?: string;
+  successorMtd?: MtdInfo;
+  score?: MoveScore;
 }
 
 export interface TablebaseRecommendationResult extends TablebaseLookupResult {
   moves: RecommendedMove[];
   recommendedMoves: RecommendedMove[];
+  mtdAvailable?: boolean;
+  mtdScoringEnabled?: boolean;
+  mtdScoringDisabledReason?: string | null;
+  recommendationPolicy?: "mtd" | "wdl";
+  currentMtd?: MtdInfo;
+  bestMove?: RecommendedMove | null;
+  optimalMoveCount?: number;
 }
 
 function classificationRank(classification: MoveClassification): number {

@@ -21,6 +21,7 @@
 #include "sanpao15/bitboard.h"
 #include "sanpao15/dense_index.h"
 #include "sanpao15/dense_successor.h"
+#include "sanpao15/material_target_distance.h"
 #include "sanpao15/notation.h"
 #include "sanpao15/ruleset.h"
 
@@ -143,6 +144,22 @@ std::string layerFileName(int soldierCount) {
     return out.str();
 }
 
+std::string mtdLayerFileName(int soldierCount) {
+    std::ostringstream out;
+    out << "layer-" << std::setw(2) << std::setfill('0') << soldierCount << ".s15mtd";
+    return out.str();
+}
+
+std::string localMtdStoreModeToString(LocalMtdStoreMode mode) {
+    switch (mode) {
+        case LocalMtdStoreMode::Ram:
+            return "ram";
+        case LocalMtdStoreMode::Mmap:
+            return "mmap";
+    }
+    return "mmap";
+}
+
 void requireBackendDenseLayer(int soldierCount) {
     if (soldierCount < 0 || soldierCount > 15) {
         throw std::invalid_argument("soldier count must be in 0..15");
@@ -151,6 +168,40 @@ void requireBackendDenseLayer(int soldierCount) {
 
 std::string pathString(const std::filesystem::path& path) {
     return path.generic_string();
+}
+
+void writeIntArray(std::ostream& out, const std::vector<int>& values) {
+    for (size_t i = 0; i < values.size(); ++i) {
+        out << values[i] << (i + 1 == values.size() ? "" : ",");
+    }
+}
+
+void writeTablebaseInvalidLayers(std::ostream& out, const std::vector<LocalTablebaseInvalidLayer>& invalidLayers) {
+    for (size_t i = 0; i < invalidLayers.size(); ++i) {
+        const LocalTablebaseInvalidLayer& invalid = invalidLayers[i];
+        out << "{"
+            << "\"soldierCount\":" << invalid.soldierCount << ","
+            << "\"path\":" << jsonString(pathString(invalid.path)) << ","
+            << "\"error\":" << jsonString(invalid.error)
+            << "}";
+        if (i + 1 != invalidLayers.size()) {
+            out << ",";
+        }
+    }
+}
+
+void writeMtdInvalidLayers(std::ostream& out, const std::vector<LocalMtdInvalidLayer>& invalidLayers) {
+    for (size_t i = 0; i < invalidLayers.size(); ++i) {
+        const LocalMtdInvalidLayer& invalid = invalidLayers[i];
+        out << "{"
+            << "\"soldierCount\":" << invalid.soldierCount << ","
+            << "\"path\":" << jsonString(pathString(invalid.path)) << ","
+            << "\"error\":" << jsonString(invalid.error)
+            << "}";
+        if (i + 1 != invalidLayers.size()) {
+            out << ",";
+        }
+    }
 }
 
 bool directoryExists(const std::filesystem::path& path) {
@@ -219,6 +270,15 @@ int recommendationTier(Side sideToMove, Outcome currentOutcome, Outcome successo
                               successorOutcome == Outcome::Draw ? "drawing" : "losing");
 }
 
+bool deterministicMoveLess(const DenseTablebaseMoveInfo& lhs, const DenseTablebaseMoveInfo& rhs) {
+    const int lhsCaptureRank = lhs.move.capture ? 0 : 1;
+    const int rhsCaptureRank = rhs.move.capture ? 0 : 1;
+    return std::tie(lhs.move.from, lhs.move.to, lhsCaptureRank, lhs.move.capturedSquare,
+                    lhs.successorSoldierCount, lhs.successorIndex) <
+           std::tie(rhs.move.from, rhs.move.to, rhsCaptureRank, rhs.move.capturedSquare,
+                    rhs.successorSoldierCount, rhs.successorIndex);
+}
+
 bool isBestRecommendedMove(
     const DenseTablebaseLookupResult& result,
     const DenseTablebaseMoveInfo& move) {
@@ -244,6 +304,228 @@ std::vector<const DenseTablebaseMoveInfo*> recommendedMoves(const DenseTablebase
     return selected;
 }
 
+bool sameRankScore(const MoveScore& lhs, const MoveScore& rhs) {
+    return std::tie(lhs.wdlTier, lhs.primary, lhs.secondary, lhs.tertiary) ==
+           std::tie(rhs.wdlTier, rhs.primary, rhs.secondary, rhs.tertiary);
+}
+
+std::optional<MtdEntry> queryMoveMtd(
+    const MaterialTargetDistanceStore* mtdStore,
+    const DenseTablebaseMoveInfo& move) {
+    if (mtdStore == nullptr) {
+        return std::nullopt;
+    }
+    return mtdStore->query(move.successorSoldierCount, move.successorIndex);
+}
+
+std::string mtdMeaning(Outcome outcome) {
+    switch (outcome) {
+        case Outcome::CannonWin:
+            return "forced-cannon-win-distance";
+        case Outcome::SoldierWin:
+            return "forced-soldier-win-distance";
+        case Outcome::Draw:
+            return "draw-material-target-distance";
+        case Outcome::Unknown:
+            return "unknown";
+    }
+    return "unknown";
+}
+
+std::string mtdText(MtdEntry entry, Outcome outcome, int soldierCount) {
+    const int d = entry.guaranteeDistance;
+    const int r = entry.materialTarget;
+    const bool saturated = entry.guaranteeDistance == MtdSaturatedDistance;
+    switch (outcome) {
+        case Outcome::CannonWin:
+            return saturated
+                ? "炮方可保证胜利；距离已饱和为 >=255 ply；目标是吃到少于 4 兵。"
+                : "炮方可保证 " + std::to_string(d) + " ply 内胜利；目标是吃到少于 4 兵。";
+        case Outcome::SoldierWin:
+            return saturated
+                ? "兵方可保证围死炮；距离已饱和为 >=255 ply。"
+                : "兵方可保证 " + std::to_string(d) + " ply 内围死炮。";
+        case Outcome::Draw: {
+            const std::string prefix =
+                "兵方能保住 " + std::to_string(r) + " 兵；炮方最多还能吃 " +
+                std::to_string(std::max(0, soldierCount - r)) + " 兵；";
+            if (d == 0) {
+                return prefix + "材料目标已达到。";
+            }
+            if (saturated) {
+                return prefix + "达到材料目标的距离已饱和为 >=255 ply。";
+            }
+            return prefix + "达到材料目标的保证步数为 " + std::to_string(d) + " ply。";
+        }
+        case Outcome::Unknown:
+            return "MTD 含义未知。";
+    }
+    return "MTD 含义未知。";
+}
+
+std::string mtdEntryJson(
+    const std::optional<MtdEntry>& entry,
+    Outcome outcome,
+    int soldierCount,
+    const std::string& missingReason) {
+    if (!entry.has_value()) {
+        return std::string("{\"available\":false,\"reason\":") + jsonString(missingReason) + "}";
+    }
+    const int materialTarget = entry->materialTarget;
+    std::ostringstream out;
+    out << "{"
+        << "\"available\":true,"
+        << "\"materialTarget\":" << materialTarget << ","
+        << "\"guaranteeDistance\":" << static_cast<int>(entry->guaranteeDistance) << ","
+        << "\"saturated\":" << jsonBool(entry->guaranteeDistance == MtdSaturatedDistance) << ","
+        << "\"cannonMaxCaptures\":" << std::max(0, soldierCount - materialTarget) << ","
+        << "\"soldierSaved\":" << materialTarget << ","
+        << "\"meaning\":" << jsonString(mtdMeaning(outcome)) << ","
+        << "\"text\":" << jsonString(mtdText(*entry, outcome, soldierCount))
+        << "}";
+    return out.str();
+}
+
+}  // namespace
+
+MoveScore scoreMoveForRecommendation(
+    Side mover,
+    Outcome currentOutcome,
+    const DenseTablebaseMoveInfo& move,
+    const std::optional<MtdEntry>& successorMtd,
+    bool useMtd) {
+    MoveScore score;
+    score.wdlTier = recommendationTier(mover, currentOutcome, move.successorOutcome);
+    if (!useMtd || !successorMtd.has_value()) {
+        score.usedMtd = false;
+        score.description = "WDL-only ranking";
+        return score;
+    }
+
+    const int64_t d = successorMtd->guaranteeDistance;
+    const int64_t r = successorMtd->materialTarget;
+    score.usedMtd = true;
+
+    switch (move.successorOutcome) {
+        case Outcome::CannonWin:
+            if (mover == Side::Cannon) {
+                score.primary = d;
+                score.secondary = r;
+                score.description = "保持炮胜；炮方优先更快获胜，其次吃到更少兵。";
+            } else {
+                score.primary = -d;
+                score.secondary = -r;
+                score.description = "败局中延缓炮方胜利；兵方优先拖更久，其次保更多兵。";
+            }
+            break;
+        case Outcome::SoldierWin:
+            if (mover == Side::Soldier) {
+                score.primary = d;
+                score.secondary = -r;
+                score.description = "保持兵胜；兵方优先更快围死炮，其次保更多兵。";
+            } else {
+                score.primary = -d;
+                score.secondary = r;
+                score.description = "败局中延缓被围死；炮方优先拖更久，其次让最终剩余兵更少。";
+            }
+            break;
+        case Outcome::Draw:
+            if (mover == Side::Cannon) {
+                score.primary = r;
+                score.secondary = d;
+                score.description = "保持和棋；炮方优先降低最终剩余兵数，其次更快达到材料目标。";
+            } else {
+                score.primary = -r;
+                score.secondary = -d;
+                score.description = "保持和棋；兵方优先保住更多兵，其次尽量延缓炮方达到材料目标。";
+            }
+            break;
+        case Outcome::Unknown:
+            score.primary = std::numeric_limits<int64_t>::max() / 4;
+            score.description = "successor outcome is Unknown";
+            break;
+    }
+    return score;
+}
+
+std::vector<RankedMove> rankRecommendedMoves(
+    const DenseTablebaseLookupResult& result,
+    const MaterialTargetDistanceStore* mtdStore,
+    bool* mtdScoringEnabled,
+    std::string* mtdScoringDisabledReason) {
+    std::vector<RankedMove> ranked;
+    ranked.reserve(result.moves.size());
+    int bestWdlTier = std::numeric_limits<int>::max();
+    for (const DenseTablebaseMoveInfo& move : result.moves) {
+        bestWdlTier = std::min(bestWdlTier, recommendationTier(result.position.side, result.outcome, move.successorOutcome));
+    }
+
+    bool useMtd = false;
+    std::string disabledReason;
+    if (result.moves.empty()) {
+        disabledReason = "No legal moves.";
+    } else if (mtdStore == nullptr || !mtdStore->status().loaded) {
+        disabledReason = "MTD is not loaded; ranking is WDL-only.";
+    } else {
+        useMtd = true;
+        for (const DenseTablebaseMoveInfo& move : result.moves) {
+            if (recommendationTier(result.position.side, result.outcome, move.successorOutcome) != bestWdlTier) {
+                continue;
+            }
+            if (!queryMoveMtd(mtdStore, move).has_value()) {
+                useMtd = false;
+                disabledReason = "MTD data is incomplete for the best WDL tier; ranking is WDL-only.";
+                break;
+            }
+        }
+    }
+    if (mtdScoringEnabled != nullptr) {
+        *mtdScoringEnabled = useMtd;
+    }
+    if (mtdScoringDisabledReason != nullptr) {
+        *mtdScoringDisabledReason = disabledReason;
+    }
+
+    for (const DenseTablebaseMoveInfo& move : result.moves) {
+        const std::optional<MtdEntry> successorMtd = queryMoveMtd(mtdStore, move);
+        MoveScore score = scoreMoveForRecommendation(result.position.side, result.outcome, move, successorMtd, useMtd);
+        ranked.push_back(RankedMove{
+            move,
+            successorMtd,
+            score,
+            0,
+            false,
+            score.description,
+        });
+    }
+
+    std::sort(ranked.begin(), ranked.end(), [](const RankedMove& lhs, const RankedMove& rhs) {
+        if (std::tie(lhs.score.wdlTier, lhs.score.primary, lhs.score.secondary, lhs.score.tertiary) !=
+            std::tie(rhs.score.wdlTier, rhs.score.primary, rhs.score.secondary, rhs.score.tertiary)) {
+            return std::tie(lhs.score.wdlTier, lhs.score.primary, lhs.score.secondary, lhs.score.tertiary) <
+                   std::tie(rhs.score.wdlTier, rhs.score.primary, rhs.score.secondary, rhs.score.tertiary);
+        }
+        return deterministicMoveLess(lhs.move, rhs.move);
+    });
+
+    int nextRank = 1;
+    for (size_t i = 0; i < ranked.size(); ++i) {
+        if (i > 0 && !sameRankScore(ranked[i - 1].score, ranked[i].score)) {
+            nextRank = static_cast<int>(i + 1);
+        }
+        ranked[i].rank = nextRank;
+    }
+    if (!ranked.empty()) {
+        const MoveScore bestScore = ranked.front().score;
+        for (RankedMove& move : ranked) {
+            move.isOptimal = sameRankScore(move.score, bestScore);
+        }
+    }
+    return ranked;
+}
+
+namespace {
+
 std::string moveJson(const DenseTablebaseMoveInfo& move) {
     std::ostringstream out;
     out << "{"
@@ -263,7 +545,52 @@ std::string moveJson(const DenseTablebaseMoveInfo& move) {
     return out.str();
 }
 
-std::string lookupJson(const DenseTablebaseLookupResult& result) {
+std::string scoreJson(const MoveScore& score) {
+    std::ostringstream out;
+    out << "{"
+        << "\"wdlTier\":" << score.wdlTier << ","
+        << "\"usedMtd\":" << jsonBool(score.usedMtd) << ","
+        << "\"primary\":" << score.primary << ","
+        << "\"secondary\":" << score.secondary << ","
+        << "\"tertiary\":" << score.tertiary << ","
+        << "\"description\":" << jsonString(score.description)
+        << "}";
+    return out.str();
+}
+
+std::string rankedMoveJson(const RankedMove& ranked, int currentSoldierCount) {
+    const DenseTablebaseMoveInfo& move = ranked.move;
+    std::ostringstream out;
+    out << "{"
+        << "\"move\":" << jsonString(moveToString(move.move)) << ","
+        << "\"from\":" << move.move.from << ","
+        << "\"to\":" << move.move.to << ","
+        << "\"capture\":" << jsonBool(move.move.capture) << ","
+        << "\"capturedSquare\":" << move.move.capturedSquare << ","
+        << "\"successorPosition\":" << jsonString(positionToNotation(move.successor)) << ","
+        << "\"successorSoldierCount\":" << move.successorSoldierCount << ","
+        << "\"successorIndex\":" << jsonString(std::to_string(move.successorIndex)) << ","
+        << "\"successorOutcome\":" << jsonString(outcomeToString(move.successorOutcome)) << ","
+        << "\"successorOutcomeText\":\"" << outcomeText(move.successorOutcome) << "\","
+        << "\"classification\":" << jsonString(move.classification) << ","
+        << "\"classificationText\":\"" << classificationText(move.classification) << "\","
+        << "\"rank\":" << ranked.rank << ","
+        << "\"isOptimal\":" << jsonBool(ranked.isOptimal) << ","
+        << "\"reason\":" << jsonString(ranked.reason.empty() ? ranked.score.description : ranked.reason) << ","
+        << "\"successorMtd\":"
+        << mtdEntryJson(
+               ranked.successorMtd,
+               move.successorOutcome,
+               move.successorSoldierCount,
+               "MTD layer is not loaded")
+        << ",\"score\":" << scoreJson(ranked.score)
+        << "}";
+    (void)currentSoldierCount;
+    return out.str();
+}
+
+std::string lookupJson(const DenseTablebaseLookupResult& result, const MaterialTargetDistanceStore* mtdStore) {
+    const std::optional<MtdEntry> currentMtd = mtdStore == nullptr ? std::nullopt : mtdStore->query(result.position);
     std::ostringstream out;
     out << "{"
         << "\"ok\":true,"
@@ -273,13 +600,29 @@ std::string lookupJson(const DenseTablebaseLookupResult& result) {
         << "\"outcome\":" << jsonString(outcomeToString(result.outcome)) << ","
         << "\"outcomeText\":\"" << outcomeText(result.outcome) << "\","
         << "\"terminal\":" << jsonBool(result.terminal) << ","
-        << "\"terminalReason\":" << jsonString(result.terminalReason)
+        << "\"terminalReason\":" << jsonString(result.terminalReason) << ","
+        << "\"mtdAvailable\":" << jsonBool(currentMtd.has_value()) << ","
+        << "\"currentMtd\":"
+        << mtdEntryJson(currentMtd, result.outcome, result.soldierCount, "MTD layer is not loaded")
         << "}";
     return out.str();
 }
 
-std::string recommendationJson(const DenseTablebaseLookupResult& result) {
-    const std::vector<const DenseTablebaseMoveInfo*> recommended = recommendedMoves(result);
+std::string lookupJson(const DenseTablebaseLookupResult& result) {
+    return lookupJson(result, nullptr);
+}
+
+std::string recommendationJson(const DenseTablebaseLookupResult& result, const MaterialTargetDistanceStore* mtdStore) {
+    bool mtdScoringEnabled = false;
+    std::string disabledReason;
+    const std::vector<RankedMove> ranked = rankRecommendedMoves(result, mtdStore, &mtdScoringEnabled, &disabledReason);
+    const std::optional<MtdEntry> currentMtd = mtdStore == nullptr ? std::nullopt : mtdStore->query(result.position);
+    size_t optimalMoveCount = 0;
+    for (const RankedMove& move : ranked) {
+        if (move.isOptimal) {
+            ++optimalMoveCount;
+        }
+    }
     std::ostringstream out;
     out << "{"
         << "\"ok\":true,"
@@ -289,17 +632,40 @@ std::string recommendationJson(const DenseTablebaseLookupResult& result) {
         << "\"soldierCount\":" << result.soldierCount << ","
         << "\"denseIndex\":" << jsonString(std::to_string(result.denseIndex)) << ","
         << "\"legalMoveCount\":" << result.moves.size() << ","
+        << "\"mtdAvailable\":" << jsonBool(currentMtd.has_value()) << ","
+        << "\"mtdScoringEnabled\":" << jsonBool(mtdScoringEnabled) << ","
+        << "\"mtdScoringDisabledReason\":";
+    if (mtdScoringEnabled || disabledReason.empty()) {
+        out << "null";
+    } else {
+        out << jsonString(disabledReason);
+    }
+    out << ",\"recommendationPolicy\":" << jsonString(mtdScoringEnabled ? "mtd" : "wdl") << ","
+        << "\"currentMtd\":"
+        << mtdEntryJson(currentMtd, result.outcome, result.soldierCount, "MTD layer is not loaded")
+        << ",\"bestMove\":";
+    if (ranked.empty()) {
+        out << "null";
+    } else {
+        out << rankedMoveJson(ranked.front(), result.soldierCount);
+    }
+    out << ",\"optimalMoveCount\":" << optimalMoveCount << ","
         << "\"recommendedMoves\":[";
-    for (size_t i = 0; i < recommended.size(); ++i) {
-        out << moveJson(*recommended[i]);
-        if (i + 1 != recommended.size()) {
+    size_t writtenRecommended = 0;
+    for (const RankedMove& move : ranked) {
+        if (!move.isOptimal) {
+            continue;
+        }
+        if (writtenRecommended != 0) {
             out << ",";
         }
+        out << rankedMoveJson(move, result.soldierCount);
+        ++writtenRecommended;
     }
     out << "],\"moves\":[";
-    for (size_t i = 0; i < result.moves.size(); ++i) {
-        out << moveJson(result.moves[i]);
-        if (i + 1 != result.moves.size()) {
+    for (size_t i = 0; i < ranked.size(); ++i) {
+        out << rankedMoveJson(ranked[i], result.soldierCount);
+        if (i + 1 != ranked.size()) {
             out << ",";
         }
     }
@@ -307,7 +673,11 @@ std::string recommendationJson(const DenseTablebaseLookupResult& result) {
     return out.str();
 }
 
-std::string sideEntryJson(Side side, const DenseTablebaseLookupResult& result) {
+std::string recommendationJson(const DenseTablebaseLookupResult& result) {
+    return recommendationJson(result, nullptr);
+}
+
+std::string sideEntryJson(Side side, const DenseTablebaseLookupResult& result, const MaterialTargetDistanceStore* mtdStore) {
     const std::vector<const DenseTablebaseMoveInfo*> recommended = recommendedMoves(result);
     size_t losing = 0;
     for (const DenseTablebaseMoveInfo& move : result.moves) {
@@ -323,12 +693,12 @@ std::string sideEntryJson(Side side, const DenseTablebaseLookupResult& result) {
         << "\"bestMove\":" << (recommended.empty() ? "null" : jsonString(moveToString(recommended.front()->move))) << ","
         << "\"bestMoveCount\":" << recommended.size() << ","
         << "\"losingMoveCount\":" << losing << ","
-        << "\"summary\":" << recommendationJson(result)
+        << "\"summary\":" << recommendationJson(result, mtdStore)
         << "}";
     return out.str();
 }
 
-std::string compareSidesJson(const DenseTablebaseStore& store, Position position) {
+std::string compareSidesJson(const DenseTablebaseStore& store, Position position, const MaterialTargetDistanceStore* mtdStore) {
     Position cannon = position;
     cannon.side = Side::Cannon;
     Position soldier = position;
@@ -338,10 +708,14 @@ std::string compareSidesJson(const DenseTablebaseStore& store, Position position
     std::ostringstream out;
     out << "{"
         << "\"ok\":true,"
-        << "\"cannon\":" << sideEntryJson(Side::Cannon, cannonResult) << ","
-        << "\"soldier\":" << sideEntryJson(Side::Soldier, soldierResult)
+        << "\"cannon\":" << sideEntryJson(Side::Cannon, cannonResult, mtdStore) << ","
+        << "\"soldier\":" << sideEntryJson(Side::Soldier, soldierResult, mtdStore)
         << "}";
     return out.str();
+}
+
+std::string compareSidesJson(const DenseTablebaseStore& store, Position position) {
+    return compareSidesJson(store, position, nullptr);
 }
 
 std::string alternativeJson(const WdlAlternativeMove& alternative) {
@@ -752,6 +1126,128 @@ DenseTablebaseStore DenseTablebaseStore::open(const std::filesystem::path& table
     return store;
 }
 
+MaterialTargetDistanceStore MaterialTargetDistanceStore::missing(
+    std::filesystem::path mtdDir,
+    std::string error,
+    LocalMtdStoreMode mode) {
+    MaterialTargetDistanceStore store;
+    store.status_.loaded = false;
+    store.status_.complete = false;
+    store.status_.mtdDir = std::move(mtdDir);
+    store.status_.store = localMtdStoreModeToString(mode);
+    store.status_.error = std::move(error);
+    store.status_.code = "missing_mtd";
+    for (int k = 0; k <= 15; ++k) {
+        store.status_.missingLayers.push_back(k);
+    }
+    return store;
+}
+
+MaterialTargetDistanceStore MaterialTargetDistanceStore::open(
+    const std::filesystem::path& mtdDir,
+    LocalMtdStoreMode mode) {
+    MaterialTargetDistanceStore store;
+    store.status_.mtdDir = mtdDir;
+    store.status_.store = localMtdStoreModeToString(mode);
+    store.status_.semanticVersion = 2;
+    store.status_.encoding = mtdEncodingToString(MtdEncoding::Packed12Material4Distance8);
+    if (!directoryExists(mtdDir)) {
+        return missing(mtdDir, "No MTD directory was found. Recommendations are WDL-only.", mode);
+    }
+
+    for (int k = 0; k <= 15; ++k) {
+        const std::filesystem::path layerPath = mtdDir / mtdLayerFileName(k);
+        if (!std::filesystem::exists(layerPath)) {
+            store.status_.missingLayers.push_back(k);
+            continue;
+        }
+        try {
+            const MtdFileInfo info = inspectMtdFile(layerPath);
+            if (info.version != 2) {
+                throw std::runtime_error(".s15mtd semantic version must be 2");
+            }
+            if (info.rulesetHash != StandardRulesetHash) {
+                throw std::runtime_error(".s15mtd ruleset hash mismatch");
+            }
+            if (info.soldierCount != k) {
+                throw std::runtime_error(".s15mtd soldier count mismatch");
+            }
+            if (info.stateCount != denseStateCount(k)) {
+                throw std::runtime_error(".s15mtd state count does not match soldier-count layer");
+            }
+            if (info.payloadBytes != mtdPayloadBytes(info.stateCount)) {
+                throw std::runtime_error(".s15mtd payload byte count does not match encoding");
+            }
+            if (info.encoding != MtdEncoding::Packed12Material4Distance8) {
+                throw std::runtime_error(".s15mtd encoding must be packed12-material4-distance8");
+            }
+
+            Layer layer;
+            layer.path = layerPath;
+            layer.info = info;
+            if (mode == LocalMtdStoreMode::Ram) {
+                layer.ram.emplace(loadMtdTable(layerPath, StandardRulesetHash, k));
+            } else {
+                layer.mmap.emplace(layerPath, StandardRulesetHash, k);
+            }
+            store.layers_[static_cast<size_t>(k)].emplace(std::move(layer));
+            store.status_.loadedLayers.push_back(k);
+        } catch (const std::exception& error) {
+            store.status_.invalidLayers.push_back(LocalMtdInvalidLayer{k, layerPath, error.what()});
+        }
+    }
+
+    store.status_.loaded = !store.status_.loadedLayers.empty() && store.status_.invalidLayers.empty();
+    store.status_.complete = store.status_.loaded && store.status_.loadedLayers.size() == 16 &&
+                             store.status_.missingLayers.empty() && store.status_.invalidLayers.empty();
+    if (!store.status_.invalidLayers.empty()) {
+        store.status_.code = "invalid_mtd";
+        store.status_.error = "One or more .s15mtd layers failed validation.";
+    } else if (store.status_.loadedLayers.empty()) {
+        store.status_.code = "missing_mtd";
+        store.status_.error = "No valid .s15mtd layers were loaded from MTD directory.";
+    } else if (!store.status_.complete) {
+        store.status_.code = "missing_mtd_layer";
+        store.status_.error = "MTD directory is partial; missing one or more layer-NN.s15mtd files.";
+    }
+    return store;
+}
+
+const LocalMtdStatus& MaterialTargetDistanceStore::status() const noexcept {
+    return status_;
+}
+
+bool MaterialTargetDistanceStore::hasLayer(int soldierCount) const {
+    if (soldierCount < 0 || soldierCount > 15) {
+        return false;
+    }
+    return layers_.at(static_cast<size_t>(soldierCount)).has_value();
+}
+
+std::optional<MtdEntry> MaterialTargetDistanceStore::query(int soldierCount, uint64_t denseIndex) const {
+    requireBackendDenseLayer(soldierCount);
+    const auto& layer = layers_.at(static_cast<size_t>(soldierCount));
+    if (!layer.has_value()) {
+        return std::nullopt;
+    }
+    if (denseIndex >= layer->info.stateCount) {
+        throw std::out_of_range("MTD dense index is outside the layer state count");
+    }
+    if (layer->ram.has_value()) {
+        return layer->ram->view().getUnchecked(denseIndex);
+    }
+    if (layer->mmap.has_value()) {
+        return layer->mmap->view().getUnchecked(denseIndex);
+    }
+    throw std::runtime_error("MTD layer has no loaded storage");
+}
+
+std::optional<MtdEntry> MaterialTargetDistanceStore::query(const Position& position) const {
+    const int soldierCount = popcount25(position.soldiers);
+    requireBackendDenseLayer(soldierCount);
+    return query(soldierCount, denseIndex(position));
+}
+
 const LocalTablebaseStatus& DenseTablebaseStore::status() const {
     return status_;
 }
@@ -1005,25 +1501,11 @@ std::string localTablebaseStatusJson(const LocalTablebaseStatus& status) {
         << "\"rulesetHash\":" << jsonString(rulesetHashHex()) << ","
         << "\"complete\":" << jsonBool(status.complete) << ","
         << "\"loadedLayers\":[";
-    for (size_t i = 0; i < status.loadedLayers.size(); ++i) {
-        out << status.loadedLayers[i] << (i + 1 == status.loadedLayers.size() ? "" : ",");
-    }
+    writeIntArray(out, status.loadedLayers);
     out << "],\"missingLayers\":[";
-    for (size_t i = 0; i < status.missingLayers.size(); ++i) {
-        out << status.missingLayers[i] << (i + 1 == status.missingLayers.size() ? "" : ",");
-    }
+    writeIntArray(out, status.missingLayers);
     out << "],\"invalidLayers\":[";
-    for (size_t i = 0; i < status.invalidLayers.size(); ++i) {
-        const LocalTablebaseInvalidLayer& invalid = status.invalidLayers[i];
-        out << "{"
-            << "\"soldierCount\":" << invalid.soldierCount << ","
-            << "\"path\":" << jsonString(pathString(invalid.path)) << ","
-            << "\"error\":" << jsonString(invalid.error)
-            << "}";
-        if (i + 1 != status.invalidLayers.size()) {
-            out << ",";
-        }
-    }
+    writeTablebaseInvalidLayers(out, status.invalidLayers);
     out << "],"
         << "\"encoding\":" << jsonString(status.encoding) << ","
         << "\"readMode\":\"backend-random-read\"";
@@ -1035,14 +1517,57 @@ std::string localTablebaseStatusJson(const LocalTablebaseStatus& status) {
     return out.str();
 }
 
+std::string localMtdStatusJson(const LocalMtdStatus& status) {
+    std::ostringstream out;
+    out << "{"
+        << "\"loaded\":" << jsonBool(status.loaded) << ","
+        << "\"complete\":" << jsonBool(status.complete) << ","
+        << "\"dir\":" << jsonString(pathString(status.mtdDir)) << ","
+        << "\"store\":" << jsonString(status.store) << ","
+        << "\"semanticVersion\":" << status.semanticVersion << ","
+        << "\"encoding\":" << jsonString(status.encoding) << ","
+        << "\"loadedLayers\":[";
+    writeIntArray(out, status.loadedLayers);
+    out << "],\"missingLayers\":[";
+    writeIntArray(out, status.missingLayers);
+    out << "],\"invalidLayers\":[";
+    writeMtdInvalidLayers(out, status.invalidLayers);
+    out << "]";
+    if (!status.code.empty()) {
+        out << ",\"code\":" << jsonString(status.code);
+    }
+    if (!status.error.empty()) {
+        out << ",\"error\":" << jsonString(status.error);
+    }
+    out << "}";
+    return out.str();
+}
+
+std::string localCombinedStatusJson(
+    const LocalTablebaseStatus& tablebaseStatus,
+    const LocalMtdStatus& mtdStatus) {
+    std::string base = localTablebaseStatusJson(tablebaseStatus);
+    if (!base.empty() && base.back() == '}') {
+        base.pop_back();
+    }
+    base += ",\"mtd\":";
+    base += localMtdStatusJson(mtdStatus);
+    base += "}";
+    return base;
+}
+
 LocalHttpResponse handleLocalApiRequest(
     const DenseTablebaseStore& store,
     const std::string& method,
     const std::string& path,
-    const std::string& body) {
+    const std::string& body,
+    const MaterialTargetDistanceStore* mtdStore) {
     try {
         if (method == "GET" && path == "/api/status") {
-            return LocalHttpResponse{200, "application/json; charset=utf-8", localTablebaseStatusJson(store.status())};
+            const std::string statusJson = mtdStore == nullptr
+                ? localTablebaseStatusJson(store.status())
+                : localCombinedStatusJson(store.status(), mtdStore->status());
+            return LocalHttpResponse{200, "application/json; charset=utf-8", statusJson};
         }
         if (method != "POST") {
             return apiError(405, "bad_request", "unsupported method");
@@ -1052,15 +1577,15 @@ LocalHttpResponse handleLocalApiRequest(
         }
         if (path == "/api/query") {
             const Position position = positionFromRequest(body);
-            return LocalHttpResponse{200, "application/json; charset=utf-8", lookupJson(store.query(position, false))};
+            return LocalHttpResponse{200, "application/json; charset=utf-8", lookupJson(store.query(position, false), mtdStore)};
         }
         if (path == "/api/recommend") {
             const Position position = positionFromRequest(body);
-            return LocalHttpResponse{200, "application/json; charset=utf-8", recommendationJson(store.query(position, true))};
+            return LocalHttpResponse{200, "application/json; charset=utf-8", recommendationJson(store.query(position, true), mtdStore)};
         }
         if (path == "/api/compare-sides") {
             const Position position = positionFromRequest(body);
-            return LocalHttpResponse{200, "application/json; charset=utf-8", compareSidesJson(store, position)};
+            return LocalHttpResponse{200, "application/json; charset=utf-8", compareSidesJson(store, position, mtdStore)};
         }
         if (path == "/api/explore") {
             const auto fields = parseRequestJsonObject(body);
@@ -1087,18 +1612,24 @@ int serveLocalTablebaseBackend(const LocalBackendOptions& options) {
     DenseTablebaseStore store = tablebaseDir.has_value()
         ? DenseTablebaseStore::open(*tablebaseDir)
         : DenseTablebaseStore::missing({}, "No tablebase directory was found. Pass --tablebase-dir or set SANPAO15_TABLEBASE_DIR.");
+    MaterialTargetDistanceStore mtdStore = options.mtdDir.has_value()
+        ? MaterialTargetDistanceStore::open(*options.mtdDir, options.mtdStore)
+        : MaterialTargetDistanceStore::missing(
+              {},
+              "No MTD directory was provided. Recommendations are WDL-only.",
+              options.mtdStore);
 
     const std::optional<std::filesystem::path> uiDir =
         options.uiDir.has_value() ? options.uiDir : findDefaultUiDir(cwd, executableDir);
 
     httplib::Server server;
     server.Get("/api/status", [&](const httplib::Request&, httplib::Response& response) {
-        const LocalHttpResponse api = handleLocalApiRequest(store, "GET", "/api/status", {});
+        const LocalHttpResponse api = handleLocalApiRequest(store, "GET", "/api/status", {}, &mtdStore);
         response.status = api.status;
         response.set_content(api.body, api.contentType);
     });
     const auto postHandler = [&](const httplib::Request& request, httplib::Response& response) {
-        const LocalHttpResponse api = handleLocalApiRequest(store, "POST", request.path, request.body);
+        const LocalHttpResponse api = handleLocalApiRequest(store, "POST", request.path, request.body, &mtdStore);
         response.status = api.status;
         response.set_content(api.body, api.contentType);
     };
@@ -1142,6 +1673,13 @@ int serveLocalTablebaseBackend(const LocalBackendOptions& options) {
     std::cout << "Loaded layers: " << store.status().loadedLayers.size() << "/16\n";
     if (!store.status().error.empty()) {
         std::cout << "Tablebase note: " << store.status().error << "\n";
+    }
+    std::cout << "MTD loaded: " << (mtdStore.status().loaded ? "yes" : "no") << "\n";
+    std::cout << "MTD dir: " << pathString(mtdStore.status().mtdDir) << "\n";
+    std::cout << "MTD store: " << mtdStore.status().store << "\n";
+    std::cout << "MTD loaded layers: " << mtdStore.status().loadedLayers.size() << "/16\n";
+    if (!mtdStore.status().error.empty()) {
+        std::cout << "MTD note: " << mtdStore.status().error << "\n";
     }
     if (uiDir.has_value()) {
         std::cout << "UI dir: " << pathString(*uiDir) << "\n";

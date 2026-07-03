@@ -613,6 +613,51 @@ export class Sanpao15App {
     const intro = document.createElement("p");
     intro.textContent = bestMoveExplanation(this.currentSummary);
     container.append(intro);
+
+    const bestMove = this.currentSummary.bestMoves[0];
+    const recommendation = this.tablebaseResult;
+    const policy = recommendation?.recommendationPolicy;
+    if (policy) {
+      const policyNote = document.createElement("p");
+      policyNote.className = policy === "mtd" ? "panel-note" : "panel-note warning-note";
+      policyNote.textContent = policy === "mtd"
+        ? "推荐模式：MTD 细分推荐，同一 WDL 层级内使用材料目标和保证步数排序。"
+        : `推荐模式：WDL-only。${recommendation?.mtdScoringDisabledReason ?? "MTD 未加载或当前同级着法缺少 MTD 数据。"}`;
+      container.append(policyNote);
+    }
+
+    const detail = document.createElement("div");
+    detail.className = "best-move-detail-grid";
+    detail.append(
+      this.summaryStat("着法", formatMove(bestMove.move)),
+      this.summaryStat("结果", outcomeBadge(bestMove.successorOutcome)),
+      this.summaryStat("排名", bestMove.rank !== undefined ? `#${bestMove.rank}` : "-"),
+      this.summaryStat("兵数层", String(bestMove.successorSoldierCount)),
+    );
+    container.append(detail);
+
+    if (bestMove.reason) {
+      const reason = document.createElement("p");
+      reason.className = "panel-note";
+      reason.textContent = bestMove.reason;
+      container.append(reason);
+    }
+    if (bestMove.successorMtd?.available && bestMove.successorMtd.text) {
+      const mtd = document.createElement("p");
+      mtd.className = "panel-note mtd-note";
+      mtd.textContent = bestMove.successorMtd.text;
+      container.append(mtd);
+    }
+
+    const actions = document.createElement("div");
+    actions.className = "best-actions";
+    actions.append(
+      this.makeButton("执行最佳着法", () => this.applyMoveFromPanel(bestMove.move)),
+      this.makeButton("复制局面", () => void this.copyNotation()),
+      this.makeButton("重置初始局面", () => this.reset()),
+    );
+    container.append(actions);
+
     const list = document.createElement("div");
     list.className = "best-move-list";
     for (const move of this.currentSummary.bestMoves) {
@@ -656,34 +701,58 @@ export class Sanpao15App {
 
   private renderMoveGroupsPanel(): HTMLElement {
     if (!this.currentSummary) {
-      return this.renderEmptyState("尚未查询", this.currentValidation.reason ?? "加载表库后会显示合法着法分组。");
+      return this.renderEmptyState("????", this.currentValidation.reason ?? "???????????????");
     }
     const container = document.createElement("div");
     container.className = "tablebase-result-grid";
     const summary = document.createElement("div");
     summary.className = "summary-band";
     summary.append(
-      this.summaryStat("合法着法", String(this.currentSummary.legalMoveCount)),
-      this.summaryStat("保持胜势", String(this.currentSummary.winningMoves.length)),
-      this.summaryStat("保持和棋", String(this.currentSummary.drawingMoves.length)),
-      this.summaryStat("走向败局", String(this.currentSummary.losingMoves.length)),
+      this.summaryStat("????", String(this.currentSummary.legalMoveCount)),
+      this.summaryStat("????", String(this.currentSummary.winningMoves.length)),
+      this.summaryStat("????", String(this.currentSummary.drawingMoves.length)),
+      this.summaryStat("????", String(this.currentSummary.losingMoves.length)),
+      this.summaryStat("????", this.tablebaseResult?.recommendationPolicy === "mtd" ? "MTD" : "WDL-only"),
     );
     container.append(summary);
-    for (const group of ["winning", "drawing", "losing"] as MoveClassification[]) {
+
+    const bestTier = this.currentSummary.bestMoves[0]?.score?.wdlTier;
+    const groups: Array<{ key: "optimal" | "acceptable" | "mistake"; title: string; moves: MoveOutcomeInfo[] }> = [
+      {
+        key: "optimal",
+        title: "??",
+        moves: this.currentSummary.allMoves.filter((move) => move.isBest),
+      },
+      {
+        key: "acceptable",
+        title: "???",
+        moves: this.currentSummary.allMoves.filter((move) =>
+          !move.isBest &&
+          (bestTier !== undefined ? move.score?.wdlTier === bestTier : move.classification !== "losing")),
+      },
+      {
+        key: "mistake",
+        title: "??",
+        moves: this.currentSummary.allMoves.filter((move) =>
+          !move.isBest &&
+          (bestTier !== undefined ? move.score?.wdlTier !== bestTier : move.classification === "losing")),
+      },
+    ];
+
+    for (const group of groups) {
       const section = document.createElement("section");
-      section.className = `move-group ${group}`;
+      section.className = `move-group ${group.key}`;
       const title = document.createElement("h3");
-      title.textContent = classificationText(group);
+      title.textContent = group.title;
       section.append(title);
-      const moves = this.currentSummary.allMoves.filter((move) => move.classification === group);
-      if (moves.length === 0) {
+      if (group.moves.length === 0) {
         const empty = document.createElement("p");
         empty.className = "empty-group";
-        empty.textContent = "无";
+        empty.textContent = "?";
         section.append(empty);
       } else {
         const list = document.createElement("ul");
-        for (const move of moves) {
+        for (const move of group.moves) {
           const item = document.createElement("li");
           item.append(this.renderMoveButton(move, move.isBest));
           list.append(item);
@@ -699,12 +768,20 @@ export class Sanpao15App {
     const button = document.createElement("button");
     button.type = "button";
     button.className = isBest ? "move-row-button recommended" : "move-row-button";
+    const mtd = move.successorMtd?.available
+      ? `MTD ${move.successorMtd.materialTarget}/${move.successorMtd.guaranteeDistance}`
+      : "MTD -";
+    const rank = move.rank !== undefined ? `#${move.rank}` : "-";
     button.append(
-      textSpan("move-main", formatMove(move.move)),
+      textSpan("move-main", `${rank} ${formatMove(move.move)}`),
       outcomeBadge(move.successorOutcome),
       classificationBadge(move.classification),
-      textSpan("move-detail", `目标=${move.move.to}，${move.move.capture ? "吃子" : "不吃子"}，兵数=${move.successorSoldierCount}`),
+      textSpan("move-detail", `??=${move.move.to}?${move.move.capture ? `? ${move.move.capturedSquare}` : "???"}???=${move.successorSoldierCount}?${mtd}`),
     );
+    const reasonText = move.reason ?? move.score?.description;
+    if (reasonText) {
+      button.append(textSpan("move-reason", reasonText));
+    }
     button.addEventListener("mouseenter", () => {
       this.hoveredMove = move.move;
       this.render();
@@ -759,8 +836,8 @@ export class Sanpao15App {
   private renderTablebaseStatus(): void {
     if (!this.tablebase) {
       if (this.tablebaseStatus?.mode === "local-backend") {
-        const detail = this.tablebaseStatus.error ?? "后端表库未完整加载，可改用浏览器文件模式。";
-        this.tablebaseStatusEl.replaceChildren(this.renderEmptyState("后端表库未完整加载", detail));
+        const detail = this.tablebaseStatus.error ?? "?????????????????????";
+        this.tablebaseStatusEl.replaceChildren(this.renderEmptyState("?????????", detail));
         return;
       }
       this.tablebaseStatusEl.replaceChildren(this.renderEmptyState(
@@ -771,7 +848,7 @@ export class Sanpao15App {
     }
     const status = this.tablebaseStatus;
     if (!status) {
-      this.tablebaseStatusEl.replaceChildren(this.renderEmptyState("表库状态未知", "正在检测本地后端或等待选择文件。"));
+      this.tablebaseStatusEl.replaceChildren(this.renderEmptyState("??????", "????????????????"));
       return;
     }
     const complete = status.complete;
@@ -779,16 +856,36 @@ export class Sanpao15App {
     container.className = "status-grid";
     container.append(
       this.statusItem(zh.labels.status, complete ? zh.tablebase.complete : zh.tablebase.partial, complete ? "drawing" : "warning"),
-      this.statusItem(zh.labels.source, this.tablebase.kind === "backend" ? "本地后端" : status.sourceName),
+      this.statusItem(zh.labels.source, this.tablebase.kind === "backend" ? "????" : status.sourceName),
       this.statusItem(zh.labels.layers, `${status.loadedLayers.length}/16`),
       this.statusItem(zh.labels.encoding, status.encoding || zh.outcome.Unknown),
       this.statusItem(zh.labels.ruleset, status.rulesetHash ?? status.rulesetName ?? "-"),
-      this.statusItem(zh.labels.readMode, this.tablebase.kind === "backend" ? "后端随机读取 .s15res" : zh.tablebase.randomRead),
+      this.statusItem(zh.labels.readMode, this.tablebase.kind === "backend" ? "?????? .s15res" : zh.tablebase.randomRead),
     );
+    if (status.mtd) {
+      const mtdText = status.mtd.complete
+        ? "????"
+        : status.mtd.loaded
+          ? "????"
+          : "???";
+      container.append(
+        this.statusItem("MTD", mtdText, status.mtd.loaded ? (status.mtd.complete ? "drawing" : "warning") : "warning"),
+        this.statusItem("MTD ?", `${status.mtd.loadedLayers.length}/16`),
+        this.statusItem("MTD ??", status.mtd.store),
+      );
+      const mtdNote = document.createElement("p");
+      mtdNote.className = `panel-note full-row${status.mtd.complete ? "" : " warning-note"}`;
+      mtdNote.textContent = status.mtd.complete
+        ? "MTD ?????? WDL ?????????????????"
+        : status.mtd.loaded
+          ? "MTD ?????????????????????? WDL-only?"
+          : (status.mtd.error ?? "MTD ???????????/???????");
+      container.append(mtdNote);
+    }
     if (this.tablebase.kind === "backend") {
       const note = document.createElement("p");
       note.className = "panel-note full-row";
-      note.textContent = "本地后端已连接，UI 会自动查表；仍可使用上方按钮切换到浏览器文件模式。";
+      note.textContent = "????????UI ?????????????????????????";
       container.append(note);
     }
     this.tablebaseStatusEl.replaceChildren(container);
