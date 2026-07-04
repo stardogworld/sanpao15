@@ -59,6 +59,43 @@ export const zh = {
     rawMtd: "MTD 原始字段",
   },
 
+  hud: {
+    position: "局面",
+    recommendation: "推荐",
+    moves: "可走法",
+    details: "详情",
+    proofFine: "精细推荐",
+    proofBasic: "基础结果",
+    pending: "待查询",
+    loadTablebase: "加载表库",
+    markedOnBoard: "已在棋盘标出",
+    execute: "执行",
+    preview: "预览",
+    engineer: "工程信息",
+  },
+
+  metrics: {
+    savedSoldiers: (count: number) => `保 ${count} 兵`,
+    cannonCanCapture: (count: number) => `再吃 ${count} 兵`,
+    withinPlies: (count: number) => `${count} 手内`,
+    unknownDistance: "步数未知",
+    basicOutcome: "基础结果",
+  },
+
+  moveShape: {
+    hitCenter: "打中兵",
+    hitEdge: "打边兵",
+    captureSoldier: "吃兵",
+    moveCenter: "转向中路",
+    leaveEdge: "脱离边线",
+    repositionCannon: "调炮",
+    blockEscape: "封住逃路",
+    pressureCannon: "贴近压迫",
+    buildWall: "补封锁线",
+    moveSoldier: "调兵",
+    captureTag: "吃子",
+  },
+
   mtd: {
     exact: "MTD 完美推荐",
     wdlOnly: "WDL-only 推荐",
@@ -118,6 +155,9 @@ export const zh = {
     hideNumbers: "隐藏格号",
     showArrow: "显示箭头",
     hideArrow: "隐藏箭头",
+    flipIconLabel: "切换视角",
+    numbersIconLabel: "显示或隐藏格号",
+    hintIconLabel: "显示或隐藏推荐提示",
     cannonView: "炮方视角",
     soldierView: "兵方视角",
     defaultView: "默认视角",

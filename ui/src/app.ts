@@ -59,10 +59,10 @@ import {
   stopReasonBadge,
 } from "./ui/badges";
 import { detailsBlock } from "./ui/details";
-import { explainMove } from "./ui/explainMove";
 import { formatMoveMtdBrief, formatMtdBrief, formatScoreBrief } from "./ui/formatMtd";
+import { keyMetricsForPosition } from "./ui/keyMetrics";
 import { renderMoveFunnel } from "./ui/moveFunnel";
-import { renderMtdLadder } from "./ui/mtdLadder";
+import { describeMoveShape } from "./ui/moveShape";
 import { recommendationModeView, type RecommendationModeView } from "./ui/recommendationMode";
 import { renderTablebaseCoverage } from "./ui/tablebaseCoverage";
 
@@ -146,41 +146,33 @@ export class Sanpao15App {
         <div class="header-status"></div>
       </header>
       <main class="game-layout">
-        <div class="board-column">
+        <div class="board-column board-stage">
           <div class="mode-toggle"></div>
           <div class="editor-tools"></div>
           <div class="board-tools"></div>
           <div class="board-wrap"></div>
           <nav class="toolbar" aria-label="对局操作"></nav>
-          <section class="notation-panel">
-            <div class="panel-heading compact">
-              <h2>局面代码</h2>
+          <details class="app-panel engineering-panel notation-panel">
+            <summary>局面代码</summary>
+            <div class="panel-heading compact engineering-heading">
               <div class="notation-actions"></div>
             </div>
             <p class="panel-note">S = 兵，C = 炮，c = 炮方走，s = 兵方走。</p>
-          </section>
+          </details>
         </div>
-        <aside class="analysis-column">
-          <section class="primary-result-card game-panel">
-            <h2>${zh.panels.currentPosition}</h2>
-            <div class="status-panel">
-              <div class="metric"><span>轮到</span></div>
-              <div class="metric"><span>炮数</span></div>
-              <div class="metric"><span>兵数</span></div>
-              <div class="metric"><span>结果</span></div>
-            </div>
+        <aside class="analysis-column hud-column">
+          <section class="primary-result-card hud-card result-hud">
             <div class="feedback"></div>
             <div class="position-summary"></div>
           </section>
-          <section class="best-move-card best-move-panel">
-            <h2>${zh.panels.bestMove}</h2>
+          <section class="best-move-card hud-card recommendation-hud">
             <div class="best-move-result"></div>
           </section>
           <details class="app-panel moves-panel">
             <summary class="moves-summary-title">${zh.panels.moveAnalysis}</summary>
             <div class="move-groups-result"></div>
           </details>
-          <details class="app-panel tablebase-panel">
+          <details class="app-panel tablebase-panel engineering-panel">
             <summary>${zh.panels.tablebaseAdvanced}</summary>
             <div class="panel-heading">
               <div class="tablebase-actions"></div>
@@ -188,11 +180,11 @@ export class Sanpao15App {
             <div class="auto-query-row"></div>
             <div class="tablebase-status"></div>
           </details>
-          <details class="app-panel comparison-panel">
+          <details class="app-panel comparison-panel engineering-panel">
             <summary>${zh.panels.sideComparison}</summary>
             <div class="side-comparison-result"></div>
           </details>
-          <details class="app-panel line-panel">
+          <details class="app-panel line-panel engineering-panel">
             <summary>${zh.panels.lineExplorer}</summary>
             <div class="panel-heading">
               <div class="line-actions"></div>
@@ -202,11 +194,11 @@ export class Sanpao15App {
             <div class="playback-status"></div>
             <div class="line-result"></div>
           </details>
-          <details class="app-panel initial-panel">
+          <details class="app-panel initial-panel engineering-panel">
             <summary>${zh.panels.initialPosition}</summary>
             <div class="initial-card"></div>
           </details>
-          <details class="app-panel help-panel">
+          <details class="app-panel help-panel engineering-panel">
             <summary>${zh.panels.help}</summary>
             <div class="help-copy"></div>
           </details>
@@ -227,12 +219,6 @@ export class Sanpao15App {
     this.boardEl.className = "board";
     this.boardEl.setAttribute("aria-label", "5x5 棋盘");
     this.requireElement(".board-wrap").append(this.boardEl);
-
-    const metrics = Array.from(this.root.querySelectorAll(".metric"));
-    metrics[0].append(this.turnEl);
-    metrics[1].append(this.cannonCountEl);
-    metrics[2].append(this.soldierCountEl);
-    metrics[3].append(this.resultEl);
 
     this.renderBoardTools();
     this.renderToolbar();
@@ -343,6 +329,26 @@ export class Sanpao15App {
     return button;
   }
 
+  private makeIconButton(
+    icon: string,
+    label: string,
+    onClick: () => void,
+    options?: { active?: boolean; disabled?: boolean; title?: string },
+  ): HTMLButtonElement {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `icon-button${options?.active ? " active" : ""}`;
+    button.textContent = icon;
+    button.title = options?.title ?? label;
+    button.setAttribute("aria-label", label);
+    button.disabled = options?.disabled ?? false;
+    button.addEventListener("click", () => {
+      if (button.disabled) return;
+      onClick();
+    });
+    return button;
+  }
+
   private makeSegment<T extends string>(label: string, value: T, current: T, onSelect: (value: T) => void): HTMLButtonElement {
     const button = document.createElement("button");
     button.type = "button";
@@ -357,10 +363,17 @@ export class Sanpao15App {
   }
 
   private renderBoardTools(): void {
+    const canApplyBestMove = this.primaryRecommendedMove() !== null;
     this.boardToolsEl.replaceChildren(
-      this.makeButton(this.boardFlipped ? zh.board.unflip : zh.board.flip, () => this.toggleBoardFlip()),
-      this.makeButton(this.showSquareNumbers ? zh.board.hideNumbers : zh.board.showNumbers, () => this.toggleSquareNumbers()),
-      this.makeButton(this.showMoveArrow ? zh.board.hideArrow : zh.board.showArrow, () => this.toggleMoveArrow()),
+      this.makeIconButton("⟳", zh.board.flipIconLabel, () => this.toggleBoardFlip(), { active: this.boardFlipped }),
+      this.makeIconButton("#", zh.board.numbersIconLabel, () => this.toggleSquareNumbers(), { active: this.showSquareNumbers }),
+      this.makeIconButton("✦", zh.board.hintIconLabel, () => this.toggleMoveArrow(), { active: this.showMoveArrow }),
+      this.makeIconButton("↶", zh.actions.undo, () => this.undo(), { disabled: this.undoStack.length === 0 }),
+      this.makeIconButton("↷", zh.actions.redo, () => this.redo(), { disabled: this.redoStack.length === 0 }),
+      this.makeIconButton("▶", zh.recommendation.executeMove, () => this.applyBestMove(), {
+        active: canApplyBestMove,
+        disabled: !canApplyBestMove,
+      }),
       badge(this.boardFlipped ? zh.board.soldierView : zh.board.cannonView, "neutral"),
     );
   }
@@ -655,14 +668,14 @@ export class Sanpao15App {
     const summary = this.root.querySelector(".moves-summary-title");
     if (!(summary instanceof HTMLElement)) return;
     if (!this.currentSummary) {
-      summary.textContent = zh.moveGroups.title;
+      summary.textContent = zh.hud.moves;
       return;
     }
     const bestTier = this.currentSummary.bestMoves[0]?.score?.wdlTier;
     const mistakeCount = this.currentSummary.allMoves.filter((move) =>
       !move.isBest &&
       (bestTier !== undefined ? move.score?.wdlTier !== bestTier : move.classification === "losing")).length;
-    summary.textContent = `${zh.moveGroups.title}（总 ${this.currentSummary.legalMoveCount}，最优 ${this.currentSummary.bestMoves.length}，失误 ${mistakeCount}）`;
+    summary.textContent = `${zh.hud.moves} ${this.currentSummary.legalMoveCount} · 最优 ${this.currentSummary.bestMoves.length} · 失误 ${mistakeCount}`;
   }
 
   private primaryRecommendedMove(): Move | null {
@@ -681,33 +694,40 @@ export class Sanpao15App {
 
   private renderPositionSummary(): HTMLElement {
     const container = document.createElement("div");
-    container.className = "position-summary-stack";
+    container.className = "position-hud-stack";
     const mode = this.currentRecommendationMode();
     const currentMtd = this.tablebaseResult?.currentMtd;
-    const core = document.createElement("div");
-    core.className = "status-grid core-status-grid";
-    container.append(
-      core,
-    );
-    core.append(
-      this.statusItem(zh.labels.result, this.currentSummary?.outcome ? outcomeText(this.currentSummary.outcome) : outcomeText(terminalOutcome(this.position))),
-      this.statusItem(zh.labels.turn, sideText(this.position.side), this.position.side),
-      this.statusItem("炮数", String(this.position.cannons.size)),
-      this.statusItem(zh.labels.soldiers, String(this.position.soldiers.size)),
-      this.statusItem("推荐", mode.label, mode.tone),
-      this.statusItem("MTD", currentMtd?.available ? zh.mtd.currentAvailable : this.currentMtdStatusText(), currentMtd?.available ? "drawing" : "warning"),
-    );
-    const note = document.createElement("p");
-    note.className = currentMtd?.available ? "panel-note mtd-note" : "panel-note warning-note";
-    note.textContent = currentMtd?.available ? formatMtdBrief(currentMtd) : mode.detail;
-    container.append(note);
+    const bestMove = this.bestMoveInfo();
+    const metrics = keyMetricsForPosition(this.position, this.currentSummary, bestMove, mode);
+    const label = document.createElement("span");
+    label.className = "hud-label";
+    label.textContent = zh.hud.position;
+    const result = document.createElement("strong");
+    result.className = `result-main ${metrics.tone}`;
+    result.textContent = this.currentSummary?.outcome ? outcomeText(this.currentSummary.outcome) : metrics.primary;
+    const subtitle = document.createElement("span");
+    subtitle.className = "result-subtitle";
+    subtitle.textContent = `${sideText(this.position.side)}走 · ${this.position.cannons.size}炮 / ${this.position.soldiers.size}兵`;
+    const metricBlock = document.createElement("div");
+    metricBlock.className = `key-metrics ${metrics.tone}`;
+    const primary = document.createElement("strong");
+    primary.className = "metric-big";
+    primary.textContent = metrics.primary;
+    const secondary = document.createElement("span");
+    secondary.className = "metric-small";
+    secondary.textContent = metrics.secondary ?? "";
+    metricBlock.append(primary, secondary);
+    const proof = document.createElement("span");
+    proof.className = `proof-chip ${mode.tone}`;
+    proof.textContent = metrics.proofLabel;
+    container.append(label, result, subtitle, metricBlock, proof);
     if (this.currentValidation.reason) {
       const reason = document.createElement("p");
       reason.className = "panel-note warning-note full-row";
       reason.textContent = localizeErrorMessage(this.currentValidation.reason);
       container.append(reason);
     }
-    const advanced = detailsBlock(zh.advanced.title);
+    const advanced = detailsBlock(zh.hud.details);
     const advancedGrid = document.createElement("div");
     advancedGrid.className = "status-grid";
     advancedGrid.append(
@@ -717,6 +737,7 @@ export class Sanpao15App {
       this.statusItem("合法着法", String(generateLegalMoves(this.position).length)),
       this.statusItem("最佳着法", String(this.currentSummary?.bestMoves.length ?? 0)),
       this.statusItem("推荐详情", mode.detail),
+      this.statusItem("MTD", currentMtd?.available ? formatMtdBrief(currentMtd) : this.currentMtdStatusText(), currentMtd?.available ? "drawing" : "warning"),
     );
     if (currentMtd?.available) {
       advancedGrid.append(
@@ -745,18 +766,17 @@ export class Sanpao15App {
       return this.renderEmptyState("尚未查询", this.tablebase ? zh.recommendation.waiting : "请先加载表库。");
     }
     const container = document.createElement("div");
-    container.className = "best-card";
-    const heading = document.createElement("h3");
+    container.className = "best-card recommendation-hud-stack";
     const bestCount = this.currentSummary.bestMoves.length;
     const mode = this.currentRecommendationMode();
-    heading.textContent = bestCount === 0
-      ? `${sideText(this.position.side)}无合法着法`
-      : mode.isMtdExact ? zh.recommendation.mtdBestMove : zh.recommendation.wdlBestMove;
-    container.append(heading);
-    container.append(this.recommendationModeNote(mode));
+    const label = document.createElement("span");
+    label.className = "hud-label";
+    label.textContent = zh.hud.recommendation;
+    container.append(label);
 
     if (bestCount === 0) {
       const note = document.createElement("p");
+      note.className = "move-shape-title";
       note.textContent = zh.recommendation.noLegalMove;
       container.append(note);
       return container;
@@ -765,54 +785,19 @@ export class Sanpao15App {
     const bestMove = this.bestMoveInfo();
     if (!bestMove) return this.renderEmptyState("尚未查询", zh.recommendation.waiting);
 
-    const explanation = explainMove(this.position.side, this.position.soldiers.size, bestMove, mode);
-    const headline = document.createElement("p");
-    headline.className = "recommendation-headline";
-    headline.textContent = explanation.headline;
-    const detailText = document.createElement("p");
-    detailText.className = "panel-note recommendation-detail";
-    detailText.textContent = this.showMoveArrow
-      ? explanation.detail
-      : `${explanation.detail} 现在已隐藏箭头，可在棋盘工具栏重新显示。`;
-    const notation = document.createElement("p");
-    notation.className = "move-notation-muted";
-    notation.textContent = explanation.notation;
-    container.append(headline, detailText, notation);
+    const shape = describeMoveShape(this.position, bestMove.move, this.position.side, bestMove);
+    const title = document.createElement("strong");
+    title.className = "move-shape-title";
+    title.textContent = shape.title;
+    const subtitle = document.createElement("span");
+    subtitle.className = "move-shape-subtitle";
+    subtitle.textContent = this.showMoveArrow ? zh.hud.markedOnBoard : "推荐提示已隐藏";
+    const tags = document.createElement("div");
+    tags.className = "move-shape-tags";
+    tags.append(outcomeBadge(bestMove.successorOutcome));
+    for (const tag of shape.tags) tags.append(badge(tag, "neutral"));
+    container.append(title, subtitle, tags);
 
-    const detail = document.createElement("div");
-    detail.className = "best-move-detail-grid compact-best-grid";
-    detail.append(
-      this.summaryStat("结果", outcomeBadge(bestMove.successorOutcome)),
-      this.summaryStat("推荐模式", badge(mode.label, mode.tone)),
-      this.summaryStat("排名", bestMove.rank !== undefined ? `#${bestMove.rank}` : "-"),
-      this.summaryStat("兵数层", String(bestMove.successorSoldierCount)),
-    );
-    container.append(detail);
-
-    if (explanation.mtdDetail) {
-      const mtdSummary = document.createElement("p");
-      mtdSummary.className = bestMove.successorMtd?.available ? "panel-note mtd-note" : "panel-note";
-      mtdSummary.textContent = explanation.mtdDetail;
-      container.append(mtdSummary);
-    }
-    container.append(renderMtdLadder(this.position.soldiers.size, bestMove.successorOutcome, bestMove.successorMtd));
-
-    const reasonText = bestMove.reason ?? bestMoveExplanation(this.currentSummary, mode);
-    if (reasonText) {
-      const reason = document.createElement("p");
-      reason.className = "panel-note";
-      reason.textContent = reasonText;
-      container.append(reason);
-    }
-
-    if (bestMove.successorMtd?.available && bestMove.successorMtd.text) {
-      const mtd = detailsBlock("MTD 说明");
-      const text = document.createElement("p");
-      text.className = "panel-note";
-      text.textContent = bestMove.successorMtd.text;
-      mtd.append(text);
-      container.append(mtd);
-    }
     if ((this.tablebaseResult?.optimalMoveCount ?? bestCount) > 1) {
       const optimalNote = document.createElement("p");
       optimalNote.className = "panel-note";
@@ -821,22 +806,45 @@ export class Sanpao15App {
     }
 
     const actions = document.createElement("div");
-    actions.className = "best-actions";
+    actions.className = "hud-actions";
     actions.append(
-      this.makeButton(zh.recommendation.executeMove, () => this.applyMoveFromPanel(bestMove.move)),
+      this.makeButton(zh.hud.execute, () => this.applyMoveFromPanel(bestMove.move)),
+      this.makeButton(zh.hud.preview, () => this.previewMove(bestMove.move)),
+    );
+    container.append(actions);
+    const detail = detailsBlock(zh.hud.details);
+    const detailGrid = document.createElement("div");
+    detailGrid.className = "best-move-detail-grid compact-best-grid";
+    detailGrid.append(
+      this.summaryStat("记法", formatMove(bestMove.move)),
+      this.summaryStat("推荐模式", badge(mode.label, mode.tone)),
+      this.summaryStat("排名", bestMove.rank !== undefined ? `#${bestMove.rank}` : "-"),
+      this.summaryStat("兵数层", String(bestMove.successorSoldierCount)),
+    );
+    detail.append(detailGrid);
+    const reasonText = bestMove.reason ?? bestMoveExplanation(this.currentSummary, mode);
+    if (reasonText) {
+      const reason = document.createElement("p");
+      reason.className = "panel-note";
+      reason.textContent = reasonText;
+      detail.append(reason);
+    }
+    if (bestMove.successorMtd?.available && bestMove.successorMtd.text) {
+      const text = document.createElement("p");
+      text.className = "panel-note";
+      text.textContent = bestMove.successorMtd.text;
+      detail.append(text);
+    }
+    const copyActions = document.createElement("div");
+    copyActions.className = "card-actions";
+    copyActions.append(
       this.makeButton(zh.recommendation.copyPosition, () => void this.copyText(positionToNotation(this.position), zh.feedback.copied)),
       this.makeButton(zh.recommendation.copyAfterPosition, () => void this.copyText(positionToNotation(applyMove(this.position, bestMove.move)), zh.feedback.copiedAfter)),
       this.makeButton(zh.recommendation.copyMove, () => void this.copyText(formatMove(bestMove.move), zh.feedback.copiedMove)),
     );
-    container.append(actions);
+    detail.append(copyActions);
+    container.append(detail);
     return container;
-  }
-
-  private recommendationModeNote(mode: RecommendationModeView): HTMLElement {
-    const note = document.createElement("p");
-    note.className = mode.isMtdExact ? "panel-note" : "panel-note warning-note";
-    note.append(badge(mode.label, mode.tone), document.createTextNode(` ${mode.detail}`));
-    return note;
   }
 
   private renderSideComparisonPanel(): HTMLElement {
@@ -947,38 +955,38 @@ export class Sanpao15App {
   private renderMoveButton(move: MoveOutcomeInfo, isBest: boolean): HTMLElement {
     const card = document.createElement("article");
     card.className = `move-row-card ${isBest ? "recommended" : move.classification === "losing" ? "mistake" : ""}`;
-    const mtd = move.successorMtd?.available
-      ? formatMoveMtdBrief(move.successorMtd)
-      : "MTD -";
-    const rank = move.rank !== undefined ? `#${move.rank}` : "-";
+    const shape = describeMoveShape(this.position, move.move, this.position.side, move);
     const top = document.createElement("div");
     top.className = "move-row-top";
     top.append(
-      textSpan("move-main", `${rank} ${formatMove(move.move)}`),
+      textSpan("move-main", shape.title),
       outcomeBadge(move.successorOutcome),
       classificationBadge(move.classification),
     );
     card.append(top);
-    card.append(textSpan("move-detail", [
-      `k=${move.successorSoldierCount}`,
-      move.move.capture ? `吃 ${move.move.capturedSquare}` : "不吃子",
-      mtd,
-    ].join(" | ")));
-    const reasonText = move.reason ?? move.score?.description;
-    if (reasonText) {
-      card.append(textSpan("move-reason", reasonText));
-    }
+    card.append(textSpan("move-detail", shape.subtitle));
 
     const advanced = detailsBlock(zh.moveGroups.advanced);
     const advancedGrid = document.createElement("div");
     advancedGrid.className = "status-grid";
     advancedGrid.append(
+      this.statusItem("记法", formatMove(move.move)),
+      this.statusItem("排名", move.rank !== undefined ? `#${move.rank}` : "-"),
+      this.statusItem("兵数层", String(move.successorSoldierCount)),
+      this.statusItem("MTD", move.successorMtd?.available ? formatMoveMtdBrief(move.successorMtd) : "MTD -"),
       this.statusItem(zh.advanced.successorIndex, move.successorIndex.toString()),
       this.statusItem("score", formatScoreBrief(move.score)),
       this.statusItem("score.description", move.score?.description ?? "-"),
       this.statusItem("successorMtd", move.successorMtd?.available ? JSON.stringify(move.successorMtd) : "-"),
     );
     advanced.append(advancedGrid);
+    const reasonText = move.reason ?? move.score?.description;
+    if (reasonText) {
+      const reason = document.createElement("p");
+      reason.className = "panel-note";
+      reason.textContent = reasonText;
+      advanced.append(reason);
+    }
     card.append(advanced);
 
     const actions = document.createElement("div");
@@ -1428,6 +1436,7 @@ export class Sanpao15App {
     const displayOutcome = this.currentSummary?.outcome ?? terminalOutcome(this.position);
     this.resultEl.replaceChildren(this.currentValidation.canQuery || displayOutcome !== "Unknown" ? outcomeBadge(displayOutcome) : badge("不可查", "warning"));
     this.notationEl.textContent = positionToNotation(this.position);
+    this.renderBoardTools();
     this.renderHeaderStatus();
   }
 
@@ -1436,8 +1445,6 @@ export class Sanpao15App {
       badge(zh.rulesetBadge, "neutral"),
       badge(this.mode === "analysis" ? "分析模式" : "编辑模式", this.mode === "analysis" ? "drawing" : "warning"),
       this.currentSummary ? outcomeBadge(this.currentSummary.outcome) : badge(this.currentValidation.canQuery ? "待查询" : "不可查", this.currentValidation.canQuery ? "neutral" : "warning"),
-      badge(this.tablebase ? zh.tablebase.loadedBadge(this.tablebaseStatus?.loadedLayers.length ?? 0) : zh.tablebase.notLoadedBadge, this.tablebase ? "drawing" : "warning"),
-      badge(this.currentRecommendationMode().label, this.currentRecommendationMode().tone),
       badge(this.boardFlipped ? zh.board.soldierView : zh.board.cannonView, "neutral"),
     );
   }

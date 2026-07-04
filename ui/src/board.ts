@@ -4,9 +4,6 @@ import { classificationText, formatMove, outcomeText, zh } from "./i18n/zh";
 import type { Outcome } from "./engine";
 import type { MoveClassification } from "./tablebase/recommend";
 
-const cannonPieceUrl = new URL("./assets/pieces/cannon.svg", import.meta.url).href;
-const soldierPieceUrl = new URL("./assets/pieces/soldier.svg", import.meta.url).href;
-
 export interface BoardRenderOptions {
   position: Position;
   selectedSquare: number | null;
@@ -38,11 +35,13 @@ function pieceLabel(position: Position, square: number): string {
 }
 
 function appendPiece(button: HTMLButtonElement, kind: "cannon" | "soldier"): void {
-  const image = document.createElement("img");
-  image.className = "piece-image";
-  image.alt = kind === "cannon" ? zh.piece.cannon : zh.piece.soldier;
-  image.src = kind === "cannon" ? cannonPieceUrl : soldierPieceUrl;
-  button.append(image);
+  const token = document.createElement("span");
+  token.className = `piece-token ${kind}-token`;
+  const glyph = document.createElement("span");
+  glyph.className = "piece-glyph";
+  glyph.textContent = kind === "cannon" ? zh.piece.cannon : zh.piece.soldier;
+  token.append(glyph);
+  button.append(token);
 }
 
 function moveTouchesSquare(move: Move | null | undefined, square: number): boolean {
@@ -65,10 +64,9 @@ function visualCenter(visualSquares: number[], square: number): { x: number; y: 
   const index = visualSquares.indexOf(square);
   const row = Math.floor(index / boardSize);
   const column = index % boardSize;
-  const cell = 100 / boardSize;
   return {
-    x: column * cell + cell / 2,
-    y: row * cell + cell / 2,
+    x: 10 + column * 20,
+    y: 10 + row * 20,
   };
 }
 
@@ -91,39 +89,64 @@ function shortenLine(
   };
 }
 
+function appendBoardLines(container: HTMLElement): void {
+  const namespace = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(namespace, "svg");
+  svg.classList.add("board-lines");
+  svg.setAttribute("viewBox", "0 0 100 100");
+  svg.setAttribute("aria-hidden", "true");
+  for (let index = 0; index < boardSize; index += 1) {
+    const offset = 10 + index * 20;
+    const vertical = document.createElementNS(namespace, "line");
+    vertical.setAttribute("x1", String(offset));
+    vertical.setAttribute("y1", "10");
+    vertical.setAttribute("x2", String(offset));
+    vertical.setAttribute("y2", "90");
+    svg.append(vertical);
+
+    const horizontal = document.createElementNS(namespace, "line");
+    horizontal.setAttribute("x1", "10");
+    horizontal.setAttribute("y1", String(offset));
+    horizontal.setAttribute("x2", "90");
+    horizontal.setAttribute("y2", String(offset));
+    svg.append(horizontal);
+  }
+  container.append(svg);
+}
+
 function appendMoveArrow(container: HTMLElement, move: Move, visualSquares: number[], displayKind: string | null): void {
   const namespace = "http://www.w3.org/2000/svg";
   const from = visualCenter(visualSquares, move.from);
   const to = visualCenter(visualSquares, move.to);
-  const line = shortenLine(from, to, 4.8);
+  const line = shortenLine(from, to, 7.4);
+  const bend = Math.abs(from.x - to.x) + Math.abs(from.y - to.y) > 21 ? -5 : -3;
+  const controlX = (line.x1 + line.x2) / 2 + (line.y2 - line.y1 === 0 ? 0 : bend);
+  const controlY = (line.y1 + line.y2) / 2 + (line.x2 - line.x1 === 0 ? 0 : bend);
   const svg = document.createElementNS(namespace, "svg");
-  svg.classList.add("board-arrow-overlay");
+  svg.classList.add("move-hint-layer");
   if (displayKind) svg.classList.add(displayKind);
   svg.setAttribute("viewBox", "0 0 100 100");
   svg.setAttribute("aria-hidden", "true");
 
   const defs = document.createElementNS(namespace, "defs");
   defs.innerHTML = `
-    <filter id="board-arrow-shadow" x="-20%" y="-20%" width="140%" height="140%">
+    <filter id="move-hint-shadow" x="-20%" y="-20%" width="140%" height="140%">
       <feDropShadow dx="0" dy="1.2" stdDeviation="1.2" flood-color="rgb(31 40 36)" flood-opacity="0.28" />
     </filter>
-    <marker id="board-arrow-head" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="5.2" markerHeight="5.2" orient="auto-start-reverse">
+    <marker id="move-hint-head" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="4.2" markerHeight="4.2" orient="auto-start-reverse">
       <path d="M 0 0 L 10 5 L 0 10 z" />
     </marker>
   `;
   svg.append(defs);
 
-  const path = document.createElementNS(namespace, "line");
-  path.classList.add("board-arrow-line");
-  path.setAttribute("x1", String(line.x1));
-  path.setAttribute("y1", String(line.y1));
-  path.setAttribute("x2", String(line.x2));
-  path.setAttribute("y2", String(line.y2));
-  path.setAttribute("marker-end", "url(#board-arrow-head)");
+  const path = document.createElementNS(namespace, "path");
+  path.classList.add("move-hint-path");
+  path.setAttribute("d", `M ${line.x1} ${line.y1} Q ${controlX} ${controlY} ${line.x2} ${line.y2}`);
+  path.setAttribute("marker-end", "url(#move-hint-head)");
   svg.append(path);
 
   const dot = document.createElementNS(namespace, "circle");
-  dot.classList.add("board-arrow-origin");
+  dot.classList.add("move-hint-origin");
   dot.setAttribute("cx", String(from.x));
   dot.setAttribute("cy", String(from.y));
   dot.setAttribute("r", "2.5");
@@ -131,7 +154,7 @@ function appendMoveArrow(container: HTMLElement, move: Move, visualSquares: numb
 
   if (move.capture) {
     const ring = document.createElementNS(namespace, "circle");
-    ring.classList.add("board-arrow-capture");
+    ring.classList.add("move-hint-capture");
     ring.setAttribute("cx", String(to.x));
     ring.setAttribute("cy", String(to.y));
     ring.setAttribute("r", "6.4");
@@ -159,12 +182,16 @@ export function renderBoard(container: HTMLElement, options: BoardRenderOptions)
   const visualSquares = visualSquaresForOrientation(orientation);
   const displayMove = options.selectedMove ?? options.hoveredMove ?? options.primaryMove ?? null;
   const displayKind = options.selectedMove ? "selected" : options.hoveredMove ? "hovered" : displayMove ? "primary" : null;
+  appendBoardLines(container);
 
   for (const square of visualSquares) {
     const button = document.createElement("button");
     button.type = "button";
-    button.className = "square";
+    button.className = "square point-square";
     button.dataset.square = String(square);
+    const center = visualCenter(visualSquares, square);
+    button.style.left = `${center.x}%`;
+    button.style.top = `${center.y}%`;
 
     if (options.position.soldiers.has(square)) {
       button.classList.add("soldier");
@@ -199,13 +226,13 @@ export function renderBoard(container: HTMLElement, options: BoardRenderOptions)
     }
 
     if (displayMove?.from === square) {
-      button.classList.add("display-from");
+      button.classList.add("display-from", "hint-from");
       if (displayKind) button.dataset.displayKind = displayKind;
     }
 
     if (displayMove?.to === square) {
-      button.classList.add("display-to");
-      if (displayMove.capture) button.classList.add("display-capture");
+      button.classList.add("display-to", "hint-to");
+      if (displayMove.capture) button.classList.add("display-capture", "hint-capture");
       if (displayKind) button.dataset.displayKind = displayKind;
     }
 
