@@ -88,6 +88,8 @@ export const zh = {
     executeBest: "执行最佳着法",
     previewMove: "预览",
     copyPosition: "复制局面",
+    copyAfterPosition: "复制执行后局面",
+    copyMove: "复制推荐着法",
     noLegalMove: "当前方无合法着法。",
     waiting: "正在等待查询结果。",
     multipleOptimal: (count: number) => `共有 ${count} 个同分最优着法，展开“合法着法分析”查看。`,
@@ -114,6 +116,8 @@ export const zh = {
     unflip: "恢复视角",
     showNumbers: "显示格号",
     hideNumbers: "隐藏格号",
+    showArrow: "显示箭头",
+    hideArrow: "隐藏箭头",
     cannonView: "炮方视角",
     soldierView: "兵方视角",
     defaultView: "默认视角",
@@ -227,6 +231,8 @@ export const zh = {
 
   feedback: {
     copied: "已复制局面。",
+    copiedAfter: "已复制执行后局面。",
+    copiedMove: "已复制推荐着法。",
     pasted: "已粘贴局面。",
     moved: (move: string) => `已走：${move}。`,
     terminal: "当前为终局，不能继续走子。",

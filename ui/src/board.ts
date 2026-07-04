@@ -21,6 +21,7 @@ export interface BoardRenderOptions {
   selectedMove?: Move | null;
   hoveredMove?: Move | null;
   showSquareNumbers?: boolean;
+  showMoveArrow?: boolean;
   onSquareClick: (square: number) => void;
 }
 
@@ -58,6 +59,86 @@ function appendSquareNumber(button: HTMLButtonElement, square: number): void {
   squareNumber.className = "square-number";
   squareNumber.textContent = String(square);
   button.append(squareNumber);
+}
+
+function visualCenter(visualSquares: number[], square: number): { x: number; y: number } {
+  const index = visualSquares.indexOf(square);
+  const row = Math.floor(index / boardSize);
+  const column = index % boardSize;
+  const cell = 100 / boardSize;
+  return {
+    x: column * cell + cell / 2,
+    y: row * cell + cell / 2,
+  };
+}
+
+function shortenLine(
+  from: { x: number; y: number },
+  to: { x: number; y: number },
+  inset: number,
+): { x1: number; y1: number; x2: number; y2: number } {
+  const dx = to.x - from.x;
+  const dy = to.y - from.y;
+  const length = Math.hypot(dx, dy);
+  if (length === 0) return { x1: from.x, y1: from.y, x2: to.x, y2: to.y };
+  const ux = dx / length;
+  const uy = dy / length;
+  return {
+    x1: from.x + ux * inset,
+    y1: from.y + uy * inset,
+    x2: to.x - ux * inset,
+    y2: to.y - uy * inset,
+  };
+}
+
+function appendMoveArrow(container: HTMLElement, move: Move, visualSquares: number[], displayKind: string | null): void {
+  const namespace = "http://www.w3.org/2000/svg";
+  const from = visualCenter(visualSquares, move.from);
+  const to = visualCenter(visualSquares, move.to);
+  const line = shortenLine(from, to, 4.8);
+  const svg = document.createElementNS(namespace, "svg");
+  svg.classList.add("board-arrow-overlay");
+  if (displayKind) svg.classList.add(displayKind);
+  svg.setAttribute("viewBox", "0 0 100 100");
+  svg.setAttribute("aria-hidden", "true");
+
+  const defs = document.createElementNS(namespace, "defs");
+  defs.innerHTML = `
+    <filter id="board-arrow-shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="1.2" stdDeviation="1.2" flood-color="rgb(31 40 36)" flood-opacity="0.28" />
+    </filter>
+    <marker id="board-arrow-head" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="5.2" markerHeight="5.2" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" />
+    </marker>
+  `;
+  svg.append(defs);
+
+  const path = document.createElementNS(namespace, "line");
+  path.classList.add("board-arrow-line");
+  path.setAttribute("x1", String(line.x1));
+  path.setAttribute("y1", String(line.y1));
+  path.setAttribute("x2", String(line.x2));
+  path.setAttribute("y2", String(line.y2));
+  path.setAttribute("marker-end", "url(#board-arrow-head)");
+  svg.append(path);
+
+  const dot = document.createElementNS(namespace, "circle");
+  dot.classList.add("board-arrow-origin");
+  dot.setAttribute("cx", String(from.x));
+  dot.setAttribute("cy", String(from.y));
+  dot.setAttribute("r", "2.5");
+  svg.append(dot);
+
+  if (move.capture) {
+    const ring = document.createElementNS(namespace, "circle");
+    ring.classList.add("board-arrow-capture");
+    ring.setAttribute("cx", String(to.x));
+    ring.setAttribute("cy", String(to.y));
+    ring.setAttribute("r", "6.4");
+    svg.append(ring);
+  }
+
+  container.append(svg);
 }
 
 function ariaLabelForSquare(options: BoardRenderOptions, square: number, targetMove: Move | undefined, displayMove: Move | null): string {
@@ -159,5 +240,9 @@ export function renderBoard(container: HTMLElement, options: BoardRenderOptions)
     button.setAttribute("aria-label", ariaLabelForSquare(options, square, targetMove, displayMove));
     button.addEventListener("click", () => options.onSquareClick(square));
     container.append(button);
+  }
+
+  if ((options.showMoveArrow ?? true) && displayMove) {
+    appendMoveArrow(container, displayMove, visualSquares, displayKind);
   }
 }

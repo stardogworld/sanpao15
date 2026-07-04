@@ -59,8 +59,12 @@ import {
   stopReasonBadge,
 } from "./ui/badges";
 import { detailsBlock } from "./ui/details";
+import { explainMove } from "./ui/explainMove";
 import { formatMoveMtdBrief, formatMtdBrief, formatScoreBrief } from "./ui/formatMtd";
+import { renderMoveFunnel } from "./ui/moveFunnel";
+import { renderMtdLadder } from "./ui/mtdLadder";
 import { recommendationModeView, type RecommendationModeView } from "./ui/recommendationMode";
+import { renderTablebaseCoverage } from "./ui/tablebaseCoverage";
 
 interface HistoryEntry {
   position: Position;
@@ -85,6 +89,7 @@ export class Sanpao15App {
   private targetOutcomes: TargetOutcomeLabel[] = [];
   private boardFlipped = false;
   private showSquareNumbers = true;
+  private showMoveArrow = true;
   private selectedMoveForDisplay: Move | null = null;
 
   private readonly root: HTMLElement;
@@ -355,6 +360,7 @@ export class Sanpao15App {
     this.boardToolsEl.replaceChildren(
       this.makeButton(this.boardFlipped ? zh.board.unflip : zh.board.flip, () => this.toggleBoardFlip()),
       this.makeButton(this.showSquareNumbers ? zh.board.hideNumbers : zh.board.showNumbers, () => this.toggleSquareNumbers()),
+      this.makeButton(this.showMoveArrow ? zh.board.hideArrow : zh.board.showArrow, () => this.toggleMoveArrow()),
       badge(this.boardFlipped ? zh.board.soldierView : zh.board.cannonView, "neutral"),
     );
   }
@@ -405,6 +411,13 @@ export class Sanpao15App {
     this.showSquareNumbers = !this.showSquareNumbers;
     this.renderBoardTools();
     this.renderHeaderStatus();
+    this.render();
+  }
+
+  private toggleMoveArrow(): void {
+    this.showMoveArrow = !this.showMoveArrow;
+    this.renderBoardTools();
+    this.renderSummaryPanels();
     this.render();
   }
 
@@ -752,10 +765,23 @@ export class Sanpao15App {
     const bestMove = this.bestMoveInfo();
     if (!bestMove) return this.renderEmptyState("尚未查询", zh.recommendation.waiting);
 
+    const explanation = explainMove(this.position.side, this.position.soldiers.size, bestMove, mode);
+    const headline = document.createElement("p");
+    headline.className = "recommendation-headline";
+    headline.textContent = explanation.headline;
+    const detailText = document.createElement("p");
+    detailText.className = "panel-note recommendation-detail";
+    detailText.textContent = this.showMoveArrow
+      ? explanation.detail
+      : `${explanation.detail} 现在已隐藏箭头，可在棋盘工具栏重新显示。`;
+    const notation = document.createElement("p");
+    notation.className = "move-notation-muted";
+    notation.textContent = explanation.notation;
+    container.append(headline, detailText, notation);
+
     const detail = document.createElement("div");
     detail.className = "best-move-detail-grid compact-best-grid";
     detail.append(
-      this.summaryStat("着法", formatMove(bestMove.move)),
       this.summaryStat("结果", outcomeBadge(bestMove.successorOutcome)),
       this.summaryStat("推荐模式", badge(mode.label, mode.tone)),
       this.summaryStat("排名", bestMove.rank !== undefined ? `#${bestMove.rank}` : "-"),
@@ -763,15 +789,21 @@ export class Sanpao15App {
     );
     container.append(detail);
 
-    const reason = document.createElement("p");
-    reason.className = "panel-note";
-    reason.textContent = bestMove.reason ?? bestMoveExplanation(this.currentSummary, mode);
-    container.append(reason);
+    if (explanation.mtdDetail) {
+      const mtdSummary = document.createElement("p");
+      mtdSummary.className = bestMove.successorMtd?.available ? "panel-note mtd-note" : "panel-note";
+      mtdSummary.textContent = explanation.mtdDetail;
+      container.append(mtdSummary);
+    }
+    container.append(renderMtdLadder(this.position.soldiers.size, bestMove.successorOutcome, bestMove.successorMtd));
 
-    const mtdSummary = document.createElement("p");
-    mtdSummary.className = bestMove.successorMtd?.available ? "panel-note mtd-note" : "panel-note";
-    mtdSummary.textContent = formatMoveMtdBrief(bestMove.successorMtd);
-    container.append(mtdSummary);
+    const reasonText = bestMove.reason ?? bestMoveExplanation(this.currentSummary, mode);
+    if (reasonText) {
+      const reason = document.createElement("p");
+      reason.className = "panel-note";
+      reason.textContent = reasonText;
+      container.append(reason);
+    }
 
     if (bestMove.successorMtd?.available && bestMove.successorMtd.text) {
       const mtd = detailsBlock("MTD 说明");
@@ -792,7 +824,9 @@ export class Sanpao15App {
     actions.className = "best-actions";
     actions.append(
       this.makeButton(zh.recommendation.executeMove, () => this.applyMoveFromPanel(bestMove.move)),
-      this.makeButton(zh.recommendation.copyPosition, () => void this.copyNotation()),
+      this.makeButton(zh.recommendation.copyPosition, () => void this.copyText(positionToNotation(this.position), zh.feedback.copied)),
+      this.makeButton(zh.recommendation.copyAfterPosition, () => void this.copyText(positionToNotation(applyMove(this.position, bestMove.move)), zh.feedback.copiedAfter)),
+      this.makeButton(zh.recommendation.copyMove, () => void this.copyText(formatMove(bestMove.move), zh.feedback.copiedMove)),
     );
     container.append(actions);
     return container;
@@ -861,6 +895,11 @@ export class Sanpao15App {
       this.summaryStat(zh.moveGroups.policy, this.currentRecommendationMode().label),
     );
     container.append(summary);
+    container.append(renderMoveFunnel(this.currentSummary, {
+      optimal: optimalMoves,
+      acceptable: acceptableMoves,
+      mistake: mistakeMoves,
+    }, this.currentRecommendationMode()));
 
     const groups: Array<{ key: "optimal" | "acceptable" | "mistake"; title: string; moves: MoveOutcomeInfo[] }> = [
       {
@@ -1038,6 +1077,7 @@ export class Sanpao15App {
     }
     const container = document.createElement("div");
     container.className = "diagnostic-stack";
+    container.append(renderTablebaseCoverage(status));
 
     const source = document.createElement("section");
     source.className = "diagnostic-section";
@@ -1264,12 +1304,16 @@ export class Sanpao15App {
   private async copyNotation(): Promise<void> {
     const notation = positionToNotation(this.position);
     this.pasteInputEl.value = notation;
+    await this.copyText(notation, zh.feedback.copied);
+  }
+
+  private async copyText(text: string, successMessage: string): Promise<void> {
     try {
-      await navigator.clipboard.writeText(notation);
+      await navigator.clipboard.writeText(text);
     } catch {
       // Keeping the input populated is a sufficient fallback for non-secure origins.
     }
-    this.showFeedback(zh.feedback.copied);
+    this.showFeedback(successMessage);
   }
 
   private pasteNotationFromInput(): void {
@@ -1374,6 +1418,7 @@ export class Sanpao15App {
       selectedMove: this.selectedMoveForDisplay,
       hoveredMove: this.hoveredMove,
       showSquareNumbers: this.showSquareNumbers,
+      showMoveArrow: this.showMoveArrow,
       onSquareClick: (square) => this.onSquareClick(square),
     });
 
