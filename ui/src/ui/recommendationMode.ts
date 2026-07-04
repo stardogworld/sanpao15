@@ -47,20 +47,30 @@ export function recommendationModeView(
     };
   }
 
+  const mtdLoaded = status?.mtd?.loaded === true;
+  const mtdComplete = status?.mtd?.complete === true;
+
   if (recommendation?.recommendationPolicy === "wdl") {
-    const hasLoadedMtd = status?.mtd?.loaded === true;
+    if (mtdLoaded && !mtdComplete) {
+      return {
+        mode: "wdl",
+        label: zh.mtd.partialFallback,
+        tone: "warning",
+        detail: recommendation.mtdScoringDisabledReason ?? zh.mtd.partialFallbackDetail,
+        isMtdExact: false,
+      };
+    }
+
     return {
       mode: "wdl",
-      label: hasLoadedMtd ? zh.mtd.partialFallback : zh.mtd.wdlOnly,
+      label: zh.mtd.wdlOnly,
       tone: "warning",
-      detail: hasLoadedMtd
-        ? zh.mtd.partialFallbackDetail
-        : (recommendation.mtdScoringDisabledReason ?? zh.mtd.backendNoMtdNote),
+      detail: recommendation.mtdScoringDisabledReason ?? (mtdLoaded ? zh.mtd.wdlOnlyDetail : zh.mtd.backendNoMtdNote),
       isMtdExact: false,
     };
   }
 
-  if (status?.mtd?.loaded) {
+  if (mtdLoaded && !mtdComplete) {
     return {
       mode: "wdl",
       label: zh.mtd.partialFallback,
@@ -74,7 +84,7 @@ export function recommendationModeView(
     mode: "wdl",
     label: zh.mtd.wdlOnly,
     tone: "warning",
-    detail: zh.mtd.backendNoMtdNote,
+    detail: mtdLoaded ? zh.mtd.wdlOnlyDetail : zh.mtd.backendNoMtdNote,
     isMtdExact: false,
   };
 }

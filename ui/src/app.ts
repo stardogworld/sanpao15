@@ -319,14 +319,22 @@ export class Sanpao15App {
     return element;
   }
 
-  private makeButton(label: string, onClick: () => void): HTMLButtonElement {
+  private makeButton(
+    label: string,
+    onClick: () => void,
+    options?: { disabled?: boolean; title?: string },
+  ): HTMLButtonElement {
     const button = document.createElement("button");
     button.type = "button";
     button.className = "command-button";
     button.textContent = label;
-    button.title = label;
+    button.title = options?.title ?? label;
     button.setAttribute("aria-label", label);
-    button.addEventListener("click", onClick);
+    button.disabled = options?.disabled ?? false;
+    button.addEventListener("click", () => {
+      if (button.disabled) return;
+      onClick();
+    });
     return button;
   }
 
@@ -353,12 +361,16 @@ export class Sanpao15App {
 
   private renderToolbar(): void {
     const toolbar = this.requireElement(".toolbar");
+    const canApplyBestMove = this.primaryRecommendedMove() !== null;
     const gameGroup = this.toolbarGroup("对局");
     gameGroup.append(
       this.makeButton(zh.actions.undo, () => this.undo()),
       this.makeButton(zh.actions.redo, () => this.redo()),
       this.makeButton("查询当前局面", () => void this.refreshAnalysisNow()),
-      this.makeButton(zh.recommendation.executeMove, () => this.applyBestMove()),
+      this.makeButton(zh.recommendation.executeMove, () => this.applyBestMove(), {
+        disabled: !canApplyBestMove,
+        title: canApplyBestMove ? zh.recommendation.executeMove : zh.recommendation.noLegalMove,
+      }),
     );
 
     const positionGroup = this.toolbarGroup("局面");
@@ -623,6 +635,7 @@ export class Sanpao15App {
     this.moveGroupsEl.replaceChildren(this.renderMoveGroupsPanel());
     this.renderMoveGroupsSummaryTitle();
     this.renderTablebaseStatus();
+    this.renderToolbar();
   }
 
   private renderMoveGroupsSummaryTitle(): void {

@@ -321,6 +321,17 @@ h1 {
   background: #345247;
 }
 
+.command-button:disabled,
+.segment:disabled {
+  opacity: 0.52;
+  cursor: not-allowed;
+  filter: grayscale(0.2);
+}
+
+.command-button:disabled:hover {
+  background: #24342e;
+}
+
 .segmented-control,
 .editor-tools-copy {
   display: flex;

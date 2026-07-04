@@ -71,6 +71,7 @@ export const zh = {
     currentMissing: "当前层 MTD 未加载，使用 WDL-only。",
     shortMissing: "MTD -",
     exactDetail: "同一 WDL 层级内按材料目标和保证步数继续细分排序。",
+    wdlOnlyDetail: "当前推荐仅使用胜负和结果排序；未使用 MTD 材料目标和保证步数细分。",
     partialFallbackDetail: "MTD 已部分加载，但当前局面或同级后继缺少 MTD 数据，已回退 WDL-only。",
     browserFilesNote: "浏览器文件模式当前只支持 WDL 表库；如需 MTD 推荐，请使用本地后端 --mtd-dir。",
     browserFilesTablebaseNote: "浏览器文件模式当前只支持 .s15res WDL 查询；MTD 推荐请使用本地后端并传入 --mtd-dir。",
