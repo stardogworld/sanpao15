@@ -9,6 +9,11 @@ export const zh = {
   panels: {
     game: "对局",
     tablebase: "表库",
+    currentPosition: "当前局面",
+    bestMove: "下一步建议",
+    moveAnalysis: "合法着法分析",
+    sideComparison: "双方先走比较",
+    tablebaseAdvanced: "表库与高级信息",
     lineExplorer: "路线探索",
     initialPosition: "初始局面",
     help: "规则说明",
@@ -43,6 +48,75 @@ export const zh = {
     off: "关闭",
     none: "无",
     maxPlies: "最多手数",
+  },
+
+  advanced: {
+    title: "高级信息",
+    tablebase: "表库与高级信息",
+    denseIndex: "denseIndex",
+    successorIndex: "后继索引",
+    score: "评分细节",
+    rawMtd: "MTD 原始字段",
+  },
+
+  mtd: {
+    exact: "MTD 完美推荐",
+    wdlOnly: "WDL-only 推荐",
+    partialFallback: "MTD 部分加载，当前层回退 WDL-only",
+    noTablebase: "表库未加载",
+    notLoaded: "未加载 MTD",
+    loaded: "已加载",
+    partial: "部分加载",
+    currentAvailable: "当前层 MTD 已加载",
+    currentMissing: "当前层 MTD 未加载，使用 WDL-only。",
+    shortMissing: "MTD -",
+    exactDetail: "同一 WDL 层级内按材料目标和保证步数继续细分排序。",
+    partialFallbackDetail: "MTD 已部分加载，但当前局面或同级后继缺少 MTD 数据，已回退 WDL-only。",
+    browserFilesNote: "浏览器文件模式当前只支持 WDL 表库；如需 MTD 推荐，请使用本地后端 --mtd-dir。",
+    browserFilesTablebaseNote: "浏览器文件模式当前只支持 .s15res WDL 查询；MTD 推荐请使用本地后端并传入 --mtd-dir。",
+    backendMtdPartialNote: "MTD 已部分加载；缺失层会回退 WDL-only。",
+    backendNoMtdNote: "未加载 MTD；当前仅使用 WDL 推荐。",
+  },
+
+  recommendation: {
+    currentPosition: "当前局面",
+    bestMove: "下一步建议",
+    mtdBestMove: "最优下一步",
+    wdlBestMove: "WDL 推荐下一步",
+    executeMove: "执行这步",
+    executeBest: "执行最佳着法",
+    previewMove: "预览",
+    copyPosition: "复制局面",
+    noLegalMove: "当前方无合法着法。",
+    waiting: "正在等待查询结果。",
+    multipleOptimal: (count: number) => `共有 ${count} 个同分最优着法，展开“合法着法分析”查看。`,
+  },
+
+  moveGroups: {
+    title: "合法着法分析",
+    total: "总着法",
+    winning: "胜势",
+    drawing: "和棋",
+    losing: "败着",
+    policy: "推荐模式",
+    optimal: "最优",
+    acceptable: "可接受",
+    mistake: "失误",
+    empty: "无",
+    advanced: "高级详情",
+    preview: "预览",
+    execute: "执行",
+  },
+
+  board: {
+    flip: "翻转棋盘",
+    unflip: "恢复视角",
+    showNumbers: "显示格号",
+    hideNumbers: "隐藏格号",
+    cannonView: "炮方视角",
+    soldierView: "兵方视角",
+    defaultView: "默认视角",
+    flippedView: "翻转视角",
   },
 
   actions: {
@@ -122,7 +196,7 @@ export const zh = {
   },
 
   line: {
-    note: "当前是胜负和表库，只保证胜、负、和结果；不包含最快胜、最短保和或距离信息。",
+    note: "路线探索当前仍使用 WDL 策略，只保证胜、负、和结果；MTD 最优下一步请看“下一步建议”面板。",
     maxPliesNote: "这是一条胜负和示例路线，不代表最快胜或最短保和。",
     exploring: "正在探索胜负和路线...",
     explored: (reason: string) => `路线探索结束：${stopReasonText(reason)}。`,
@@ -187,7 +261,7 @@ export const zh = {
     "兵数少于 4 时，炮胜。",
     "炮无合法着法时，兵胜。",
     "其他局面由完整表库给出炮胜、兵胜或和棋。",
-    "当前表库只保存胜负和结果，不保存最快胜或最短保和步数。",
+    "WDL 表库保存胜负和结果；加载 MTD 后，下一步建议会在同一 WDL 层级内按材料目标和保证步数细分排序。",
   ],
 };
 

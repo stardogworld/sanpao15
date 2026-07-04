@@ -40,7 +40,7 @@ import {
   openTablebaseDirectory,
   openTablebaseFiles,
 } from "./tablebase/denseResult";
-import { type MoveClassification, type TablebaseRecommendationResult } from "./tablebase/recommend";
+import { type TablebaseRecommendationResult } from "./tablebase/recommend";
 import {
   type WdlLineExplorerResult,
 } from "./tablebase/lineExplorer";
@@ -58,6 +58,9 @@ import {
   sideBadge,
   stopReasonBadge,
 } from "./ui/badges";
+import { detailsBlock } from "./ui/details";
+import { formatMoveMtdBrief, formatMtdBrief, formatScoreBrief } from "./ui/formatMtd";
+import { recommendationModeView, type RecommendationModeView } from "./ui/recommendationMode";
 
 interface HistoryEntry {
   position: Position;
@@ -79,11 +82,14 @@ export class Sanpao15App {
   private undoStack: HistoryEntry[] = [];
   private redoStack: HistoryEntry[] = [];
   private lastMove: Move | null = null;
-  private recommendedMoves: Move[] = [];
   private targetOutcomes: TargetOutcomeLabel[] = [];
+  private boardFlipped = false;
+  private showSquareNumbers = true;
+  private selectedMoveForDisplay: Move | null = null;
 
   private readonly root: HTMLElement;
   private readonly boardEl = document.createElement("section");
+  private readonly boardToolsEl = document.createElement("div");
   private readonly headerStatusEl = document.createElement("div");
   private readonly turnEl = document.createElement("strong");
   private readonly cannonCountEl = document.createElement("strong");
@@ -138,6 +144,7 @@ export class Sanpao15App {
         <div class="board-column">
           <div class="mode-toggle"></div>
           <div class="editor-tools"></div>
+          <div class="board-tools"></div>
           <div class="board-wrap"></div>
           <nav class="toolbar" aria-label="对局操作"></nav>
           <section class="notation-panel">
@@ -148,9 +155,9 @@ export class Sanpao15App {
             <p class="panel-note">S = 兵，C = 炮，c = 炮方走，s = 兵方走。</p>
           </section>
         </div>
-        <aside class="side-column">
-          <details class="app-panel game-panel" open>
-            <summary>当前局面</summary>
+        <aside class="analysis-column">
+          <section class="primary-result-card game-panel">
+            <h2>${zh.panels.currentPosition}</h2>
             <div class="status-panel">
               <div class="metric"><span>轮到</span></div>
               <div class="metric"><span>炮数</span></div>
@@ -159,26 +166,26 @@ export class Sanpao15App {
             </div>
             <div class="feedback"></div>
             <div class="position-summary"></div>
-          </details>
-          <details class="app-panel best-move-panel" open>
-            <summary>下一步建议</summary>
+          </section>
+          <section class="best-move-card best-move-panel">
+            <h2>${zh.panels.bestMove}</h2>
             <div class="best-move-result"></div>
-          </details>
-          <details class="app-panel comparison-panel" open>
-            <summary>双方先走比较</summary>
-            <div class="side-comparison-result"></div>
-          </details>
-          <details class="app-panel moves-panel" open>
-            <summary>合法着法分析</summary>
+          </section>
+          <details class="app-panel moves-panel">
+            <summary class="moves-summary-title">${zh.panels.moveAnalysis}</summary>
             <div class="move-groups-result"></div>
           </details>
-          <details class="app-panel tablebase-panel" open>
-            <summary>${zh.panels.tablebase}</summary>
+          <details class="app-panel tablebase-panel">
+            <summary>${zh.panels.tablebaseAdvanced}</summary>
             <div class="panel-heading">
               <div class="tablebase-actions"></div>
             </div>
             <div class="auto-query-row"></div>
             <div class="tablebase-status"></div>
+          </details>
+          <details class="app-panel comparison-panel">
+            <summary>${zh.panels.sideComparison}</summary>
+            <div class="side-comparison-result"></div>
           </details>
           <details class="app-panel line-panel">
             <summary>${zh.panels.lineExplorer}</summary>
@@ -209,6 +216,8 @@ export class Sanpao15App {
     this.requireElement(".mode-toggle").append(this.modeToggleEl);
     this.editorToolsEl.className = "editor-tools-copy";
     this.requireElement(".editor-tools").append(this.editorToolsEl);
+    this.boardToolsEl.className = "board-tools-copy";
+    this.requireElement(".board-tools").append(this.boardToolsEl);
 
     this.boardEl.className = "board";
     this.boardEl.setAttribute("aria-label", "5x5 棋盘");
@@ -220,15 +229,8 @@ export class Sanpao15App {
     metrics[2].append(this.soldierCountEl);
     metrics[3].append(this.resultEl);
 
-    const toolbar = this.requireElement(".toolbar");
-    toolbar.append(
-      this.makeButton(zh.actions.undo, () => this.undo()),
-      this.makeButton(zh.actions.redo, () => this.redo()),
-      this.makeButton("查询当前局面", () => void this.refreshAnalysisNow()),
-      this.makeButton("清空棋盘", () => this.setPosition(clonePosition(emptyPosition), null, true, "已清空棋盘。")),
-      this.makeButton("恢复初始局面", () => this.reset()),
-      this.makeButton("随机局面", () => this.setPosition(randomLegalDensePosition(), null, true, "已生成随机局面。")),
-    );
+    this.renderBoardTools();
+    this.renderToolbar();
 
     this.notationEl.className = "notation-code";
     this.pasteInputEl.type = "text";
@@ -335,6 +337,63 @@ export class Sanpao15App {
     button.textContent = label;
     button.addEventListener("click", () => onSelect(value));
     return button;
+  }
+
+  private currentRecommendationMode(): RecommendationModeView {
+    return recommendationModeView(this.tablebase, this.tablebaseStatus, this.tablebaseResult, this.currentValidation);
+  }
+
+  private renderBoardTools(): void {
+    this.boardToolsEl.replaceChildren(
+      this.makeButton(this.boardFlipped ? zh.board.unflip : zh.board.flip, () => this.toggleBoardFlip()),
+      this.makeButton(this.showSquareNumbers ? zh.board.hideNumbers : zh.board.showNumbers, () => this.toggleSquareNumbers()),
+      badge(this.boardFlipped ? zh.board.soldierView : zh.board.cannonView, "neutral"),
+    );
+  }
+
+  private renderToolbar(): void {
+    const toolbar = this.requireElement(".toolbar");
+    const gameGroup = this.toolbarGroup("对局");
+    gameGroup.append(
+      this.makeButton(zh.actions.undo, () => this.undo()),
+      this.makeButton(zh.actions.redo, () => this.redo()),
+      this.makeButton("查询当前局面", () => void this.refreshAnalysisNow()),
+      this.makeButton(zh.recommendation.executeMove, () => this.applyBestMove()),
+    );
+
+    const positionGroup = this.toolbarGroup("局面");
+    positionGroup.append(
+      this.makeButton("恢复初始局面", () => this.reset()),
+      this.makeButton("随机局面", () => this.setPosition(randomLegalDensePosition(), null, true, "已生成随机局面。")),
+      this.makeButton("清空棋盘", () => this.setPosition(clonePosition(emptyPosition), null, true, "已清空棋盘。")),
+    );
+
+    toolbar.replaceChildren(gameGroup, positionGroup);
+  }
+
+  private toolbarGroup(title: string): HTMLElement {
+    const group = document.createElement("div");
+    group.className = "toolbar-group";
+    const label = document.createElement("span");
+    label.className = "toolbar-group-title";
+    label.textContent = title;
+    group.append(label);
+    return group;
+  }
+
+  private toggleBoardFlip(): void {
+    this.boardFlipped = !this.boardFlipped;
+    this.showFeedback(this.boardFlipped ? "已切换为兵方视角。" : "已切换为炮方视角。");
+    this.renderBoardTools();
+    this.renderHeaderStatus();
+    this.render();
+  }
+
+  private toggleSquareNumbers(): void {
+    this.showSquareNumbers = !this.showSquareNumbers;
+    this.renderBoardTools();
+    this.renderHeaderStatus();
+    this.render();
   }
 
   private renderModeControls(): void {
@@ -475,10 +534,10 @@ export class Sanpao15App {
     this.tablebaseResult = null;
     this.currentSummary = null;
     this.sideComparison = null;
-    this.recommendedMoves = [];
     this.targetOutcomes = [];
     this.spotlightMove = null;
     this.hoveredMove = null;
+    this.selectedMoveForDisplay = null;
   }
 
   private async detectBackendOnStartup(): Promise<void> {
@@ -526,7 +585,6 @@ export class Sanpao15App {
       this.tablebaseResult = null;
       this.currentSummary = null;
       this.sideComparison = null;
-      this.recommendedMoves = [];
       this.targetOutcomes = [];
       this.renderSummaryPanels();
       this.render();
@@ -546,7 +604,6 @@ export class Sanpao15App {
     this.tablebaseResult = analysis.recommendation;
     this.currentSummary = analysis.summary;
     this.sideComparison = comparison;
-    this.recommendedMoves = analysis.recommendation?.recommendedMoves.map((move) => move.move) ?? [];
     this.targetOutcomes = this.selectedMoves
       .map((move) => analysis.recommendation?.moves.find((item) => movesSame(item.move, move)))
       .filter((move): move is NonNullable<typeof move> => !!move)
@@ -564,27 +621,94 @@ export class Sanpao15App {
     this.bestMoveEl.replaceChildren(this.renderBestMovePanel());
     this.sideComparisonEl.replaceChildren(this.renderSideComparisonPanel());
     this.moveGroupsEl.replaceChildren(this.renderMoveGroupsPanel());
+    this.renderMoveGroupsSummaryTitle();
     this.renderTablebaseStatus();
+  }
+
+  private renderMoveGroupsSummaryTitle(): void {
+    const summary = this.root.querySelector(".moves-summary-title");
+    if (!(summary instanceof HTMLElement)) return;
+    if (!this.currentSummary) {
+      summary.textContent = zh.moveGroups.title;
+      return;
+    }
+    const bestTier = this.currentSummary.bestMoves[0]?.score?.wdlTier;
+    const mistakeCount = this.currentSummary.allMoves.filter((move) =>
+      !move.isBest &&
+      (bestTier !== undefined ? move.score?.wdlTier !== bestTier : move.classification === "losing")).length;
+    summary.textContent = `${zh.moveGroups.title}（总 ${this.currentSummary.legalMoveCount}，最优 ${this.currentSummary.bestMoves.length}，失误 ${mistakeCount}）`;
+  }
+
+  private primaryRecommendedMove(): Move | null {
+    return this.tablebaseResult?.bestMove?.move
+      ?? this.currentSummary?.bestMoves[0]?.move
+      ?? null;
+  }
+
+  private bestMoveInfo(): MoveOutcomeInfo | null {
+    const backendBest = this.tablebaseResult?.bestMove?.move;
+    if (backendBest) {
+      return this.currentSummary?.allMoves.find((move) => movesSame(move.move, backendBest)) ?? null;
+    }
+    return this.currentSummary?.bestMoves[0] ?? null;
   }
 
   private renderPositionSummary(): HTMLElement {
     const container = document.createElement("div");
-    container.className = "status-grid";
-    const canQueryText = this.currentValidation.canQuery ? "是" : "否";
+    container.className = "position-summary-stack";
+    const mode = this.currentRecommendationMode();
+    const currentMtd = this.tablebaseResult?.currentMtd;
+    const core = document.createElement("div");
+    core.className = "status-grid core-status-grid";
     container.append(
-      this.statusItem("可查表", canQueryText, this.currentValidation.canQuery ? "drawing" : "warning"),
-      this.statusItem("denseIndex", this.currentValidation.denseIndex?.toString() ?? "-"),
-      this.statusItem("表库层", this.currentValidation.layerName ?? "-"),
-      this.statusItem("合法着法", String(generateLegalMoves(this.position).length)),
-      this.statusItem("最佳着法", String(this.currentSummary?.bestMoves.length ?? 0)),
+      core,
     );
+    core.append(
+      this.statusItem(zh.labels.result, this.currentSummary?.outcome ? outcomeText(this.currentSummary.outcome) : outcomeText(terminalOutcome(this.position))),
+      this.statusItem(zh.labels.turn, sideText(this.position.side), this.position.side),
+      this.statusItem("炮数", String(this.position.cannons.size)),
+      this.statusItem(zh.labels.soldiers, String(this.position.soldiers.size)),
+      this.statusItem("推荐", mode.label, mode.tone),
+      this.statusItem("MTD", currentMtd?.available ? zh.mtd.currentAvailable : this.currentMtdStatusText(), currentMtd?.available ? "drawing" : "warning"),
+    );
+    const note = document.createElement("p");
+    note.className = currentMtd?.available ? "panel-note mtd-note" : "panel-note warning-note";
+    note.textContent = currentMtd?.available ? formatMtdBrief(currentMtd) : mode.detail;
+    container.append(note);
     if (this.currentValidation.reason) {
       const reason = document.createElement("p");
       reason.className = "panel-note warning-note full-row";
       reason.textContent = localizeErrorMessage(this.currentValidation.reason);
       container.append(reason);
     }
+    const advanced = detailsBlock(zh.advanced.title);
+    const advancedGrid = document.createElement("div");
+    advancedGrid.className = "status-grid";
+    advancedGrid.append(
+      this.statusItem("可查表", this.currentValidation.canQuery ? "是" : "否", this.currentValidation.canQuery ? "drawing" : "warning"),
+      this.statusItem(zh.advanced.denseIndex, this.currentValidation.denseIndex?.toString() ?? "-"),
+      this.statusItem("表库层", this.currentValidation.layerName ?? "-"),
+      this.statusItem("合法着法", String(generateLegalMoves(this.position).length)),
+      this.statusItem("最佳着法", String(this.currentSummary?.bestMoves.length ?? 0)),
+      this.statusItem("推荐详情", mode.detail),
+    );
+    if (currentMtd?.available) {
+      advancedGrid.append(
+        this.statusItem("materialTarget", String(currentMtd.materialTarget ?? "-")),
+        this.statusItem("guaranteeDistance", String(currentMtd.guaranteeDistance ?? "-")),
+        this.statusItem("cannonMaxCaptures", String(currentMtd.cannonMaxCaptures ?? "-")),
+        this.statusItem("soldierSaved", String(currentMtd.soldierSaved ?? "-")),
+      );
+    }
+    advanced.append(advancedGrid);
+    container.append(advanced);
     return container;
+  }
+
+  private currentMtdStatusText(): string {
+    if (this.tablebase?.kind === "browser-files") return "浏览器文件模式 WDL-only";
+    if (this.tablebaseStatus?.mtd?.loaded) return zh.mtd.currentMissing;
+    return zh.mtd.notLoaded;
   }
 
   private renderBestMovePanel(): HTMLElement {
@@ -592,79 +716,80 @@ export class Sanpao15App {
       return this.renderEmptyState("当前局面暂不可查表", this.currentValidation.reason ?? "无法给出下一步建议。");
     }
     if (!this.currentSummary) {
-      return this.renderEmptyState("尚未查询", this.tablebase ? "正在等待查询结果。" : "请先加载表库。");
+      return this.renderEmptyState("尚未查询", this.tablebase ? zh.recommendation.waiting : "请先加载表库。");
     }
     const container = document.createElement("div");
     container.className = "best-card";
     const heading = document.createElement("h3");
     const bestCount = this.currentSummary.bestMoves.length;
+    const mode = this.currentRecommendationMode();
     heading.textContent = bestCount === 0
       ? `${sideText(this.position.side)}无合法着法`
-      : `${sideText(this.position.side)}建议`;
+      : mode.isMtdExact ? zh.recommendation.mtdBestMove : zh.recommendation.wdlBestMove;
     container.append(heading);
+    container.append(this.recommendationModeNote(mode));
 
     if (bestCount === 0) {
       const note = document.createElement("p");
-      note.textContent = "当前方无合法着法。";
+      note.textContent = zh.recommendation.noLegalMove;
       container.append(note);
       return container;
     }
 
-    const intro = document.createElement("p");
-    intro.textContent = bestMoveExplanation(this.currentSummary);
-    container.append(intro);
-
-    const bestMove = this.currentSummary.bestMoves[0];
-    const recommendation = this.tablebaseResult;
-    const policy = recommendation?.recommendationPolicy;
-    if (policy) {
-      const policyNote = document.createElement("p");
-      policyNote.className = policy === "mtd" ? "panel-note" : "panel-note warning-note";
-      policyNote.textContent = policy === "mtd"
-        ? "推荐模式：MTD 细分推荐，同一 WDL 层级内使用材料目标和保证步数排序。"
-        : `推荐模式：WDL-only。${recommendation?.mtdScoringDisabledReason ?? "MTD 未加载或当前同级着法缺少 MTD 数据。"}`;
-      container.append(policyNote);
-    }
+    const bestMove = this.bestMoveInfo();
+    if (!bestMove) return this.renderEmptyState("尚未查询", zh.recommendation.waiting);
 
     const detail = document.createElement("div");
-    detail.className = "best-move-detail-grid";
+    detail.className = "best-move-detail-grid compact-best-grid";
     detail.append(
       this.summaryStat("着法", formatMove(bestMove.move)),
       this.summaryStat("结果", outcomeBadge(bestMove.successorOutcome)),
+      this.summaryStat("推荐模式", badge(mode.label, mode.tone)),
       this.summaryStat("排名", bestMove.rank !== undefined ? `#${bestMove.rank}` : "-"),
       this.summaryStat("兵数层", String(bestMove.successorSoldierCount)),
     );
     container.append(detail);
 
-    if (bestMove.reason) {
-      const reason = document.createElement("p");
-      reason.className = "panel-note";
-      reason.textContent = bestMove.reason;
-      container.append(reason);
-    }
+    const reason = document.createElement("p");
+    reason.className = "panel-note";
+    reason.textContent = bestMove.reason ?? bestMoveExplanation(this.currentSummary, mode);
+    container.append(reason);
+
+    const mtdSummary = document.createElement("p");
+    mtdSummary.className = bestMove.successorMtd?.available ? "panel-note mtd-note" : "panel-note";
+    mtdSummary.textContent = formatMoveMtdBrief(bestMove.successorMtd);
+    container.append(mtdSummary);
+
     if (bestMove.successorMtd?.available && bestMove.successorMtd.text) {
-      const mtd = document.createElement("p");
-      mtd.className = "panel-note mtd-note";
-      mtd.textContent = bestMove.successorMtd.text;
+      const mtd = detailsBlock("MTD 说明");
+      const text = document.createElement("p");
+      text.className = "panel-note";
+      text.textContent = bestMove.successorMtd.text;
+      mtd.append(text);
       container.append(mtd);
+    }
+    if ((this.tablebaseResult?.optimalMoveCount ?? bestCount) > 1) {
+      const optimalNote = document.createElement("p");
+      optimalNote.className = "panel-note";
+      optimalNote.textContent = zh.recommendation.multipleOptimal(this.tablebaseResult?.optimalMoveCount ?? bestCount);
+      container.append(optimalNote);
     }
 
     const actions = document.createElement("div");
     actions.className = "best-actions";
     actions.append(
-      this.makeButton("执行最佳着法", () => this.applyMoveFromPanel(bestMove.move)),
-      this.makeButton("复制局面", () => void this.copyNotation()),
-      this.makeButton("重置初始局面", () => this.reset()),
+      this.makeButton(zh.recommendation.executeMove, () => this.applyMoveFromPanel(bestMove.move)),
+      this.makeButton(zh.recommendation.copyPosition, () => void this.copyNotation()),
     );
     container.append(actions);
-
-    const list = document.createElement("div");
-    list.className = "best-move-list";
-    for (const move of this.currentSummary.bestMoves) {
-      list.append(this.renderMoveButton(move, true));
-    }
-    container.append(list);
     return container;
+  }
+
+  private recommendationModeNote(mode: RecommendationModeView): HTMLElement {
+    const note = document.createElement("p");
+    note.className = mode.isMtdExact ? "panel-note" : "panel-note warning-note";
+    note.append(badge(mode.label, mode.tone), document.createTextNode(` ${mode.detail}`));
+    return note;
   }
 
   private renderSideComparisonPanel(): HTMLElement {
@@ -701,41 +826,44 @@ export class Sanpao15App {
 
   private renderMoveGroupsPanel(): HTMLElement {
     if (!this.currentSummary) {
-      return this.renderEmptyState("????", this.currentValidation.reason ?? "???????????????");
+      return this.renderEmptyState("尚未查询", this.currentValidation.reason ?? "加载表库后会列出全部合法着法。");
     }
     const container = document.createElement("div");
     container.className = "tablebase-result-grid";
     const summary = document.createElement("div");
     summary.className = "summary-band";
+    const bestTier = this.currentSummary.bestMoves[0]?.score?.wdlTier;
+    const optimalMoves = this.currentSummary.allMoves.filter((move) => move.isBest);
+    const acceptableMoves = this.currentSummary.allMoves.filter((move) =>
+      !move.isBest &&
+      (bestTier !== undefined ? move.score?.wdlTier === bestTier : move.classification !== "losing"));
+    const mistakeMoves = this.currentSummary.allMoves.filter((move) =>
+      !move.isBest &&
+      (bestTier !== undefined ? move.score?.wdlTier !== bestTier : move.classification === "losing"));
     summary.append(
-      this.summaryStat("????", String(this.currentSummary.legalMoveCount)),
-      this.summaryStat("????", String(this.currentSummary.winningMoves.length)),
-      this.summaryStat("????", String(this.currentSummary.drawingMoves.length)),
-      this.summaryStat("????", String(this.currentSummary.losingMoves.length)),
-      this.summaryStat("????", this.tablebaseResult?.recommendationPolicy === "mtd" ? "MTD" : "WDL-only"),
+      this.summaryStat(zh.moveGroups.total, String(this.currentSummary.legalMoveCount)),
+      this.summaryStat(zh.moveGroups.optimal, String(optimalMoves.length)),
+      this.summaryStat(zh.moveGroups.acceptable, String(acceptableMoves.length)),
+      this.summaryStat(zh.moveGroups.mistake, String(mistakeMoves.length)),
+      this.summaryStat(zh.moveGroups.policy, this.currentRecommendationMode().label),
     );
     container.append(summary);
 
-    const bestTier = this.currentSummary.bestMoves[0]?.score?.wdlTier;
     const groups: Array<{ key: "optimal" | "acceptable" | "mistake"; title: string; moves: MoveOutcomeInfo[] }> = [
       {
         key: "optimal",
-        title: "??",
-        moves: this.currentSummary.allMoves.filter((move) => move.isBest),
+        title: zh.moveGroups.optimal,
+        moves: optimalMoves,
       },
       {
         key: "acceptable",
-        title: "???",
-        moves: this.currentSummary.allMoves.filter((move) =>
-          !move.isBest &&
-          (bestTier !== undefined ? move.score?.wdlTier === bestTier : move.classification !== "losing")),
+        title: zh.moveGroups.acceptable,
+        moves: acceptableMoves,
       },
       {
         key: "mistake",
-        title: "??",
-        moves: this.currentSummary.allMoves.filter((move) =>
-          !move.isBest &&
-          (bestTier !== undefined ? move.score?.wdlTier !== bestTier : move.classification === "losing")),
+        title: zh.moveGroups.mistake,
+        moves: mistakeMoves,
       },
     ];
 
@@ -746,10 +874,10 @@ export class Sanpao15App {
       title.textContent = group.title;
       section.append(title);
       if (group.moves.length === 0) {
-        const empty = document.createElement("p");
-        empty.className = "empty-group";
-        empty.textContent = "?";
-        section.append(empty);
+          const empty = document.createElement("p");
+          empty.className = "empty-group";
+          empty.textContent = zh.moveGroups.empty;
+          section.append(empty);
       } else {
         const list = document.createElement("ul");
         for (const move of group.moves) {
@@ -764,34 +892,78 @@ export class Sanpao15App {
     return container;
   }
 
-  private renderMoveButton(move: MoveOutcomeInfo, isBest: boolean): HTMLButtonElement {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = isBest ? "move-row-button recommended" : "move-row-button";
+  private renderMoveButton(move: MoveOutcomeInfo, isBest: boolean): HTMLElement {
+    const card = document.createElement("article");
+    card.className = `move-row-card ${isBest ? "recommended" : move.classification === "losing" ? "mistake" : ""}`;
     const mtd = move.successorMtd?.available
-      ? `MTD ${move.successorMtd.materialTarget}/${move.successorMtd.guaranteeDistance}`
+      ? formatMoveMtdBrief(move.successorMtd)
       : "MTD -";
     const rank = move.rank !== undefined ? `#${move.rank}` : "-";
-    button.append(
+    const top = document.createElement("div");
+    top.className = "move-row-top";
+    top.append(
       textSpan("move-main", `${rank} ${formatMove(move.move)}`),
       outcomeBadge(move.successorOutcome),
       classificationBadge(move.classification),
-      textSpan("move-detail", `??=${move.move.to}?${move.move.capture ? `? ${move.move.capturedSquare}` : "???"}???=${move.successorSoldierCount}?${mtd}`),
     );
+    card.append(top);
+    card.append(textSpan("move-detail", [
+      `k=${move.successorSoldierCount}`,
+      move.move.capture ? `吃 ${move.move.capturedSquare}` : "不吃子",
+      mtd,
+    ].join(" | ")));
     const reasonText = move.reason ?? move.score?.description;
     if (reasonText) {
-      button.append(textSpan("move-reason", reasonText));
+      card.append(textSpan("move-reason", reasonText));
     }
-    button.addEventListener("mouseenter", () => {
+
+    const advanced = detailsBlock(zh.moveGroups.advanced);
+    const advancedGrid = document.createElement("div");
+    advancedGrid.className = "status-grid";
+    advancedGrid.append(
+      this.statusItem(zh.advanced.successorIndex, move.successorIndex.toString()),
+      this.statusItem("score", formatScoreBrief(move.score)),
+      this.statusItem("score.description", move.score?.description ?? "-"),
+      this.statusItem("successorMtd", move.successorMtd?.available ? JSON.stringify(move.successorMtd) : "-"),
+    );
+    advanced.append(advancedGrid);
+    card.append(advanced);
+
+    const actions = document.createElement("div");
+    actions.className = "move-row-actions";
+    const previewButton = this.makeButton(zh.moveGroups.preview, () => this.previewMove(move.move));
+    const executeButton = this.makeButton(zh.moveGroups.execute, () => this.applyMoveFromPanel(move.move));
+    previewButton.addEventListener("click", (event) => event.stopPropagation());
+    executeButton.addEventListener("click", (event) => event.stopPropagation());
+    actions.append(previewButton, executeButton);
+    card.append(actions);
+
+    card.addEventListener("mouseenter", () => {
       this.hoveredMove = move.move;
       this.render();
     });
-    button.addEventListener("mouseleave", () => {
+    card.addEventListener("mouseleave", () => {
       this.hoveredMove = null;
       this.render();
     });
-    button.addEventListener("click", () => this.applyMoveFromPanel(move.move));
-    return button;
+    card.addEventListener("click", () => this.previewMove(move.move));
+    return card;
+  }
+
+  private previewMove(move: Move): void {
+    this.selectedMoveForDisplay = move;
+    this.hoveredMove = null;
+    this.showFeedback(`已预览着法：${formatMove(move)}。`);
+    this.render();
+  }
+
+  private applyBestMove(): void {
+    const move = this.primaryRecommendedMove();
+    if (!move) {
+      this.showFeedback(zh.recommendation.noLegalMove, true);
+      return;
+    }
+    this.applyMoveFromPanel(move);
   }
 
   private applyMoveFromPanel(move: Move): void {
@@ -836,8 +1008,8 @@ export class Sanpao15App {
   private renderTablebaseStatus(): void {
     if (!this.tablebase) {
       if (this.tablebaseStatus?.mode === "local-backend") {
-        const detail = this.tablebaseStatus.error ?? "?????????????????????";
-        this.tablebaseStatusEl.replaceChildren(this.renderEmptyState("?????????", detail));
+        const detail = this.tablebaseStatus.error ?? "本地后端已响应，但表库未完整加载。";
+        this.tablebaseStatusEl.replaceChildren(this.renderEmptyState("本地后端不可用", detail));
         return;
       }
       this.tablebaseStatusEl.replaceChildren(this.renderEmptyState(
@@ -848,47 +1020,98 @@ export class Sanpao15App {
     }
     const status = this.tablebaseStatus;
     if (!status) {
-      this.tablebaseStatusEl.replaceChildren(this.renderEmptyState("??????", "????????????????"));
+      this.tablebaseStatusEl.replaceChildren(this.renderEmptyState("尚未读取状态", "请选择表库或连接本地后端。"));
       return;
     }
-    const complete = status.complete;
     const container = document.createElement("div");
-    container.className = "status-grid";
-    container.append(
-      this.statusItem(zh.labels.status, complete ? zh.tablebase.complete : zh.tablebase.partial, complete ? "drawing" : "warning"),
-      this.statusItem(zh.labels.source, this.tablebase.kind === "backend" ? "????" : status.sourceName),
-      this.statusItem(zh.labels.layers, `${status.loadedLayers.length}/16`),
-      this.statusItem(zh.labels.encoding, status.encoding || zh.outcome.Unknown),
-      this.statusItem(zh.labels.ruleset, status.rulesetHash ?? status.rulesetName ?? "-"),
-      this.statusItem(zh.labels.readMode, this.tablebase.kind === "backend" ? "?????? .s15res" : zh.tablebase.randomRead),
+    container.className = "diagnostic-stack";
+
+    const source = document.createElement("section");
+    source.className = "diagnostic-section";
+    source.append(
+      this.sectionHeading("后端/来源"),
+      this.statusGrid(
+        this.statusItem("模式", this.tablebase.kind === "backend" ? "本地后端" : "浏览器文件"),
+        this.statusItem(zh.labels.source, this.tablebase.kind === "backend" ? status.sourceName : status.sourceName),
+        this.statusItem(zh.labels.readMode, this.tablebase.kind === "backend" ? "后端随机读取 .s15res" : zh.tablebase.randomRead),
+      ),
     );
+    container.append(source);
+
+    const wdl = document.createElement("section");
+    wdl.className = "diagnostic-section";
+    wdl.append(
+      this.sectionHeading("WDL 表库"),
+      this.statusGrid(
+        this.statusItem(zh.labels.status, status.complete ? zh.tablebase.complete : zh.tablebase.partial, status.complete ? "drawing" : "warning"),
+        this.statusItem(zh.labels.layers, `${status.loadedLayers.length}/16`),
+        this.statusItem("缺失层", status.missingLayers.length ? status.missingLayers.join(",") : "无"),
+        this.statusItem(zh.labels.encoding, status.encoding || zh.outcome.Unknown),
+        this.statusItem(zh.labels.ruleset, status.rulesetHash ?? status.rulesetName ?? "-"),
+      ),
+    );
+    if (status.invalidLayers?.length) {
+      const invalid = document.createElement("p");
+      invalid.className = "panel-note warning-note";
+      invalid.textContent = `无效 WDL 层：${status.invalidLayers.map((layer) => `${layer.soldierCount}:${layer.error}`).join("；")}`;
+      wdl.append(invalid);
+    }
+    container.append(wdl);
+
+    const mtdSection = document.createElement("section");
+    mtdSection.className = "diagnostic-section";
     if (status.mtd) {
       const mtdText = status.mtd.complete
-        ? "????"
+        ? zh.mtd.loaded
         : status.mtd.loaded
-          ? "????"
-          : "???";
-      container.append(
+          ? zh.mtd.partial
+          : zh.mtd.notLoaded;
+      mtdSection.append(
+        this.sectionHeading("MTD 表库"),
+        this.statusGrid(
         this.statusItem("MTD", mtdText, status.mtd.loaded ? (status.mtd.complete ? "drawing" : "warning") : "warning"),
-        this.statusItem("MTD ?", `${status.mtd.loadedLayers.length}/16`),
-        this.statusItem("MTD ??", status.mtd.store),
+        this.statusItem("MTD 层数", `${status.mtd.loadedLayers.length}/16`),
+        this.statusItem("缺失层", status.mtd.missingLayers.length ? status.mtd.missingLayers.join(",") : "无"),
+        this.statusItem("存储", status.mtd.store),
+        this.statusItem("版本", String(status.mtd.semanticVersion)),
+        this.statusItem("编码", status.mtd.encoding),
+        ),
       );
       const mtdNote = document.createElement("p");
       mtdNote.className = `panel-note full-row${status.mtd.complete ? "" : " warning-note"}`;
       mtdNote.textContent = status.mtd.complete
-        ? "MTD ?????? WDL ?????????????????"
+        ? "本地后端已加载完整 MTD；推荐会在数据完整的层使用 MTD tie-break。"
         : status.mtd.loaded
-          ? "MTD ?????????????????????? WDL-only?"
-          : (status.mtd.error ?? "MTD ???????????/???????");
-      container.append(mtdNote);
+          ? zh.mtd.backendMtdPartialNote
+          : (status.mtd.error ?? zh.mtd.backendNoMtdNote);
+      mtdSection.append(mtdNote);
+      if (status.mtd.invalidLayers?.length) {
+        const invalid = document.createElement("p");
+        invalid.className = "panel-note warning-note";
+        invalid.textContent = `无效 MTD 层：${status.mtd.invalidLayers.map((layer) => `${layer.soldierCount}:${layer.error}`).join("；")}`;
+        mtdSection.append(invalid);
+      }
+    } else {
+      mtdSection.append(
+        this.sectionHeading("MTD 表库"),
+        this.renderEmptyState("浏览器文件模式", zh.mtd.browserFilesTablebaseNote),
+      );
     }
-    if (this.tablebase.kind === "backend") {
-      const note = document.createElement("p");
-      note.className = "panel-note full-row";
-      note.textContent = "????????UI ?????????????????????????";
-      container.append(note);
-    }
+    container.append(mtdSection);
     this.tablebaseStatusEl.replaceChildren(container);
+  }
+
+  private sectionHeading(text: string): HTMLElement {
+    const heading = document.createElement("h3");
+    heading.textContent = text;
+    return heading;
+  }
+
+  private statusGrid(...items: HTMLElement[]): HTMLElement {
+    const grid = document.createElement("div");
+    grid.className = "status-grid";
+    grid.append(...items);
+    return grid;
   }
 
   private async exploreLine(): Promise<void> {
@@ -1119,6 +1342,7 @@ export class Sanpao15App {
     this.selectedSquare = null;
     this.selectedMoves = [];
     this.targetOutcomes = [];
+    this.selectedMoveForDisplay = null;
   }
 
   private render(): void {
@@ -1128,11 +1352,15 @@ export class Sanpao15App {
       selectedSquare: this.selectedSquare,
       editSelectedSquare: this.editSelectedSquare,
       legalMoves: this.selectedMoves,
-      recommendedMoves: this.recommendedMoves,
       targetOutcomes: this.targetOutcomes,
       lastMove: this.lastMove,
       lineMove: this.currentLineMove(),
-      spotlightMove: this.hoveredMove ?? this.spotlightMove,
+      spotlightMove: this.spotlightMove,
+      orientation: this.boardFlipped ? "soldier" : "cannon",
+      primaryMove: this.primaryRecommendedMove(),
+      selectedMove: this.selectedMoveForDisplay,
+      hoveredMove: this.hoveredMove,
+      showSquareNumbers: this.showSquareNumbers,
       onSquareClick: (square) => this.onSquareClick(square),
     });
 
@@ -1151,6 +1379,8 @@ export class Sanpao15App {
       badge(this.mode === "analysis" ? "分析模式" : "编辑模式", this.mode === "analysis" ? "drawing" : "warning"),
       this.currentSummary ? outcomeBadge(this.currentSummary.outcome) : badge(this.currentValidation.canQuery ? "待查询" : "不可查", this.currentValidation.canQuery ? "neutral" : "warning"),
       badge(this.tablebase ? zh.tablebase.loadedBadge(this.tablebaseStatus?.loadedLayers.length ?? 0) : zh.tablebase.notLoadedBadge, this.tablebase ? "drawing" : "warning"),
+      badge(this.currentRecommendationMode().label, this.currentRecommendationMode().tone),
+      badge(this.boardFlipped ? zh.board.soldierView : zh.board.cannonView, "neutral"),
     );
   }
 
@@ -1280,7 +1510,10 @@ function movesSame(left: Move, right: Move): boolean {
   );
 }
 
-function bestMoveExplanation(summary: BestMoveSummary): string {
+function bestMoveExplanation(summary: BestMoveSummary, mode?: RecommendationModeView): string {
+  if (mode?.isMtdExact) {
+    return "这是按 WDL 结果和 MTD 细分规则共同排序后的首选着法。";
+  }
   if (summary.bestMoves.length === 0) {
     return "当前方无合法着法。";
   }
