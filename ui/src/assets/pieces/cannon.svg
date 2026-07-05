@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="炮">
+  <circle cx="64" cy="64" r="58" fill="#fff4f1" stroke="#8c1d18" stroke-width="8"/>
+  <circle cx="64" cy="64" r="45" fill="#fffaf7" stroke="#c44f42" stroke-width="3"/>
+  <circle cx="64" cy="64" r="52" fill="none" stroke="#e3a097" stroke-width="2" stroke-dasharray="5 7"/>
+  <text x="64" y="77" text-anchor="middle" font-family="KaiTi, STKaiti, SimSun, serif" font-size="54" font-weight="700" fill="#8c1d18">炮</text>
+</svg>

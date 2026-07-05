@@ -435,6 +435,10 @@ Analysis analyzePosition(const Position& pos) {
 }
 
 Analysis analyzePositionFromTable(const Position& pos, const ResultTable& table) {
+    if (table.rulesetHash != StandardRulesetHash) {
+        throw std::runtime_error("result table ruleset hash mismatch; incompatible ruleset");
+    }
+
     Analysis analysis;
     analysis.key = packPosition(pos);
     analysis.tableExact = table.exact;

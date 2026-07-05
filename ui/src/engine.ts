@@ -37,24 +37,37 @@ export function clonePosition(pos: Position): Position {
   };
 }
 
+export function positionsEqual(left: Position, right: Position): boolean {
+  return packPositionKey(left) === packPositionKey(right);
+}
+
+export function movesEqual(left: Move, right: Move): boolean {
+  return (
+    left.from === right.from &&
+    left.to === right.to &&
+    left.capture === right.capture &&
+    left.capturedSquare === right.capturedSquare
+  );
+}
+
 export function opposite(side: Side): Side {
   return side === "cannon" ? "soldier" : "cannon";
 }
 
 export function sideLabel(side: Side): string {
-  return side === "cannon" ? "炮" : "兵";
+  return side === "cannon" ? "Cannon" : "Soldier";
 }
 
 export function outcomeLabel(outcome: Outcome): string {
   switch (outcome) {
     case "CannonWin":
-      return "炮胜";
+      return "Cannon win";
     case "SoldierWin":
-      return "兵胜";
+      return "Soldier win";
     case "Draw":
-      return "和棋";
+      return "Draw";
     case "Unknown":
-      return "进行中";
+      return "Unknown";
   }
 }
 
@@ -188,7 +201,7 @@ export function cannonHasAnyMove(pos: Position): boolean {
 }
 
 export function terminalOutcome(pos: Position): Outcome {
-  if (pos.soldiers.size === 0) {
+  if (pos.soldiers.size < 4) {
     return "CannonWin";
   }
   if (!cannonHasAnyMove(pos)) {
@@ -228,4 +241,55 @@ export function positionToNotation(pos: Position): string {
     rows.push(text);
   }
   return `${rows.join("/")} ${pos.side === "cannon" ? "c" : "s"}`;
+}
+
+export function parsePositionNotation(text: string): Position {
+  const parts = text.trim().split(/\s+/u);
+  if (parts.length !== 2) {
+    throw new Error("Notation must contain a board and side, for example SSSSS/SSSSS/SSSSS/...../.CCC. c");
+  }
+
+  const [board, sideText] = parts;
+  if (sideText !== "c" && sideText !== "s") {
+    throw new Error("Side must be c or s");
+  }
+
+  const rows = board.split("/");
+  if (rows.length !== boardSize) {
+    throw new Error("Board notation must contain five rows");
+  }
+
+  const cannons = new Set<number>();
+  const soldiers = new Set<number>();
+  for (let row = 0; row < boardSize; row += 1) {
+    if (rows[row].length !== boardSize) {
+      throw new Error("Each board row must contain five cells");
+    }
+    for (let col = 0; col < boardSize; col += 1) {
+      const square = row * boardSize + col;
+      const cell = rows[row][col];
+      if (cell === "C") {
+        cannons.add(square);
+      } else if (cell === "S") {
+        soldiers.add(square);
+      } else if (cell !== ".") {
+        throw new Error("Board cells must be C, S, or .");
+      }
+    }
+  }
+
+  if (cannons.size !== 3) {
+    throw new Error("Dense tablebase notation must contain exactly three cannons");
+  }
+  for (const square of cannons) {
+    if (soldiers.has(square)) {
+      throw new Error("Cannons and soldiers cannot overlap");
+    }
+  }
+
+  return {
+    cannons,
+    soldiers,
+    side: sideText === "c" ? "cannon" : "soldier",
+  };
 }

@@ -3,6 +3,7 @@
 ## Implemented In The Current MVP
 
 - Save and load `.s15tbl` result tables.
+- Reject incompatible `.s15tbl` ruleset hashes and malformed table entries during load.
 - Support table lookup for arbitrary positions present in a table.
 - Show win/loss/draw/unknown for every legal move in CLI and UI table analysis.
 - Recommend best moves from table data.
@@ -31,11 +32,67 @@
 - Merge external keyset runs with bounded fan-in to avoid opening hundreds of `.s15run` files at once.
 - Run bucket-wise partitioned keyset union and difference.
 - Write and validate partitioned closure checkpoint snapshots with `--partitioned-closure`.
+- Migrate flat closure checkpoints with `--migrate-closure-checkpoint`.
+- Resume closure from partitioned checkpoints with `--resume-partitioned-closure`.
+- Rank and unrank combinations with combinadic colex order.
+- Map every legal full-tablebase layer position to and from a dense index.
+- Store dense outcomes in 1-byte and packed 2-bit arrays.
+- Write, inspect, and validate `.s15res` dense result files.
+- Scan `.s15res` payloads during validation.
+- Print full tablebase theoretical sizes with `--tablebase-sizes`.
+- Generate dense successor ids for legal moves with same-layer and capture-to-lower-layer classification.
+- Generate same-layer dense predecessors on demand for streaming retrograde propagation.
+- Use fast dense predecessor generation in streaming propagation while retaining checked predecessor mode for tests and inspection.
+- Optimize the dense streaming hot path with a no-rank initialization scan for same-layer moves, index-only predecessors, unchecked packed-table access, a vector-backed worklist, `uint8_t` remaining counters, and no per-predecessor parent unrank.
+- Inspect dense successors and sample dense layer move statistics from the CLI.
+- Solve low full-tablebase layers `k=0..3` with outcome-only retrograde and write `.s15res` results.
+- Solve low full-tablebase layers with a streaming/on-the-fly predecessor backend via `--solve-lowk-streaming`; optimized Release `k=4` completes in 01:06 with exact baseline counts.
+- Verify low-k `.s15res` headers and sampled successor consistency.
+- Solve one production dense layer with `--solve-layer K --lower-res ... --out-res ...`, strict lower-layer validation, atomic temp/validate/rename output, and `.solve.json` stats.
+- Verify one production dense result with `--verify-layer FILE --lower-res ... --sample N`.
+- Solve production dense layer ranges with `--solve-layer-range START END --out-dir DIR`, automatic lower-layer chaining, layer-level resume, temp cleanup, and `manifest.json`.
+- Dry-run production ranges with `--preflight-layer-range START END --out-dir DIR`, checking valid/invalid/missing `.s15res` files, lower-layer availability, stats JSON, disk, RAM, queue, and time estimates without solving.
+- Use a `uint32_t` queue and `uint32_t` predecessor-index buffer in the production dense layer path while keeping public dense indexes as `uint64_t`.
+- Query complete dense `.s15res` tablebase directories with `--query-tablebase`, including WDL-only move recommendations and JSON output.
+- Write, inspect, verify, and query outcome-aware v2 material-target-distance `.s15mtd` files with packed 12-bit `materialTarget` and `guaranteeDistance` entries.
+- Solve material-target-distance prototype layers `k=0..4`; Release `k=4` completed in 01:27 with no saturated distances and passed full verification.
+- Split MTD validation into header-only and full-payload paths; range resume now skips existing `.s15mtd` layers with header-only validation, while `--verify-mtd-layer` remains the full semantic check.
+- Stream MTD packed12 output from material/distance arrays, avoiding a second resident current-layer `PackedMtdTable12`, and keep the single-threaded queue accounting O(1).
+- Add `--threads N` for MTD solve, range solve, verify, and inspect. The threaded pass parallelizes safe scans and initialization scans while keeping predecessor/worklist propagation single-threaded and requiring byte-identical output versus `--threads 1`.
+- Optimize MTD Draw material hot paths by merging WDL solved/outcome scans, skipping empty outcome phases, starting Draw thresholds at soldier count 4, replacing per-threshold truth copies with compact reachability flags, releasing merged thread-local buckets, and block-buffering packed12 writes.
+- Reduce MTD solver working memory with dense bitset flags and `uint8_t` distance values plus solved bits, preserving `.s15mtd` version 2 payload semantics where `255` means saturated rather than unsolved.
+- Query local dense `.s15res` files from the UI by random-reading only target outcome bytes.
+- Serve the UI from a read-only local C++ backend with automatic `/api/status` detection, backend random-read `.s15res` lookup, and browser file picker fallback.
+- Explore one deterministic WDL-only line with `--explore-tablebase --max-plies`, JSON output, cycle detection, and random `.s15res` reads.
+- Play WDL-only lines in the UI with max-plies, previous/next, autoplay, click-to-jump plies, last-move highlighting, recommended-move highlighting, undo/redo/reset, and copy/paste notation.
+- Polish the tablebase UI with board-first desktop/mobile layout, outcome/status badges, readable WDL line rows, feedback for invalid actions, and an Initial Position panel for the known Draw start and `22->12 captures 12` drawing move.
+- Localize the browser UI to Chinese, render self-created `炮` / `兵` SVG pieces, and fix board sizing so all 5x5 rows and columns remain equal on desktop and mobile.
+- Turn the browser UI into an arbitrary-position WDL analyzer with analysis/edit modes, free piece placement and deletion, side-to-move switching, queryability validation, next-move recommendations, side-to-move comparison, grouped legal moves, auto-query, and successor-outcome labels on board target squares.
+- Document UI reference research and local asset policy; current UI piece SVGs are self-created.
+- Centralize the current ruleset as `sanpao15-min-four-soldiers`, where `soldierCount < 4` is immediate `CannonWin`.
+
+## Solver Lines
+
+- Reachability line: starts from `SSSSS/SSSSS/SSSSS/...../.CCC. c` and explores the reachable subset with external closure and partitioned checkpoints.
+- Full tablebase line: covers every legal position in each soldier-count layer with dense combinadic indexing. This is the current foundation route.
 
 ## Next Steps
 
-- Migrate the existing 90M layer-15 checkpoint to partitioned checkpoint snapshots.
-- Replace flat external closure candidate/frontier operations with bucket/block processing.
+- Consider worklist propagation optimization if larger MTD layers remain dominated by single-threaded predecessor propagation.
+- Benchmark material-target-distance `k=7` and `k=8` after the propagation hot path is better understood.
+- Run production MTD ranges using resume after threaded benchmark validation.
+- Run `--preflight-layer-range 0 15` before widening production ranges, then rerun it after each completed range slice.
+- Consider a cautious `k=6` benchmark after range `0..5` is validated.
+- Evaluate file-backed or mmap dense outcome tables for larger layers.
+- Design a scalable full `0..15` tablebase architecture.
+- Keep CSR or flat layer-local edge storage as a fallback if streaming regeneration is too slow.
+- Evaluate D4 symmetry reduction for dense layers.
+- Keep the partitioned reachability line available for standard-initial-position experiments.
+- Add training/play modes on top of the polished Chinese WDL tablebase UI.
+- Add URL-shareable positions for the arbitrary-position analyzer.
+- Polish local backend packaging and startup ergonomics.
+- Publish a reproducible full tablebase artifact plan for `.s15res` outputs.
+- Improve partitioned closure performance with a direct per-bucket candidate collector if needed.
 - Design layer-local CSR edge files.
 - Canonicalize the 8 board symmetries.
 - Implement lower-to-higher layered retrograde.

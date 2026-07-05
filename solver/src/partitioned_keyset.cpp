@@ -1050,6 +1050,26 @@ PartitionInspection inspectPartitionedKeySet(const std::filesystem::path& partit
     return makeInspection(manifest);
 }
 
+std::vector<uint64_t> readPartitionBucketKeys(
+    const std::filesystem::path& partitionDir,
+    uint32_t bucketId) {
+    const ManifestData manifest = readManifest(partitionDir);
+    if (bucketId >= manifest.bucketCount) {
+        throw std::out_of_range("partition bucket id is out of range");
+    }
+    const PartitionBucketInfo& bucket = manifest.buckets.at(bucketId);
+    if (bucket.bucketId != bucketId) {
+        throw std::runtime_error("partition manifest bucket order is invalid");
+    }
+    return readBucketFileChecked(
+        manifest.dir / bucket.file,
+        manifest.soldierCount,
+        bucketId,
+        manifest.bucketCount,
+        manifest.partitionMethod,
+        bucket.keyCount);
+}
+
 PartitionedKeySetOpStats partitionedDifference(
     const std::filesystem::path& leftPartitionDir,
     const std::filesystem::path& rightPartitionDir,

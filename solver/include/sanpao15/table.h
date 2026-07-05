@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "sanpao15/move.h"
+#include "sanpao15/ruleset.h"
 
 namespace sanpao15 {
 
@@ -35,11 +36,6 @@ using ProgressCallback = std::function<void(const ProgressInfo& info)>;
 constexpr uint32_t ResultTableVersion = 1;
 constexpr uint32_t ResultTableFlagExact = 1u << 0;
 constexpr uint32_t ResultTableFlagTruncated = 1u << 1;
-
-// Fixed identifier for the current rules:
-// 5x5, soldiers 0..14, cannons 21/22/23, cannon first,
-// orthogonal moves, cannon-empty-soldier capture.
-constexpr uint64_t StandardRulesetHash = 0x5331355F76315F01ull;
 
 enum class GraphBackend {
     Vector,
@@ -111,5 +107,7 @@ void saveResultTable(
     uint64_t progressInterval = 0,
     const ProgressCallback& progress = {});
 ResultTable loadResultTable(const std::filesystem::path& path);
+ResultTable loadResultTable(const std::filesystem::path& path, uint64_t expectedRulesetHash);
+ResultTable loadResultTableUnchecked(const std::filesystem::path& path);
 
 }  // namespace sanpao15

@@ -9,7 +9,7 @@ bool cannonHasAnyMove(const Position& pos) {
 }
 
 bool isTerminal(const Position& pos) {
-    if (pos.soldiers == 0) {
+    if (forcedOutcomeByMaterialRule(popcount25(pos.soldiers)).has_value()) {
         return true;
     }
     if (!cannonHasAnyMove(pos)) {
@@ -19,8 +19,9 @@ bool isTerminal(const Position& pos) {
 }
 
 Outcome terminalOutcome(const Position& pos) {
-    if (pos.soldiers == 0) {
-        return Outcome::CannonWin;
+    const std::optional<Outcome> material = forcedOutcomeByMaterialRule(popcount25(pos.soldiers));
+    if (material.has_value()) {
+        return *material;
     }
     if (!cannonHasAnyMove(pos)) {
         return Outcome::SoldierWin;

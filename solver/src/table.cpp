@@ -18,6 +18,8 @@ namespace {
 
 constexpr std::array<char, 8> TableMagic{'S', '1', '5', 'T', 'B', 'L', '1', '\0'};
 using Clock = std::chrono::steady_clock;
+constexpr uint32_t KnownResultTableFlags = ResultTableFlagExact | ResultTableFlagTruncated;
+constexpr uint8_t KnownEntryFlags = 1u | (1u << 1);
 
 uint32_t checkedStateId(size_t id) {
     if (id > std::numeric_limits<uint32_t>::max()) {
@@ -173,6 +175,40 @@ Outcome readOutcome(uint8_t value) {
             return Outcome::Draw;
         default:
             throw std::runtime_error("table contains an invalid outcome value");
+    }
+}
+
+void rejectTrailingBytes(std::istream& input) {
+    const int extra = input.get();
+    if (extra != std::char_traits<char>::eof()) {
+        throw std::runtime_error(".s15tbl contains trailing bytes");
+    }
+}
+
+bool isBoardSquare(int square) {
+    return square >= 0 && square < SquareCount;
+}
+
+void validateTableMoveFields(bool hasBestMove, bool isCapture, int bestFrom, int bestTo, int bestCapturedSquare) {
+    if (!hasBestMove) {
+        if (isCapture) {
+            throw std::runtime_error(".s15tbl entry has capture flag without best move");
+        }
+        if (bestFrom != -1 || bestTo != -1 || bestCapturedSquare != -1) {
+            throw std::runtime_error(".s15tbl entry has move squares without best move flag");
+        }
+        return;
+    }
+
+    if (!isBoardSquare(bestFrom) || !isBoardSquare(bestTo)) {
+        throw std::runtime_error(".s15tbl entry has invalid best move square");
+    }
+    if (isCapture) {
+        if (!isBoardSquare(bestCapturedSquare)) {
+            throw std::runtime_error(".s15tbl entry has invalid captured square");
+        }
+    } else if (bestCapturedSquare != -1) {
+        throw std::runtime_error(".s15tbl non-capture entry has captured square");
     }
 }
 
@@ -497,7 +533,7 @@ void saveResultTable(
     }
 }
 
-ResultTable loadResultTable(const std::filesystem::path& path) {
+ResultTable loadResultTableUnchecked(const std::filesystem::path& path) {
     std::ifstream input(path, std::ios::binary);
     if (!input) {
         throw std::runtime_error("failed to open table file for reading: " + path.string());
@@ -515,6 +551,9 @@ ResultTable loadResultTable(const std::filesystem::path& path) {
     }
 
     const uint32_t flags = readU32LE(input);
+    if ((flags & ~KnownResultTableFlags) != 0) {
+        throw std::runtime_error(".s15tbl contains unknown table flags");
+    }
     const uint64_t stateCount = readU64LE(input);
 
     ResultTable table;
@@ -533,8 +572,17 @@ ResultTable loadResultTable(const std::filesystem::path& path) {
         const int8_t bestTo = readI8(input);
         const int8_t bestCapturedSquare = readI8(input);
         const uint8_t entryFlags = readU8(input);
+        if ((entryFlags & ~KnownEntryFlags) != 0) {
+            throw std::runtime_error(".s15tbl entry contains unknown flags");
+        }
         const bool hasBestMove = (entryFlags & 1u) != 0;
         const bool isCapture = (entryFlags & (1u << 1)) != 0;
+        validateTableMoveFields(
+            hasBestMove,
+            isCapture,
+            static_cast<int>(bestFrom),
+            static_cast<int>(bestTo),
+            static_cast<int>(bestCapturedSquare));
 
         if (hasBestMove) {
             info.bestMove = Move{
@@ -545,10 +593,30 @@ ResultTable loadResultTable(const std::filesystem::path& path) {
             };
         }
 
-        table.entries.emplace(key, info);
+        const auto [_, inserted] = table.entries.emplace(key, info);
+        if (!inserted) {
+            throw std::runtime_error(".s15tbl contains duplicate key");
+        }
+    }
+
+    rejectTrailingBytes(input);
+    if (table.entries.size() != stateCount) {
+        throw std::runtime_error(".s15tbl entry count does not match header");
     }
 
     return table;
+}
+
+ResultTable loadResultTable(const std::filesystem::path& path, uint64_t expectedRulesetHash) {
+    ResultTable table = loadResultTableUnchecked(path);
+    if (table.rulesetHash != expectedRulesetHash) {
+        throw std::runtime_error(".s15tbl ruleset hash mismatch; incompatible ruleset");
+    }
+    return table;
+}
+
+ResultTable loadResultTable(const std::filesystem::path& path) {
+    return loadResultTable(path, StandardRulesetHash);
 }
 
 }  // namespace sanpao15
